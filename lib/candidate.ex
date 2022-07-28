@@ -72,9 +72,36 @@ defmodule ExIce.Candidate do
     "#{foundation} #{component_id} #{transport} #{priority} #{address} #{port} typ #{type}"
   end
 
-  @spec unmarshal(String.t()) :: t()
-  def unmarshal(_string) do
+  @spec unmarshal(String.t()) :: {:ok, t()} | {:error, term()}
+  def unmarshal(string) do
+    with [f_str, c_str, tr_str, pr_str, a_str, po_str, "typ", ty_str] <- String.split(string),
+         {foundation, ""} <- Integer.parse(f_str),
+         {_component_id, ""} <- Integer.parse(c_str),
+         {:ok, transport} <- parse_transport(tr_str),
+         {priority, ""} <- Integer.parse(pr_str),
+         {:ok, address} <- :inet.parse_address(String.to_charlist(a_str)),
+         {port, ""} <- Integer.parse(po_str),
+         {:ok, type} <- parse_type(ty_str) do
+      %__MODULE__{
+        address: address,
+        foundation: foundation,
+        port: port,
+        priority: priority,
+        transport: transport,
+        type: type
+      }
+    else
+      _err -> {:error, :invalid_candidate}
+    end
   end
+
+  defp parse_transport("UDP"), do: {:ok, :udp}
+  defp parse_transport(_other), do: {:error, :invalid_transport}
+
+  defp parse_type("host"), do: {:ok, :host}
+  defp parse_type("srflx"), do: {:ok, :srflx}
+  defp parse_type("prflx"), do: {:ok, :prflx}
+  defp parse_type(_other), do: {:error, :invalid_type}
 
   defp foundation(type, ip, stun_turn_ip, transport) do
     {type, ip, stun_turn_ip, transport}
