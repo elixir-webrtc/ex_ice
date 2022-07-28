@@ -12,7 +12,7 @@ defmodule ExIce.Candidate do
           foundation: integer(),
           port: :inet.port_number(),
           priority: integer(),
-          proto: :udp,
+          transport: :udp,
           socket: :inet.socket(),
           type: :host | :srflx | :prflx
         }
@@ -24,7 +24,7 @@ defmodule ExIce.Candidate do
     :foundation,
     :port,
     :priority,
-    :proto,
+    :transport,
     :socket,
     :type
   ]
@@ -38,24 +38,50 @@ defmodule ExIce.Candidate do
           :inet.socket()
         ) :: t()
   def new(type, address, port, base_address, base_port, socket) do
-    proto = :udp
+    transport = :udp
 
     %__MODULE__{
       address: address,
       base_address: base_address,
       base_port: base_port,
-      foundation: foundation(type, address, nil, proto),
+      foundation: foundation(type, address, nil, transport),
       port: port,
       priority: 0,
-      proto: proto,
+      transport: transport,
       socket: socket,
       type: type
     }
   end
 
-  defp foundation(type, ip, stun_turn_ip, proto) do
-    {type, ip, stun_turn_ip, proto}
+  @spec marshal(t()) :: String.t()
+  def marshal(cand) do
+    component_id = 1
+
+    %__MODULE__{
+      foundation: foundation,
+      transport: transport,
+      priority: priority,
+      address: address,
+      port: port,
+      type: type
+    } = cand
+
+    transport = transport_to_string(transport)
+    address = address_to_string(address)
+
+    "#{foundation} #{component_id} #{transport} #{priority} #{address} #{port} typ #{type}"
+  end
+
+  @spec unmarshal(String.t()) :: t()
+  def unmarshal(_string) do
+  end
+
+  defp foundation(type, ip, stun_turn_ip, transport) do
+    {type, ip, stun_turn_ip, transport}
     |> then(&inspect(&1))
     |> then(&:erlang.crc32(&1))
   end
+
+  defp address_to_string(address), do: :inet.ntoa(address)
+  defp transport_to_string(:udp), do: "UDP"
 end
