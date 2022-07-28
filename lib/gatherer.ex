@@ -49,15 +49,7 @@ defmodule ExIce.Gatherer do
   defp create_new_host_candidate(ip, controlling_process) do
     with {:ok, socket} <- :gen_udp.open(0, active: true),
          {:ok, port} = :inet.port(socket) do
-      c = %Candidate{
-        address: ip,
-        base_address: ip,
-        base_port: port,
-        port: port,
-        priority: 0,
-        socket: socket,
-        type: :host
-      }
+      c = Candidate.new(:host, ip, port, ip, port, socket)
 
       Logger.debug("New candidate: #{inspect(c)}")
 
