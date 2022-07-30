@@ -7,13 +7,13 @@ defmodule ExIce.Candidate do
 
   @type t() :: %__MODULE__{
           address: :inet.ip_address(),
-          base_address: :inet.ip_address(),
-          base_port: :inet.port_number(),
+          base_address: :inet.ip_address() | nil,
+          base_port: :inet.port_number() | nil,
           foundation: integer(),
           port: :inet.port_number(),
           priority: integer(),
           transport: :udp,
-          socket: :inet.socket(),
+          socket: :inet.socket() | nil,
           type: :host | :srflx | :prflx
         }
 
