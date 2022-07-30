@@ -1,4 +1,6 @@
 defmodule ExIce.Gatherer do
+  @moduledoc false
+
   alias ExIce.Candidate
 
   use Bitwise
@@ -48,7 +50,7 @@ defmodule ExIce.Gatherer do
 
   defp create_new_host_candidate(ip, controlling_process) do
     with {:ok, socket} <- :gen_udp.open(0, active: true),
-         {:ok, port} = :inet.port(socket) do
+         {:ok, port} <- :inet.port(socket) do
       c = Candidate.new(:host, ip, port, ip, port, socket)
 
       Logger.debug("New candidate: #{inspect(c)}")

@@ -1,11 +1,10 @@
 # ExIce
 
-**TODO: Add description**
+[![codecov](https://codecov.io/gh/elixir-webrtc/ex_ice/branch/master/graph/badge.svg?token=83POQD1KST)](https://codecov.io/gh/elixir-webrtc/ex_ice)
+
+Implementation of ICE protocol - [RFC 8445](https://datatracker.ietf.org/doc/html/rfc8445)
 
 ## Installation
-
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `ex_ice` to your list of dependencies in `mix.exs`:
 
 ```elixir
 def deps do
@@ -15,7 +14,4 @@ def deps do
 end
 ```
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/ex_ice>.
 

@@ -1,4 +1,7 @@
 defmodule ExIce.Agent do
+  @moduledoc """
+  ICE agent.
+  """
   use GenServer
 
   alias ExIce.Candidate

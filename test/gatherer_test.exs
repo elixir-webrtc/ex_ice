@@ -7,7 +7,7 @@ defmodule ExIce.GathererTest do
     Gatherer.gather_host_candidates(self())
 
     receive do
-      x -> IO.inspect(x, label: :x)
+      # x -> IO.inspect(x, label: :x)
     after
       2000 ->
         :ok

@@ -1,5 +1,5 @@
 defmodule ExIce.Candidate do
-  @doc """
+  @moduledoc """
   ICE candidate representation. 
   """
 
