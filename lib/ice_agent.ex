@@ -1,17 +1,21 @@
-defmodule ExIce.Agent do
+defmodule ExIce.IceAgent do
   @moduledoc """
   ICE agent.
   """
   use GenServer
 
-  alias ExIce.Candidate
+  alias ExIce.{Candidate, Checklist}
+
+  @type role() :: :controlling | :controlled
 
   @type t() :: %__MODULE__{
           candidates: [Candidate.t()],
+          checklist: Checklist.t(),
           controlling_process: pid()
         }
 
   defstruct [
+    :checklist,
     :controlling_process,
     candidates: []
   ]
