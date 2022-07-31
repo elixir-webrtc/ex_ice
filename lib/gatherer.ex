@@ -7,8 +7,8 @@ defmodule ExIce.Gatherer do
 
   require Logger
 
-  @spec gather_host_candidates(pid()) :: {:ok, [Candidate.t()]} | {:error, term()}
-  def gather_host_candidates(controlling_process) do
+  @spec gather_host_candidates() :: {:ok, [Candidate.t()]} | {:error, term()}
+  def gather_host_candidates() do
     with {:ok, ints} <- :inet.getifaddrs() do
       ips =
         ints
@@ -18,10 +18,24 @@ defmodule ExIce.Gatherer do
         |> Enum.to_list()
 
       ips
-      |> Enum.map(&create_new_host_candidate(&1, controlling_process))
+      |> Enum.map(&create_new_host_candidate(&1))
       |> Enum.filter(&(&1 == nil))
       |> then(&{:ok, &1})
     end
+  end
+
+  @spec gather_srflx_candidate(pid(), Candidate.t(), any()) :: :ok
+  def gather_srflx_candidate(controlling_process, host_candidate, stun_server) do
+    Logger.debug(
+      "Trying to gather srflx candidate for #{inspect(host_candidate)}, #{inspect(stun_server)}"
+    )
+
+    # try to gather srflx candidate
+    # if successful, send result back to controlling process
+    # if not, just terminate
+
+    send(controlling_process, {:new_candidate, nil})
+    :ok
   end
 
   defp is_loopback_if({_int_name, int}) do
@@ -48,14 +62,12 @@ defmodule ExIce.Gatherer do
     Keyword.get_values(int, :addr)
   end
 
-  defp create_new_host_candidate(ip, controlling_process) do
+  defp create_new_host_candidate(ip) do
     with {:ok, socket} <- :gen_udp.open(0, active: true),
          {:ok, port} <- :inet.port(socket) do
       c = Candidate.new(:host, ip, port, ip, port, socket)
 
       Logger.debug("New candidate: #{inspect(c)}")
-
-      send(controlling_process, {:new_candidate, c})
 
       c
     else

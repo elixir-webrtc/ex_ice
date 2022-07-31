@@ -4,13 +4,6 @@ defmodule ExIce.GathererTest do
   alias ExIce.Gatherer
 
   test "" do
-    Gatherer.gather_host_candidates(self())
-
-    receive do
-      # x -> IO.inspect(x, label: :x)
-    after
-      2000 ->
-        :ok
-    end
+    Gatherer.gather_host_candidates()
   end
 end
