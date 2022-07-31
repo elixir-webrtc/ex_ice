@@ -16,6 +16,7 @@ defmodule ExIce.Agent do
     candidates: []
   ]
 
+  @spec start_link(any()) :: GenServer.on_start()
   def start_link(init_arg \\ []) do
     GenServer.start_link(__MODULE__, init_arg)
   end
