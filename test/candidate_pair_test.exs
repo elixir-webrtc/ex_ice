@@ -1,7 +1,7 @@
-defmodule ExIce.CandidatePairTest do
+defmodule ExICE.CandidatePairTest do
   use ExUnit.Case
 
-  alias ExIce.{Candidate, CandidatePair}
+  alias ExICE.{Candidate, CandidatePair}
 
   describe "CandidatePair.new/3" do
     test "creates candidate pair with correct priority" do

@@ -1,4 +1,4 @@
-defmodule ExIce.CandidatePair do
+defmodule ExICE.CandidatePair do
   @moduledoc """
   Module representing ICE candidate pair.
   """

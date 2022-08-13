@@ -1,7 +1,7 @@
-defmodule ExIce.GathererTest do
+defmodule ExICE.GathererTest do
   use ExUnit.Case
 
-  alias ExIce.Gatherer
+  alias ExICE.Gatherer
 
   test "" do
     Gatherer.gather_host_candidates()

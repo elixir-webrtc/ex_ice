@@ -1,7 +1,7 @@
-defmodule ExIce.Gatherer do
+defmodule ExICE.Gatherer do
   @moduledoc false
 
-  alias ExIce.Candidate
+  alias ExICE.Candidate
 
   use Bitwise
 

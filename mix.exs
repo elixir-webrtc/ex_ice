@@ -1,4 +1,4 @@
-defmodule ExIce.MixProject do
+defmodule ExICE.MixProject do
   use Mix.Project
 
   def project do

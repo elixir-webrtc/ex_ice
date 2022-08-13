@@ -1,6 +1,6 @@
-defmodule ExIce.Candidate do
+defmodule ExICE.Candidate do
   @moduledoc """
-  ICE candidate representation. 
+  ICE candidate representation.
   """
 
   @type type() :: :host | :srflx | :prflx

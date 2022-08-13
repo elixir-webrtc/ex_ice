@@ -1,10 +1,10 @@
-defmodule ExIce.IceAgent do
+defmodule ExICE.IceAgent do
   @moduledoc """
   ICE agent.
   """
   use GenServer
 
-  alias ExIce.{Candidate, Checklist, Gatherer}
+  alias ExICE.{Candidate, Checklist, Gatherer}
 
   @type role() :: :controlling | :controlled
 
@@ -58,7 +58,7 @@ defmodule ExIce.IceAgent do
 
     Enum.each(state.stun_servers, fn stun_server ->
       Enum.each(host_candidates, fn host_candidate ->
-        Task.Supervisor.start_child(state.gather_sup, ExIce.Gatherer, :gather_srflx_candidate, [
+        Task.Supervisor.start_child(state.gather_sup, ExICE.Gatherer, :gather_srflx_candidate, [
           self(),
           host_candidate,
           stun_server

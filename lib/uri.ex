@@ -1,4 +1,4 @@
-defmodule ExIce.URI do
+defmodule ExICE.URI do
   @moduledoc """
   Module representing STUN URI.
 

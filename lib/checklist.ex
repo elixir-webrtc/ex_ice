@@ -1,4 +1,4 @@
-defmodule ExIce.Checklist do
+defmodule ExICE.Checklist do
   @moduledoc """
   ICE agent checklist.
   """

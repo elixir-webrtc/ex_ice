@@ -1,7 +1,7 @@
-defmodule ExIce.URITest do
+defmodule ExICE.URITest do
   use ExUnit.Case, async: true
 
-  alias ExIce.URI
+  alias ExICE.URI
 
   describe "URI.parse/1" do
     test "parses valid URI correctly" do

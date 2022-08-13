@@ -1,7 +1,7 @@
-defmodule ExIce.CandidateTest do
+defmodule ExICE.CandidateTest do
   use ExUnit.Case
 
-  alias ExIce.Candidate
+  alias ExICE.Candidate
 
   test "candidate's foundation is calculated correctly" do
     # FIXME socket shouldn't be nil

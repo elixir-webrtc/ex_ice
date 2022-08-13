@@ -1,4 +1,4 @@
-# ExIce
+# ExICE
 
 [![codecov](https://codecov.io/gh/elixir-webrtc/ex_ice/branch/master/graph/badge.svg?token=83POQD1KST)](https://codecov.io/gh/elixir-webrtc/ex_ice)
 
