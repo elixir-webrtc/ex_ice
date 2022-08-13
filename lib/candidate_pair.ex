@@ -3,6 +3,8 @@ defmodule ExICE.CandidatePair do
   Module representing ICE candidate pair.
   """
 
+  alias ExICE.Worker
+
   @type t() :: %__MODULE__{
           local_cand: Candidate.t(),
           nominated?: boolean(),
@@ -18,7 +20,7 @@ defmodule ExICE.CandidatePair do
                 state: :frozen
               ]
 
-  @spec new(IceAgent.role(), Candidate.t(), Candidate.t()) :: t()
+  @spec new(Worker.role(), Candidate.t(), Candidate.t()) :: t()
   def new(agent_role, local_cand, remote_cand) do
     priority = priority(agent_role, local_cand, remote_cand)
 

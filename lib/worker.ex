@@ -1,6 +1,11 @@
-defmodule ExICE.IceAgent do
+defmodule ExICE.Worker do
   @moduledoc """
-  ICE agent.
+  ICE worker.
+
+  In most implementations this module is called Agent.
+  However, because of Elixir having builtin Agent module
+  which behavior is far more different than behavior of
+  this module, this module was called Worker.
   """
   use GenServer
 
