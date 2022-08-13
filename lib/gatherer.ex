@@ -19,7 +19,7 @@ defmodule ExICE.Gatherer do
 
       ips
       |> Enum.map(&create_new_host_candidate(&1))
-      |> Enum.filter(&(&1 == nil))
+      |> Enum.reject(&(&1 == nil))
       |> then(&{:ok, &1})
     end
   end
