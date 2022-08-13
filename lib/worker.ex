@@ -9,9 +9,15 @@ defmodule ExICE.Worker do
   """
   use GenServer
 
+  require Logger
+
   alias ExICE.{Candidate, Checklist, Gatherer}
 
   @type role() :: :controlling | :controlled
+
+  @type opts() :: [
+          stun_servers :: [String.t()]
+        ]
 
   @type t() :: %__MODULE__{
           checklist: Checklist.t(),
@@ -19,7 +25,7 @@ defmodule ExICE.Worker do
           gather_sup: Supervisor.supervisor(),
           local_candidates: [Candidate.t()],
           remote_candidates: [Candidate.t()],
-          stun_servers: [],
+          stun_servers: [ExICE.URI.t()],
           turn_servers: []
         }
 
@@ -33,9 +39,9 @@ defmodule ExICE.Worker do
     turn_servers: []
   ]
 
-  @spec start_link(any()) :: GenServer.on_start()
-  def start_link(init_arg \\ []) do
-    GenServer.start_link(__MODULE__, init_arg)
+  @spec start_link(opts()) :: GenServer.on_start()
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts)
   end
 
   @spec gather_candidates(pid()) :: :ok
@@ -51,9 +57,27 @@ defmodule ExICE.Worker do
   ### Server
 
   @impl true
-  def init(_init_arg) do
-    gather_sup = Task.Supervisor.start_link()
-    {:ok, %__MODULE__{gather_sup: gather_sup}}
+  def init(opts) do
+    stun_servers =
+      (opts[:stun_servers] || [])
+      |> Enum.map(fn stun_server ->
+        case ExICE.URI.parse(stun_server) do
+          {:ok, stun_server} ->
+            stun_server
+
+          :error ->
+            Logger.warn("""
+            Couldn't parse STUN server URI: #{inspect(stun_server)}. \
+            Ignoring.\
+            """)
+
+            nil
+        end
+      end)
+      |> Enum.reject(&(&1 == nil))
+
+    {:ok, gather_sup} = Task.Supervisor.start_link()
+    {:ok, %__MODULE__{gather_sup: gather_sup, stun_servers: stun_servers}}
   end
 
   @impl true
