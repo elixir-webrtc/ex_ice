@@ -11,33 +11,13 @@ defmodule ExICE.Worker do
 
   require Logger
 
-  alias ExICE.{Candidate, Checklist, Gatherer}
+  alias ExICE.Worker.State
 
   @type role() :: :controlling | :controlled
 
   @type opts() :: [
           stun_servers :: [String.t()]
         ]
-
-  @type t() :: %__MODULE__{
-          checklist: Checklist.t(),
-          controlling_process: pid(),
-          gather_sup: Supervisor.supervisor(),
-          local_candidates: [Candidate.t()],
-          remote_candidates: [Candidate.t()],
-          stun_servers: [ExICE.URI.t()],
-          turn_servers: []
-        }
-
-  defstruct [
-    :checklist,
-    :controlling_process,
-    :gather_sup,
-    local_candidates: [],
-    remote_candidates: [],
-    stun_servers: [],
-    turn_servers: []
-  ]
 
   @spec start_link(opts()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -58,49 +38,16 @@ defmodule ExICE.Worker do
 
   @impl true
   def init(opts) do
-    stun_servers =
-      (opts[:stun_servers] || [])
-      |> Enum.map(fn stun_server ->
-        case ExICE.URI.parse(stun_server) do
-          {:ok, stun_server} ->
-            stun_server
-
-          :error ->
-            Logger.warn("""
-            Couldn't parse STUN server URI: #{inspect(stun_server)}. \
-            Ignoring.\
-            """)
-
-            nil
-        end
-      end)
-      |> Enum.reject(&(&1 == nil))
-
-    {:ok, gather_sup} = Task.Supervisor.start_link()
-    {:ok, %__MODULE__{gather_sup: gather_sup, stun_servers: stun_servers}}
+    {:ok, State.new(opts)}
   end
 
   @impl true
   def handle_cast(:gather_candidates, state) do
-    {:ok, host_candidates} = Gatherer.gather_host_candidates()
-    state = %{state | local_candidates: host_candidates}
-
-    Enum.each(state.stun_servers, fn stun_server ->
-      Enum.each(host_candidates, fn host_candidate ->
-        Task.Supervisor.start_child(state.gather_sup, ExICE.Gatherer, :gather_srflx_candidate, [
-          self(),
-          host_candidate,
-          stun_server
-        ])
-      end)
-    end)
-
-    {:noreply, state}
+    {:noreply, State.gather_candidates(state)}
   end
 
   @impl true
   def handle_cast({:add_remote_candidate, candidate}, state) do
-    state = %__MODULE__{state | remote_candidates: state.remote_candidates ++ [candidate]}
-    {:noreply, state}
+    {:noreply, State.add_remote_candidate(state, candidate)}
   end
 end
