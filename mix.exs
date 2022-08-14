@@ -29,6 +29,7 @@ defmodule ExICE.MixProject do
 
   defp deps do
     [
+      {:ex_stun, path: "../ex_stun"},
       {:excoveralls, "~> 0.14.6", only: :test, runtime: false},
       {:ex_doc, "~> 0.27", only: :dev, runtime: false},
       {:credo, "~> 1.6", only: [:dev, :test], runtime: false}

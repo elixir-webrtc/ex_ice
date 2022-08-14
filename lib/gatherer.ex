@@ -2,6 +2,7 @@ defmodule ExICE.Gatherer do
   @moduledoc false
 
   alias ExICE.Candidate
+  alias ExStun.Message.Type
 
   use Bitwise
 
@@ -24,7 +25,7 @@ defmodule ExICE.Gatherer do
     end
   end
 
-  @spec gather_srflx_candidate(pid(), Candidate.t(), any()) :: :ok
+  @spec gather_srflx_candidate(pid(), Candidate.t(), ExICE.URI.t()) :: :ok
   def gather_srflx_candidate(controlling_process, host_candidate, stun_server) do
     Logger.debug(
       "Trying to gather srflx candidate for #{inspect(host_candidate)}, #{inspect(stun_server)}"
@@ -33,6 +34,33 @@ defmodule ExICE.Gatherer do
     # try to gather srflx candidate
     # if successful, send result back to controlling process
     # if not, just terminate
+
+    binding_request =
+      %Type{class: :request, method: :binding}
+      |> ExStun.Message.new()
+      |> ExStun.Message.encode()
+
+    {:ok, {:hostent, _, _, _, _, ips}} =
+      stun_server.host
+      |> then(&String.to_charlist(&1))
+      |> :inet_res.gethostbyname()
+      |> IO.inspect()
+
+    ip = List.first(ips)
+    port = stun_server.port
+    :ok = :gen_udp.send(host_candidate.socket, {ip, port}, binding_request)
+
+    {:ok, {_addr, _port, binding_response}} = :gen_udp.recv(host_candidate.socket, 0)
+
+    IO.inspect(binding_response)
+
+    {:ok, msg}=
+    IO.iodata_to_binary(binding_response)
+    |> IO.inspect()
+    |> ExStun.Message.decode()
+
+    ExStun.Message.Attribute.XORMappedAddress.getFromMessage(msg)
+    |> IO.inspect()
 
     send(controlling_process, {:new_candidate, nil})
     :ok
@@ -63,7 +91,7 @@ defmodule ExICE.Gatherer do
   end
 
   defp create_new_host_candidate(ip) do
-    with {:ok, socket} <- :gen_udp.open(0, active: true),
+    with {:ok, socket} <- :gen_udp.open(0, active: false),
          {:ok, port} <- :inet.port(socket) do
       c = Candidate.new(:host, ip, port, ip, port, socket)
 
