@@ -2,9 +2,11 @@ defmodule ExICE.Gatherer do
   @moduledoc false
 
   alias ExICE.Candidate
-  alias ExStun.Message.Type
+  alias ExSTUN.Message
+  alias ExSTUN.Message.Type
+  alias ExSTUN.Message.Attribute.XORMappedAddress
 
-  use Bitwise
+  import Bitwise
 
   require Logger
 
@@ -37,14 +39,13 @@ defmodule ExICE.Gatherer do
 
     binding_request =
       %Type{class: :request, method: :binding}
-      |> ExStun.Message.new()
-      |> ExStun.Message.encode()
+      |> Message.new()
+      |> Message.encode()
 
     {:ok, {:hostent, _, _, _, _, ips}} =
       stun_server.host
       |> then(&String.to_charlist(&1))
       |> :inet_res.gethostbyname()
-      |> IO.inspect()
 
     ip = List.first(ips)
     port = stun_server.port
@@ -52,15 +53,9 @@ defmodule ExICE.Gatherer do
 
     {:ok, {_addr, _port, binding_response}} = :gen_udp.recv(host_candidate.socket, 0)
 
-    IO.inspect(binding_response)
+    {:ok, msg} = ExSTUN.Message.decode(binding_response)
 
-    {:ok, msg}=
-    IO.iodata_to_binary(binding_response)
-    |> IO.inspect()
-    |> ExStun.Message.decode()
-
-    ExStun.Message.Attribute.XORMappedAddress.getFromMessage(msg)
-    |> IO.inspect()
+    Message.get_attribute(msg, XORMappedAddress)
 
     send(controlling_process, {:new_candidate, nil})
     :ok
@@ -91,7 +86,7 @@ defmodule ExICE.Gatherer do
   end
 
   defp create_new_host_candidate(ip) do
-    with {:ok, socket} <- :gen_udp.open(0, active: false),
+    with {:ok, socket} <- :gen_udp.open(0, [:binary, {:active, false}]),
          {:ok, port} <- :inet.port(socket) do
       c = Candidate.new(:host, ip, port, ip, port, socket)
 
