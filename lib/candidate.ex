@@ -37,7 +37,8 @@ defmodule ExICE.Candidate do
           :inet.port_number(),
           :inet.socket()
         ) :: t()
-  def new(type, address, port, base_address, base_port, socket) do
+  def new(type, address, port, base_address, base_port, socket)
+      when type in [:host, :srflx, :prflx, :relay] do
     transport = :udp
 
     %__MODULE__{
@@ -82,18 +83,23 @@ defmodule ExICE.Candidate do
          {:ok, address} <- :inet.parse_address(String.to_charlist(a_str)),
          {port, ""} <- Integer.parse(po_str),
          {:ok, type} <- parse_type(ty_str) do
-      %__MODULE__{
-        address: address,
-        foundation: foundation,
-        port: port,
-        priority: priority,
-        transport: transport,
-        type: type
-      }
+      {:ok,
+       %__MODULE__{
+         address: address,
+         foundation: foundation,
+         port: port,
+         priority: priority,
+         transport: transport,
+         type: type
+       }}
     else
       _err -> {:error, :invalid_candidate}
     end
   end
+
+  @spec family(t()) :: :ipv4 | :ipv6
+  def family(%__MODULE__{address: {_, _, _, _}}), do: :ipv4
+  def family(%__MODULE__{address: {_, _, _, _, _, _, _, _}}), do: :ipv6
 
   defp parse_transport("UDP"), do: {:ok, :udp}
   defp parse_transport(_other), do: {:error, :invalid_transport}

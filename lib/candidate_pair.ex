@@ -2,15 +2,16 @@ defmodule ExICE.CandidatePair do
   @moduledoc """
   Module representing ICE candidate pair.
   """
+  require Logger
 
-  alias ExICE.Worker
+  @type state() :: :waiting | :in_progress | :succeeded | :failed | :frozen
 
   @type t() :: %__MODULE__{
           local_cand: Candidate.t(),
           nominated?: boolean(),
           priority: non_neg_integer(),
           remote_cand: Candidate.t(),
-          state: :waiting | :in_progress | :succeeded | :failed | :frozen
+          state: state()
         }
 
   @enforce_keys [:local_cand, :remote_cand, :priority]
@@ -20,14 +21,14 @@ defmodule ExICE.CandidatePair do
                 state: :frozen
               ]
 
-  @spec new(Worker.role(), Candidate.t(), Candidate.t()) :: t()
-  def new(agent_role, local_cand, remote_cand) do
+  def new(local_cand, remote_cand, agent_role, state) do
     priority = priority(agent_role, local_cand, remote_cand)
 
     %__MODULE__{
       local_cand: local_cand,
       remote_cand: remote_cand,
-      priority: priority
+      priority: priority,
+      state: state
     }
   end
 
