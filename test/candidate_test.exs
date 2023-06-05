@@ -35,7 +35,7 @@ defmodule ExICE.CandidateTest do
     m_c = "936255739 1 UDP 0 192.168.1.1 12345 typ host"
     expected_c = Candidate.new(:host, ip, port, nil, nil, nil)
 
-    c = Candidate.unmarshal(m_c)
+    assert {:ok, c} = Candidate.unmarshal(m_c)
 
     assert c == expected_c
   end
