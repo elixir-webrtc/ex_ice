@@ -81,6 +81,8 @@ defmodule ExICE.ICEAgent do
       role: Keyword.fetch!(opts, :role),
       checklist: [],
       tr_check_q: [],
+      valid_pairs: [],
+      conn_checks: %{},
       local_ufrag: nil,
       local_pwd: nil,
       local_cands: [],
@@ -185,7 +187,7 @@ defmodule ExICE.ICEAgent do
         {pair, idx} ->
           Logger.debug("Sending conn check on pair: #{inspect(pair)}")
 
-          pair = send_conn_check(pair, state)
+          {pair, state} = send_conn_check(pair, state)
 
           %{state | checklist: List.update_at(state.checklist, idx, fn _ -> pair end)}
 
@@ -223,7 +225,10 @@ defmodule ExICE.ICEAgent do
     {:noreply, state}
   end
 
-  defp handle_stun_msg(socket, src_ip, src_port, msg, state) do
+  defp handle_stun_msg(socket, src_ip, src_port, %Message{} = msg, state) do
+    # TODO revisit 7.3.1.4
+    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
+
     case msg.type do
       %Type{class: :request, method: :binding} ->
         username = state.local_ufrag <> ":" <> state.remote_ufrag
@@ -259,22 +264,58 @@ defmodule ExICE.ICEAgent do
               {cand, state}
           end
 
-        %Candidate{} = local_cand = find_cand(state.local_cands, socket)
-
         pair = CandidatePair.new(local_cand, remote_cand, state.role, :waiting)
 
         # TODO use triggered check queue
-        case find_pair(state.checklist, pair) do
+        case find_pair_with_index(state.checklist, pair) do
           nil ->
             Logger.debug("Adding new candidate pair: #{inspect(pair)}")
             %{state | checklist: [pair | state.checklist]}
 
-          %CandidatePair{} ->
+          {%CandidatePair{}, _idx} ->
             state
         end
 
       %Type{class: :success_response, method: :binding} ->
-        state
+        {conn_check, state} = pop_in(state, [:conn_checks, msg.transaction_id])
+
+        if conn_check do
+          # if there is conn_check, there must be remote cand
+          %Candidate{} = remote_cand = find_cand(state.remote_cands, src_ip, src_port)
+
+          {conn_check_src, conn_check_dst} = conn_check
+
+          if {src_ip, src_port} == conn_check_dst and
+               {local_cand.base_address, local_cand.base_port} == conn_check_src do
+            {%CandidatePair{} = pair, idx} =
+              find_pair_with_index(state.checklist, local_cand, remote_cand)
+
+            # TODO use XORMappedAddress
+            pair = %CandidatePair{pair | state: :succeeded}
+            state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+            Logger.debug("New valid pair: #{inspect(pair)}")
+            send(state.controlling_process, {self(), :connected})
+            %{state | valid_pairs: [pair | state.valid_pairs]}
+          else
+            Logger.warn("""
+            Ignoring conn check response, non-symmetric src and dst addresses.
+            Send from: #{inspect(conn_check_src)}, to: #{inspect(conn_check_dst)}
+            Recv from: #{inspect({src_ip, src_port})}, on: #{inspect(local_cand.base_address, local_cand.base_port)}
+            """)
+
+            state
+          end
+        else
+          # TODO should we have remote cand
+          # to log it instead of src ip and port?
+          Logger.warn("""
+          Ignoring conn check response with unknown tid: #{msg.transaction_id},
+          local_cand: #{inspect(local_cand)},
+          src: #{src_ip}:#{src_port}"
+          """)
+
+          state
+        end
 
       other ->
         Logger.warn("Unknown msg: #{inspect(other)}")
@@ -302,15 +343,21 @@ defmodule ExICE.ICEAgent do
     state
   end
 
-  defp find_pair(checklist, pair) do
+  defp find_pair_with_index(pairs, pair) do
+    find_pair_with_index(pairs, pair.local_cand, pair.remote_cand)
+  end
+
+  defp find_pair_with_index(pairs, local_cand, remote_cand) do
     # TODO which pairs are actually the same?
-    Enum.find(checklist, fn p ->
-      p.local_cand.base_address == pair.local_cand.base_address and
-        p.local_cand.base_port == pair.local_cand.base_port and
-        p.local_cand.address == pair.local_cand.address and
-        p.local_cand.port == pair.local_cand.port and
-        p.remote_cand.address == pair.remote_cand.address and
-        p.remote_cand.port == pair.remote_cand.port
+    pairs
+    |> Enum.with_index()
+    |> Enum.find(fn {p, _idx} ->
+      p.local_cand.base_address == local_cand.base_address and
+        p.local_cand.base_port == local_cand.base_port and
+        p.local_cand.address == local_cand.address and
+        p.local_cand.port == local_cand.port and
+        p.remote_cand.address == remote_cand.address and
+        p.remote_cand.port == remote_cand.port
     end)
   end
 
@@ -340,13 +387,17 @@ defmodule ExICE.ICEAgent do
       ])
       |> Message.with_integrity(state.remote_pwd)
       |> Message.with_fingerprint()
-      |> Message.encode()
 
+    src = {pair.local_cand.base_address, pair.local_cand.base_port}
     dst = {pair.remote_cand.address, pair.remote_cand.port}
 
-    do_send(pair.local_cand.socket, dst, req)
+    do_send(pair.local_cand.socket, dst, Message.encode(req))
 
-    %CandidatePair{pair | state: :in_progress}
+    pair = %CandidatePair{pair | state: :in_progress}
+
+    state = put_in(state, [:conn_checks, req.transaction_id], {src, dst})
+
+    {pair, state}
   end
 
   defp do_send(socket, dst, data) do
