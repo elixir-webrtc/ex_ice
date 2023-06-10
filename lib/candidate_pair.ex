@@ -8,6 +8,7 @@ defmodule ExICE.CandidatePair do
 
   @type t() :: %__MODULE__{
           local_cand: Candidate.t(),
+          nominate?: boolean(),
           nominated?: boolean(),
           priority: non_neg_integer(),
           remote_cand: Candidate.t(),
@@ -17,6 +18,7 @@ defmodule ExICE.CandidatePair do
   @enforce_keys [:local_cand, :remote_cand, :priority]
   defstruct @enforce_keys ++
               [
+                nominate?: false,
                 nominated?: false,
                 state: :frozen
               ]

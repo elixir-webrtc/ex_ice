@@ -8,6 +8,7 @@ defmodule ExICE.ICEAgent do
 
   require Logger
 
+  alias ExICE.Attribute.UseCandidate
   alias ExICE.{Candidate, CandidatePair, Gatherer}
   alias ExICE.Attribute.{ICEControlling, ICEControlled}
 
@@ -49,6 +50,11 @@ defmodule ExICE.ICEAgent do
     GenServer.cast(ice_agent, {:add_remote_candidate, candidate})
   end
 
+  @spec end_of_candidates(pid()) :: :ok
+  def end_of_candidates(ice_agent) do
+    GenServer.cast(ice_agent, :end_of_candidates)
+  end
+
   ### Server
 
   @impl true
@@ -82,7 +88,10 @@ defmodule ExICE.ICEAgent do
       checklist: [],
       tr_check_q: [],
       valid_pairs: [],
+      selected_pair: nil,
       conn_checks: %{},
+      gathering_state: nil,
+      eoc: false,
       local_ufrag: nil,
       local_pwd: nil,
       local_cands: [],
@@ -126,6 +135,12 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
+  def handle_cast({:add_remote_candidate, _remote_cand}, %{eoc: true} = state) do
+    Logger.warn("Received remote candidate after end-of-candidates. Ignoring.")
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
     {:ok, remote_cand} = Candidate.unmarshal(remote_cand)
     start_ta? = state.checklist == []
@@ -165,6 +180,50 @@ defmodule ExICE.ICEAgent do
     end
 
     {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:end_of_candidates, %{role: :controlled} = state) do
+    {:noreply, %{state | eoc: true}}
+  end
+
+  @impl true
+  def handle_cast(:end_of_candidates, %{role: :controlling} = state) do
+    state = %{state | eoc: true}
+    in_progress = Enum.any?(state.checklist, fn pair -> pair.state == :in_progress end)
+    waiting = Enum.any?(state.checklist, fn pair -> pair.state == :waiting end)
+
+    if waiting or in_progress do
+      Logger.debug("""
+      Received end-of-candidates but there are checks waiting or in-progress. \
+      Waiting with nomination.
+      """)
+
+      {:noreply, state}
+    else
+      # TODO check whether gathering process has finished
+      pair = Enum.max_by(state.valid_pairs, fn pair -> pair.priority end)
+
+      if pair do
+        Logger.debug("""
+        Received end-of-candidates. There are no checks waiting or in-progress. \
+        Enqueuing pair for nomination: #{inspect(pair)}"
+        """)
+
+        pair = %CandidatePair{pair | state: :waiting, nominate?: true}
+        # TODO use triggered check queue
+        state = put_in(state, [:checklist], pair)
+        {:noreply, state}
+      else
+        Logger.debug("""
+        Received end-of-candidates but there are no valid pairs and no checks waiting or in-progress. \
+        ICE failed.
+        """)
+
+        send(state.controlling_process, {self(), :failed})
+        {:noreply, state}
+      end
+    end
   end
 
   @impl true
@@ -290,12 +349,24 @@ defmodule ExICE.ICEAgent do
             {%CandidatePair{} = pair, idx} =
               find_pair_with_index(state.checklist, local_cand, remote_cand)
 
-            # TODO use XORMappedAddress
-            pair = %CandidatePair{pair | state: :succeeded}
-            state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-            Logger.debug("New valid pair: #{inspect(pair)}")
-            send(state.controlling_process, {self(), :connected})
-            %{state | valid_pairs: [pair | state.valid_pairs]}
+            cond do
+              pair.nominate? ->
+                pair = %CandidatePair{pair | state: :succeeded, nominate?: false, nominated?: true}
+                state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+                Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
+                send(state.controlling_process, {self(), {:selected_pair, pair}})
+                %{state | selected_pair: pair}
+
+              state.eoc? and
+
+              true ->
+                # TODO use XORMappedAddress
+                pair = %CandidatePair{pair | state: :succeeded}
+                state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+                Logger.debug("New valid pair: #{inspect(pair)}")
+                send(state.controlling_process, {self(), :connected})
+                %{state | valid_pairs: [pair | state.valid_pairs]}
+            end
           else
             Logger.warn("""
             Ignoring conn check response, non-symmetric src and dst addresses.
@@ -340,7 +411,9 @@ defmodule ExICE.ICEAgent do
       send(state.controlling_process, {self(), {:new_candidate, Candidate.marshal(cand)}})
     end
 
-    state
+    send(state.controlling_process, {self(), :gathering_done})
+
+    %{state | gathering_state: :done}
   end
 
   defp find_pair_with_index(pairs, pair) do
@@ -380,11 +453,23 @@ defmodule ExICE.ICEAgent do
         %ICEControlled{tie_breaker: 2}
       end
 
+    attrs = [
+      %Username{value: "#{state.remote_ufrag}:#{state.local_ufrag}"},
+      role_attr
+    ]
+
+    # we should never be :controlled when `nominate?`
+    # is true but to make sure we check against correct
+    # role too
+    attrs =
+      if pair.nominate? and state.role == :controlling do
+        attrs ++ [%UseCandidate{}]
+      else
+        attrs
+      end
+
     req =
-      Message.new(type, [
-        %Username{value: "#{state.remote_ufrag}:#{state.local_ufrag}"},
-        role_attr
-      ])
+      Message.new(type, attrs)
       |> Message.with_integrity(state.remote_pwd)
       |> Message.with_fingerprint()
 
