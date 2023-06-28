@@ -202,9 +202,17 @@ defmodule ExICE.ICEAgent do
       {:noreply, state}
     else
       # TODO check whether gathering process has finished
-      pair = Enum.max_by(state.valid_pairs, fn pair -> pair.priority end)
+      # pair = Enum.max_by(state.valid_pairs, fn pair -> pair.priority end)
 
-      if pair do
+      pair_idx =
+        state.checklist
+        |> Enum.with_index()
+        |> Enum.filter(fn {pair, _idx} -> pair.state == :succeeded end)
+        |> Enum.max_by(fn {pair, _idx} -> pair.priority end)
+
+      if pair_idx do
+        {pair, idx} = pair_idx
+
         Logger.debug("""
         Received end-of-candidates. There are no checks waiting or in-progress. \
         Enqueuing pair for nomination: #{inspect(pair)}"
@@ -212,7 +220,7 @@ defmodule ExICE.ICEAgent do
 
         pair = %CandidatePair{pair | state: :waiting, nominate?: true}
         # TODO use triggered check queue
-        state = put_in(state, [:checklist], pair)
+        state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
         {:noreply, state}
       else
         Logger.debug("""
@@ -241,6 +249,8 @@ defmodule ExICE.ICEAgent do
       |> Enum.filter(fn {pair, _idx} -> pair.state == :waiting end)
       |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
 
+    in_progress = Enum.any?(state.checklist, fn pair -> pair.state == :waiting end)
+
     state =
       case pair_idx do
         {pair, idx} ->
@@ -251,10 +261,43 @@ defmodule ExICE.ICEAgent do
           %{state | checklist: List.update_at(state.checklist, idx, fn _ -> pair end)}
 
         nil ->
-          state
+          if not in_progress and state.role == :controlling do
+            # nominate pair
+            # TODO check whether gathering process has finished
+            # pair = Enum.max_by(state.valid_pairs, fn pair -> pair.priority end)
+
+            pair_idx =
+              state.checklist
+              |> Enum.with_index()
+              |> Enum.filter(fn {pair, _idx} -> pair.state == :succeeded end)
+              |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
+
+            if pair_idx do
+              {pair, idx} = pair_idx
+
+              Logger.debug("""
+              Enqueuing pair for nomination: #{inspect(pair)}"
+              """)
+
+              pair = %CandidatePair{pair | state: :waiting, nominate?: true}
+              # TODO use triggered check queue
+              state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+
+              {_, state} = handle_info(:ta_timeout, state)
+              state
+            else
+              send(state.controlling_process, {self(), :failed})
+              state
+            end
+          else
+            state
+          end
       end
 
-    Process.send_after(self(), :ta_timeout, @ta_timeout)
+    if state.selected_pair == nil do
+      Process.send_after(self(), :ta_timeout, @ta_timeout)
+    end
+
     {:noreply, state}
   end
 
@@ -314,7 +357,7 @@ defmodule ExICE.ICEAgent do
           case find_cand(state.remote_cands, src_ip, src_port) do
             nil ->
               # TODO what about priority
-              cand = Candidate.new(:prflx, nil, nil, src_ip, src_port, nil)
+              cand = Candidate.new(:prflx, src_ip, src_port, nil, nil, nil)
               Logger.debug("Adding new peer reflexive candidate: #{inspect(cand)}")
               state = %{state | remote_cands: [cand | state.remote_cands]}
               {cand, state}
@@ -340,41 +383,41 @@ defmodule ExICE.ICEAgent do
 
         if conn_check do
           # if there is conn_check, there must be remote cand
-          %Candidate{} = remote_cand = find_cand(state.remote_cands, src_ip, src_port)
+          {conn_check_src, {remote_cand_address, remote_cand_port} = conn_check_dst} = conn_check
 
-          {conn_check_src, conn_check_dst} = conn_check
+          %Candidate{} =
+            remote_cand = find_cand(state.remote_cands, remote_cand_address, remote_cand_port)
 
+          {%CandidatePair{} = pair, idx} =
+            find_pair_with_index(state.checklist, local_cand, remote_cand)
+
+          # check that the source and destination transport
+          # adresses are symmetric
           if {src_ip, src_port} == conn_check_dst and
                {local_cand.base_address, local_cand.base_port} == conn_check_src do
-            {%CandidatePair{} = pair, idx} =
-              find_pair_with_index(state.checklist, local_cand, remote_cand)
-
-            cond do
-              pair.nominate? ->
-                pair = %CandidatePair{pair | state: :succeeded, nominate?: false, nominated?: true}
-                state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-                Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
-                send(state.controlling_process, {self(), {:selected_pair, pair}})
-                %{state | selected_pair: pair}
-
-              state.eoc? and
-
-              true ->
-                # TODO use XORMappedAddress
-                pair = %CandidatePair{pair | state: :succeeded}
-                state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-                Logger.debug("New valid pair: #{inspect(pair)}")
-                send(state.controlling_process, {self(), :connected})
-                %{state | valid_pairs: [pair | state.valid_pairs]}
+            if pair.nominate? do
+              pair = %CandidatePair{pair | state: :succeeded, nominate?: false, nominated?: true}
+              state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+              Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
+              send(state.controlling_process, {self(), {:selected_pair, pair}})
+              %{state | selected_pair: pair}
+            else
+              # TODO use XORMappedAddress
+              pair = %CandidatePair{pair | state: :succeeded}
+              state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+              Logger.debug("New valid pair: #{inspect(pair)}")
+              send(state.controlling_process, {self(), :connected})
+              %{state | valid_pairs: [pair | state.valid_pairs]}
             end
           else
             Logger.warn("""
             Ignoring conn check response, non-symmetric src and dst addresses.
             Send from: #{inspect(conn_check_src)}, to: #{inspect(conn_check_dst)}
-            Recv from: #{inspect({src_ip, src_port})}, on: #{inspect(local_cand.base_address, local_cand.base_port)}
+            Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base_address, local_cand.base_port})}
             """)
 
-            state
+            pair = %CandidatePair{pair | state: :failed}
+            update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
           end
         else
           # TODO should we have remote cand

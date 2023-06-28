@@ -76,7 +76,7 @@ defmodule ExICE.Gatherer do
       Logger.debug("Rejecting unsupported IPv6: #{inspect(ip)}.")
     end
 
-    res
+    true
   end
 
   defp get_addrs({_int_name, int}) do

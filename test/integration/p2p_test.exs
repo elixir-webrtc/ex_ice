@@ -34,6 +34,7 @@ defmodule ExICE.Integration.P2PTest do
         p2p(agent1, agent2, a1_status, a2_status)
 
       {^agent1, {:selected_pair, _p}} ->
+        IO.inspect(:ping1)
         p2p(agent1, agent2, true, a2_status)
 
       {^agent2, {:new_candidate, cand}} ->
@@ -49,6 +50,7 @@ defmodule ExICE.Integration.P2PTest do
         p2p(agent1, agent2, a1_status, a2_status)
 
       {^agent2, {:selected_pair, _p}} ->
+        IO.inspect(:ping2)
         p2p(agent1, agent2, a1_status, true)
     after
       2000 -> false
