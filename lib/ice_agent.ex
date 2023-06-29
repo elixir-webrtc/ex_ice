@@ -8,9 +8,8 @@ defmodule ExICE.ICEAgent do
 
   require Logger
 
-  alias ExICE.Attribute.UseCandidate
   alias ExICE.{Candidate, CandidatePair, Gatherer}
-  alias ExICE.Attribute.{ICEControlling, ICEControlled}
+  alias ExICE.Attribute.{ICEControlling, ICEControlled, UseCandidate}
 
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
@@ -143,6 +142,7 @@ defmodule ExICE.ICEAgent do
   @impl true
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
     {:ok, remote_cand} = Candidate.unmarshal(remote_cand)
+    Logger.debug("New remote candidate #{inspect(remote_cand)}")
     start_ta? = state.checklist == []
 
     remote_cand_family = Candidate.family(remote_cand)
@@ -184,6 +184,7 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_cast(:end_of_candidates, %{role: :controlled} = state) do
+    Logger.debug("Received end-of-candidates in role controlled.")
     {:noreply, %{state | eoc: true}}
   end
 
@@ -337,6 +338,7 @@ defmodule ExICE.ICEAgent do
         password = state.local_pwd
         {:ok, key} = Message.authenticate_st(msg, username, password)
         true = Message.check_fingerprint(msg)
+        use_candidate = Message.get_attribute(msg, UseCandidate)
 
         type = %Type{class: :success_response, method: :binding}
         family = ExICE.Utils.family(src_ip)
@@ -371,11 +373,41 @@ defmodule ExICE.ICEAgent do
         # TODO use triggered check queue
         case find_pair_with_index(state.checklist, pair) do
           nil ->
-            Logger.debug("Adding new candidate pair: #{inspect(pair)}")
-            %{state | checklist: [pair | state.checklist]}
+            if use_candidate do
+              Logger.debug(
+                "Adding new candidate pair that will be nominated after successfull conn check: #{inspect(pair)}"
+              )
 
-          {%CandidatePair{}, _idx} ->
-            state
+              pair = %CandidatePair{pair | nominate?: true}
+              %{state | checklist: [pair | state.checklist]}
+            else
+              Logger.debug("Adding new candidate pair: #{inspect(pair)}")
+              %{state | checklist: [pair | state.checklist]}
+            end
+
+          {%CandidatePair{} = pair, idx} ->
+            if use_candidate do
+              if pair.state == :succeeded do
+                # TODO should we call this selected or nominated pair
+                Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair)}")
+                pair = %CandidatePair{pair | nominated?: true}
+                send(state.controlling_process, {self(), {:selected_pair, pair}})
+                state = %{state | selected_pair: pair}
+                update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
+              else
+                # TODO should we check if this pair is not in failed?
+                Logger.debug("""
+                Nomination request on pair that hasn't been verified yet.
+                We will nominate pair once conn check passes.
+                Pair: #{inspect(pair)}
+                """)
+
+                pair = %CandidatePair{pair | nominate?: true}
+                update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
+              end
+            else
+              state
+            end
         end
 
       %Type{class: :success_response, method: :binding} ->
@@ -501,9 +533,8 @@ defmodule ExICE.ICEAgent do
       role_attr
     ]
 
-    # we should never be :controlled when `nominate?`
-    # is true but to make sure we check against correct
-    # role too
+    # we can nominate only when being the controlling agent
+    # the controlled agent uses nominate? flag according to 7.3.1.5
     attrs =
       if pair.nominate? and state.role == :controlling do
         attrs ++ [%UseCandidate{}]
