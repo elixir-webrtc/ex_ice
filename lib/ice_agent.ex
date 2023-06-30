@@ -304,22 +304,20 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_info({:udp, socket, src_ip, src_port, packet}, state) do
-    state =
-      if ExSTUN.is_stun(packet) do
-        case ExSTUN.Message.decode(packet) do
-          {:ok, msg} ->
-            handle_stun_msg(socket, src_ip, src_port, msg, state)
+    if ExSTUN.is_stun(packet) do
+      case ExSTUN.Message.decode(packet) do
+        {:ok, msg} ->
+          state = handle_stun_msg(socket, src_ip, src_port, msg, state)
+          {:noreply, state}
 
-          {:error, reason} ->
-            Logger.warn("Couldn't decode stun message: #{inspect(reason)}")
-            state
-        end
-      else
-        Logger.warn("Got non-stun packet: #{inspect(packet)}. Ignoring...")
-        state
+        {:error, reason} ->
+          Logger.warn("Couldn't decode stun message: #{inspect(reason)}")
+          {:noreply, state}
       end
-
-    {:noreply, state}
+    else
+      Logger.warn("Got non-stun packet: #{inspect(packet)}. Ignoring...")
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -330,143 +328,149 @@ defmodule ExICE.ICEAgent do
 
   defp handle_stun_msg(socket, src_ip, src_port, %Message{} = msg, state) do
     # TODO revisit 7.3.1.4
-    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
-
     case msg.type do
       %Type{class: :request, method: :binding} ->
-        username = state.local_ufrag <> ":" <> state.remote_ufrag
-        password = state.local_pwd
-        {:ok, key} = Message.authenticate_st(msg, username, password)
-        true = Message.check_fingerprint(msg)
-        use_candidate = Message.get_attribute(msg, UseCandidate)
-
-        type = %Type{class: :success_response, method: :binding}
-        family = ExICE.Utils.family(src_ip)
-
-        resp =
-          Message.new(msg.transaction_id, type, [
-            %XORMappedAddress{family: family, address: src_ip, port: src_port}
-          ])
-          |> Message.with_integrity(key)
-          |> Message.with_fingerprint()
-          |> Message.encode()
-
-        dst = {src_ip, src_port}
-
-        do_send(socket, dst, resp)
-
-        {remote_cand, state} =
-          case find_cand(state.remote_cands, src_ip, src_port) do
-            nil ->
-              # TODO what about priority
-              cand = Candidate.new(:prflx, src_ip, src_port, nil, nil, nil)
-              Logger.debug("Adding new peer reflexive candidate: #{inspect(cand)}")
-              state = %{state | remote_cands: [cand | state.remote_cands]}
-              {cand, state}
-
-            %Candidate{} = cand ->
-              {cand, state}
-          end
-
-        pair = CandidatePair.new(local_cand, remote_cand, state.role, :waiting)
-
-        # TODO use triggered check queue
-        case find_pair_with_index(state.checklist, pair) do
-          nil ->
-            if use_candidate do
-              Logger.debug(
-                "Adding new candidate pair that will be nominated after successfull conn check: #{inspect(pair)}"
-              )
-
-              pair = %CandidatePair{pair | nominate?: true}
-              %{state | checklist: [pair | state.checklist]}
-            else
-              Logger.debug("Adding new candidate pair: #{inspect(pair)}")
-              %{state | checklist: [pair | state.checklist]}
-            end
-
-          {%CandidatePair{} = pair, idx} ->
-            if use_candidate do
-              if pair.state == :succeeded do
-                # TODO should we call this selected or nominated pair
-                Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair)}")
-                pair = %CandidatePair{pair | nominated?: true}
-                send(state.controlling_process, {self(), {:selected_pair, pair}})
-                state = %{state | selected_pair: pair}
-                update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
-              else
-                # TODO should we check if this pair is not in failed?
-                Logger.debug("""
-                Nomination request on pair that hasn't been verified yet.
-                We will nominate pair once conn check passes.
-                Pair: #{inspect(pair)}
-                """)
-
-                pair = %CandidatePair{pair | nominate?: true}
-                update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
-              end
-            else
-              state
-            end
-        end
+        handle_binding_request(socket, src_ip, src_port, msg, state)
 
       %Type{class: :success_response, method: :binding} ->
-        {conn_check, state} = pop_in(state, [:conn_checks, msg.transaction_id])
-
-        if conn_check do
-          # if there is conn_check, there must be remote cand
-          {conn_check_src, {remote_cand_address, remote_cand_port} = conn_check_dst} = conn_check
-
-          %Candidate{} =
-            remote_cand = find_cand(state.remote_cands, remote_cand_address, remote_cand_port)
-
-          {%CandidatePair{} = pair, idx} =
-            find_pair_with_index(state.checklist, local_cand, remote_cand)
-
-          # check that the source and destination transport
-          # adresses are symmetric
-          if {src_ip, src_port} == conn_check_dst and
-               {local_cand.base_address, local_cand.base_port} == conn_check_src do
-            if pair.nominate? do
-              pair = %CandidatePair{pair | state: :succeeded, nominate?: false, nominated?: true}
-              state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-              Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
-              send(state.controlling_process, {self(), {:selected_pair, pair}})
-              %{state | selected_pair: pair}
-            else
-              # TODO use XORMappedAddress
-              pair = %CandidatePair{pair | state: :succeeded}
-              state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-              Logger.debug("New valid pair: #{inspect(pair)}")
-              send(state.controlling_process, {self(), :connected})
-              %{state | valid_pairs: [pair | state.valid_pairs]}
-            end
-          else
-            Logger.warn("""
-            Ignoring conn check response, non-symmetric src and dst addresses.
-            Send from: #{inspect(conn_check_src)}, to: #{inspect(conn_check_dst)}
-            Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base_address, local_cand.base_port})}
-            """)
-
-            pair = %CandidatePair{pair | state: :failed}
-            update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-          end
-        else
-          # TODO should we have remote cand
-          # to log it instead of src ip and port?
-          Logger.warn("""
-          Ignoring conn check response with unknown tid: #{msg.transaction_id},
-          local_cand: #{inspect(local_cand)},
-          src: #{src_ip}:#{src_port}"
-          """)
-
-          state
-        end
+        handle_binding_response(socket, src_ip, src_port, msg, state)
 
       other ->
         Logger.warn("Unknown msg: #{inspect(other)}")
         state
     end
+  end
+
+  defp handle_binding_request(socket, src_ip, src_port, msg, state) do
+    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
+    # username = state.local_ufrag <> ":" <> state.remote_ufrag
+    # TODO handle error and check username
+    {:ok, key} = Message.authenticate_st(msg, state.local_pwd)
+    true = Message.check_fingerprint(msg)
+    use_candidate = Message.get_attribute(msg, UseCandidate)
+
+    type = %Type{class: :success_response, method: :binding}
+
+    resp =
+      Message.new(msg.transaction_id, type, [%XORMappedAddress{address: src_ip, port: src_port}])
+      |> Message.with_integrity(key)
+      |> Message.with_fingerprint()
+      |> Message.encode()
+
+    do_send(socket, {src_ip, src_port}, resp)
+
+    {remote_cand, state} =
+      case find_cand(state.remote_cands, src_ip, src_port) do
+        nil ->
+          # TODO what about priority
+          cand = Candidate.new(:prflx, src_ip, src_port, nil, nil, nil)
+          Logger.debug("Adding new peer reflexive candidate: #{inspect(cand)}")
+          state = %{state | remote_cands: [cand | state.remote_cands]}
+          {cand, state}
+
+        %Candidate{} = cand ->
+          {cand, state}
+      end
+
+    pair = CandidatePair.new(local_cand, remote_cand, state.role, :waiting)
+
+    # TODO use triggered check queue
+    case find_pair_with_index(state.checklist, pair) do
+      nil ->
+        if use_candidate do
+          Logger.debug(
+            "Adding new candidate pair that will be nominated after successfull conn check: #{inspect(pair)}"
+          )
+
+          pair = %CandidatePair{pair | nominate?: true}
+          %{state | checklist: [pair | state.checklist]}
+        else
+          Logger.debug("Adding new candidate pair: #{inspect(pair)}")
+          %{state | checklist: [pair | state.checklist]}
+        end
+
+      {%CandidatePair{} = pair, idx} ->
+        if use_candidate do
+          if pair.state == :succeeded do
+            # TODO should we call this selected or nominated pair
+            Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair)}")
+            pair = %CandidatePair{pair | nominated?: true}
+            state = %{state | selected_pair: pair}
+            send(state.controlling_process, {self(), {:selected_pair, pair}})
+            update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
+          else
+            # TODO should we check if this pair is not in failed?
+            Logger.debug("""
+            Nomination request on pair that hasn't been verified yet.
+            We will nominate pair once conn check passes.
+            Pair: #{inspect(pair)}
+            """)
+
+            pair = %CandidatePair{pair | nominate?: true}
+            update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
+          end
+        else
+          state
+        end
+    end
+  end
+
+  defp handle_binding_response(socket, src_ip, src_port, msg, state)
+       when is_map_key(state.conn_checks, msg.transaction_id) do
+    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
+
+    {{conn_check_src, {remote_cand_address, remote_cand_port} = conn_check_dst}, state} =
+      pop_in(state, [:conn_checks, msg.transaction_id])
+
+    # if there is conn_check, there must be remote cand
+    %Candidate{} =
+      remote_cand = find_cand(state.remote_cands, remote_cand_address, remote_cand_port)
+
+    {%CandidatePair{} = pair, idx} =
+      find_pair_with_index(state.checklist, local_cand, remote_cand)
+
+    # check that the source and destination transport
+    # adresses are symmetric
+    if {src_ip, src_port} == conn_check_dst and
+         {local_cand.base_address, local_cand.base_port} == conn_check_src do
+      if pair.nominate? do
+        pair = %CandidatePair{pair | state: :succeeded, nominate?: false, nominated?: true}
+        state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+        Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
+        send(state.controlling_process, {self(), {:selected_pair, pair}})
+        %{state | selected_pair: pair}
+      else
+        # TODO use XORMappedAddress
+        pair = %CandidatePair{pair | state: :succeeded}
+        state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+        Logger.debug("New valid pair: #{inspect(pair)}")
+        send(state.controlling_process, {self(), :connected})
+        %{state | valid_pairs: [pair | state.valid_pairs]}
+      end
+    else
+      Logger.warn("""
+      Ignoring conn check response, non-symmetric src and dst addresses.
+      Send from: #{inspect(conn_check_src)}, to: #{inspect(conn_check_dst)}
+      Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base_address, local_cand.base_port})}
+      """)
+
+      pair = %CandidatePair{pair | state: :failed}
+      update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+    end
+  end
+
+  defp handle_binding_response(socket, src_ip, src_port, msg, state) do
+    # TODO should we have remote cand
+    # to log it instead of src ip and port?
+    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
+
+    Logger.warn("""
+    Ignoring conn check response with unknown tid: #{msg.transaction_id},
+    local_cand: #{inspect(local_cand)},
+    src: #{src_ip}:#{src_port}"
+    """)
+
+    state
   end
 
   defp do_gather_candidates(state) do
