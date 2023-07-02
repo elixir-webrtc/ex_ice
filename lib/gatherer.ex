@@ -10,13 +10,15 @@ defmodule ExICE.Gatherer do
 
   require Logger
 
-  @spec gather_host_candidates() :: {:ok, [Candidate.t()]} | {:error, term()}
-  def gather_host_candidates() do
+  @spec gather_host_candidates((:inet.ip_address() -> boolean)) ::
+          {:ok, [Candidate.t()]} | {:error, term()}
+  def gather_host_candidates(ip_filter \\ fn _ -> true end) do
     with {:ok, ints} <- :inet.getifaddrs() do
       ips =
         ints
         |> Stream.reject(&is_loopback_if(&1))
         |> Stream.flat_map(&get_addrs(&1))
+        |> Stream.filter(&ip_filter.(&1))
         |> Stream.reject(&is_unsupported_ipv6(&1))
         |> Enum.to_list()
 
@@ -76,7 +78,7 @@ defmodule ExICE.Gatherer do
       Logger.debug("Rejecting unsupported IPv6: #{inspect(ip)}.")
     end
 
-    true
+    res
   end
 
   defp get_addrs({_int_name, int}) do

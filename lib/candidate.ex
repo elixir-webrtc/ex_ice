@@ -17,6 +17,7 @@ defmodule ExICE.Candidate do
           type: :host | :srflx | :prflx
         }
 
+  @derive {Inspect, except: [:socket]}
   defstruct [
     :address,
     :base_address,

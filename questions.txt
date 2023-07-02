@@ -1,2 +1,3 @@
 1. Should we filter out bridges (like those created by docker) when gathering host candidates?
 2. When conn check req and resp address might not be symmetric?
+3. How does iptables work? (In particular NAT table, and MASQUERADE and DNAT targets)

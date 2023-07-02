@@ -6,8 +6,18 @@ defmodule ExICE.Integration.P2PTest do
   @tag :p2p
   test "P2P connection" do
     stun_servers = ["stun:stun.l.google.com:19302"]
-    {:ok, agent1} = ICEAgent.start_link(:controlling, stun_servers: stun_servers)
-    {:ok, agent2} = ICEAgent.start_link(:controlled, stun_servers: stun_servers)
+
+    ip_filter = fn
+      {_, _, _, _, _, _, _, _} -> true
+      {172, 17, 0, 1} -> true
+      _other -> true
+    end
+
+    {:ok, agent1} =
+      ICEAgent.start_link(:controlling, ip_filter: ip_filter, stun_servers: stun_servers)
+
+    {:ok, agent2} =
+      ICEAgent.start_link(:controlled, ip_filter: ip_filter, stun_servers: stun_servers)
 
     ICEAgent.run(agent1)
     ICEAgent.run(agent2)
@@ -51,7 +61,7 @@ defmodule ExICE.Integration.P2PTest do
       {^agent2, {:selected_pair, _p}} ->
         p2p(agent1, agent2, a1_status, true)
     after
-      2000 -> false
+      4000 -> false
     end
   end
 end

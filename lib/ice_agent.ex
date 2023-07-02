@@ -21,7 +21,8 @@ defmodule ExICE.ICEAgent do
   @type role() :: :controlling | :controlled
 
   @type opts() :: [
-          stun_servers :: [String.t()]
+          ip_filter: (:inet.ip_address() -> boolean),
+          stun_servers: [String.t()]
         ]
 
   @spec start_link(role(), opts()) :: GenServer.on_start()
@@ -83,6 +84,7 @@ defmodule ExICE.ICEAgent do
       started?: false,
       controlling_process: Keyword.fetch!(opts, :controlling_process),
       gather_sup: gather_sup,
+      ip_filter: opts[:ip_filter],
       role: Keyword.fetch!(opts, :role),
       checklist: [],
       tr_check_q: [],
@@ -474,7 +476,7 @@ defmodule ExICE.ICEAgent do
   end
 
   defp do_gather_candidates(state) do
-    {:ok, host_candidates} = Gatherer.gather_host_candidates()
+    {:ok, host_candidates} = Gatherer.gather_host_candidates(state.ip_filter)
     # TODO should we override?
     state = %{state | local_cands: state.local_cands ++ host_candidates}
 
