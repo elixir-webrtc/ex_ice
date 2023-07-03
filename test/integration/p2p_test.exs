@@ -39,7 +39,7 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.set_remote_credentials(agent2, ufrag, passwd)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent1, :gathering_done} ->
+      {^agent1, :gathering_complete} ->
         ICEAgent.end_of_candidates(agent2)
         p2p(agent1, agent2, a1_status, a2_status)
 
@@ -54,7 +54,7 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.set_remote_credentials(agent1, ufrag, passwd)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent2, :gathering_done} ->
+      {^agent2, :gathering_complete} ->
         ICEAgent.end_of_candidates(agent1)
         p2p(agent1, agent2, a1_status, a2_status)
 

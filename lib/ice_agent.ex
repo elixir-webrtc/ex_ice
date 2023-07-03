@@ -59,8 +59,6 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def init(opts) do
-    {:ok, gather_sup} = Task.Supervisor.start_link()
-
     stun_servers =
       opts
       |> Keyword.get(:stun_servers, [])
@@ -83,7 +81,7 @@ defmodule ExICE.ICEAgent do
     state = %{
       started?: false,
       controlling_process: Keyword.fetch!(opts, :controlling_process),
-      gather_sup: gather_sup,
+      gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
       role: Keyword.fetch!(opts, :role),
       checklist: [],
@@ -238,63 +236,11 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def handle_info({:new_candidate, cand} = msg, state) do
-    # TODO remove self()
-    send(state.controlling_process, {self(), msg})
-    {:noreply, %{state | local_cands: state.local_cands ++ [cand]}}
-  end
-
-  @impl true
   def handle_info(:ta_timeout, state) do
-    pair_idx =
-      state.checklist
-      |> Enum.with_index()
-      |> Enum.filter(fn {pair, _idx} -> pair.state == :waiting end)
-      |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
-
-    in_progress = Enum.any?(state.checklist, fn pair -> pair.state == :waiting end)
-
     state =
-      case pair_idx do
-        {pair, idx} ->
-          Logger.debug("Sending conn check on pair: #{inspect(pair)}")
-
-          {pair, state} = send_conn_check(pair, state)
-
-          %{state | checklist: List.update_at(state.checklist, idx, fn _ -> pair end)}
-
-        nil ->
-          if not in_progress and state.role == :controlling do
-            # nominate pair
-            # TODO check whether gathering process has finished
-            # pair = Enum.max_by(state.valid_pairs, fn pair -> pair.priority end)
-
-            pair_idx =
-              state.checklist
-              |> Enum.with_index()
-              |> Enum.filter(fn {pair, _idx} -> pair.state == :succeeded end)
-              |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
-
-            if pair_idx do
-              {pair, idx} = pair_idx
-
-              Logger.debug("""
-              Enqueuing pair for nomination: #{inspect(pair)}"
-              """)
-
-              pair = %CandidatePair{pair | state: :waiting, nominate?: true}
-              # TODO use triggered check queue
-              state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-
-              {_, state} = handle_info(:ta_timeout, state)
-              state
-            else
-              send(state.controlling_process, {self(), :failed})
-              state
-            end
-          else
-            state
-          end
+      case get_next_gathering_transaction(state.gathering_transactions) do
+        {_t_id, transaction} -> handle_gathering_transaction(transaction, state)
+        nil -> handle_checklist(state)
       end
 
     if state.selected_pair == nil do
@@ -326,6 +272,77 @@ defmodule ExICE.ICEAgent do
   def handle_info(msg, state) do
     Logger.warn("Got unexpected msg: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  defp get_next_gathering_transaction(gathering_transactions) do
+    Enum.find(gathering_transactions, fn {_t_id, t} -> t.state == :waiting end)
+  end
+
+  defp handle_gathering_transaction(
+         %{t_id: t_id, host_cand: host_cand, stun_server: stun_server} = t,
+         state
+       ) do
+    Logger.debug("""
+    Sending binding request to gather srflx candidate for: 
+    host_cand: #{inspect(host_cand)}, 
+    stun_server: #{inspect(stun_server)}
+    """)
+
+    :ok = Gatherer.gather_srflx_candidate(t_id, host_cand, stun_server)
+    t = %{t | state: :in_progress}
+    put_in(state, [:gathering_transactions, t_id], t)
+  end
+
+  defp handle_checklist(state) do
+    pair_idx =
+      state.checklist
+      |> Enum.with_index()
+      |> Enum.filter(fn {pair, _idx} -> pair.state == :waiting end)
+      |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
+
+    in_progress = Enum.any?(state.checklist, fn pair -> pair.state == :waiting end)
+
+    case pair_idx do
+      {pair, idx} ->
+        Logger.debug("Sending conn check on pair: #{inspect(pair)}")
+
+        {pair, state} = send_conn_check(pair, state)
+
+        %{state | checklist: List.update_at(state.checklist, idx, fn _ -> pair end)}
+
+      nil ->
+        if not in_progress and state.role == :controlling do
+          # nominate pair
+          # TODO check whether gathering process has finished
+          # pair = Enum.max_by(state.valid_pairs, fn pair -> pair.priority end)
+
+          pair_idx =
+            state.checklist
+            |> Enum.with_index()
+            |> Enum.filter(fn {pair, _idx} -> pair.state == :succeeded end)
+            |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
+
+          if pair_idx do
+            {pair, idx} = pair_idx
+
+            Logger.debug("""
+            Enqueuing pair for nomination: #{inspect(pair)}"
+            """)
+
+            pair = %CandidatePair{pair | state: :waiting, nominate?: true}
+            # TODO use triggered check queue
+            state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+
+            {_, state} = handle_info(:ta_timeout, state)
+            state
+          else
+            send(state.controlling_process, {self(), :failed})
+            state
+          end
+        else
+          state
+        end
+    end
   end
 
   defp handle_stun_msg(socket, src_ip, src_port, %Message{} = msg, state) do
@@ -417,6 +434,34 @@ defmodule ExICE.ICEAgent do
     end
   end
 
+  defp handle_binding_response(_socket, _src_ip, _src_port, msg, state)
+       when is_map_key(state.gathering_transactions, msg.transaction_id) do
+    t = Map.fetch!(state.gathering_transactions, msg.transaction_id)
+
+    {:ok, %XORMappedAddress{address: address, port: port}} =
+      Message.get_attribute(msg, XORMappedAddress)
+
+    c =
+      Candidate.new(
+        :srflx,
+        address,
+        port,
+        t.host_cand.address,
+        t.host_cand.port,
+        t.host_cand.socket
+      )
+
+    Logger.debug("New srflx candidate: #{inspect(c)}")
+
+    send(state.controlling_process, {:new_candidate, Candidate.marshal(c)})
+
+    # TODO we should create pairs
+
+    state
+    |> update_in([:local_cands], fn local_cands -> [c | local_cands] end)
+    |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
+  end
+
   defp handle_binding_response(socket, src_ip, src_port, msg, state)
        when is_map_key(state.conn_checks, msg.transaction_id) do
     %Candidate{} = local_cand = find_cand(state.local_cands, socket)
@@ -469,7 +514,7 @@ defmodule ExICE.ICEAgent do
     Logger.warn("""
     Ignoring conn check response with unknown tid: #{msg.transaction_id},
     local_cand: #{inspect(local_cand)},
-    src: #{src_ip}:#{src_port}"
+    src: #{inspect(src_ip)}:#{src_port}"
     """)
 
     state
@@ -477,24 +522,34 @@ defmodule ExICE.ICEAgent do
 
   defp do_gather_candidates(state) do
     {:ok, host_candidates} = Gatherer.gather_host_candidates(state.ip_filter)
-    # TODO should we override?
-    state = %{state | local_cands: state.local_cands ++ host_candidates}
-
-    # for stun_server <- state.stun_servers, host_cand <- host_candidates do
-    #   Task.Supervisor.start_child(state.gather_sup, ExICE.Gatherer, :gather_srflx_candidate, [
-    #     self(),
-    #     host_cand,
-    #     stun_server
-    #   ])
-    # end
 
     for cand <- host_candidates do
       send(state.controlling_process, {self(), {:new_candidate, Candidate.marshal(cand)}})
     end
 
-    send(state.controlling_process, {self(), :gathering_done})
+    # TODO should we override?
+    state = %{state | local_cands: state.local_cands ++ host_candidates}
 
-    %{state | gathering_state: :done}
+    gathering_transactions =
+      for stun_server <- state.stun_servers, host_cand <- host_candidates, into: %{} do
+        <<t_id::12*8>> = :crypto.strong_rand_bytes(12)
+
+        t = %{
+          t_id: t_id,
+          host_cand: host_cand,
+          stun_server: stun_server,
+          state: :waiting
+        }
+
+        {t_id, t}
+      end
+
+    if gathering_transactions == %{} do
+      send(state.controlling_process, {self(), :gathering_complete})
+      %{state | gathering_state: :complete}
+    else
+      %{state | gathering_transactions: gathering_transactions, gathering_state: :gathering}
+    end
   end
 
   defp find_pair_with_index(pairs, pair) do

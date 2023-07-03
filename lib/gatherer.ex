@@ -4,7 +4,6 @@ defmodule ExICE.Gatherer do
   alias ExICE.Candidate
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
-  alias ExSTUN.Message.Attribute.XORMappedAddress
 
   import Bitwise
 
@@ -29,19 +28,10 @@ defmodule ExICE.Gatherer do
     end
   end
 
-  @spec gather_srflx_candidate(pid(), Candidate.t(), ExICE.URI.t()) :: :ok
-  def gather_srflx_candidate(controlling_process, host_candidate, stun_server) do
-    Logger.debug(
-      "Trying to gather srflx candidate for #{inspect(host_candidate)}, #{inspect(stun_server)}"
-    )
-
-    # try to gather srflx candidate
-    # if successful, send result back to controlling process
-    # if not, just terminate
-
+  @spec gather_srflx_candidate(integer(), Candidate.t(), ExICE.URI.t()) :: :ok
+  def gather_srflx_candidate(t_id, host_candidate, stun_server) do
     binding_request =
-      %Type{class: :request, method: :binding}
-      |> Message.new()
+      Message.new(t_id, %Type{class: :request, method: :binding}, [])
       |> Message.encode()
 
     {:ok, {:hostent, _, _, _, _, ips}} =
@@ -52,14 +42,6 @@ defmodule ExICE.Gatherer do
     ip = List.first(ips)
     port = stun_server.port
     :ok = :gen_udp.send(host_candidate.socket, {ip, port}, binding_request)
-
-    {:ok, {_addr, _port, binding_response}} = :gen_udp.recv(host_candidate.socket, 0)
-
-    {:ok, msg} = ExSTUN.Message.decode(binding_response)
-
-    Message.get_attribute(msg, XORMappedAddress)
-
-    send(controlling_process, {:new_candidate, nil})
     :ok
   end
 
