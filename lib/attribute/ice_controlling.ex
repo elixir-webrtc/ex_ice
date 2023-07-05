@@ -1,4 +1,6 @@
 defmodule ExICE.Attribute.ICEControlling do
+  @moduledoc false
+
   alias ExSTUN.Message.RawAttribute
 
   @behaviour ExSTUN.Message.Attribute

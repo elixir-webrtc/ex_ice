@@ -4,6 +4,9 @@ defmodule ExICE.CandidatePair do
   """
   require Logger
 
+  alias ExICE.ICEAgent
+  alias ExICE.Candidate
+
   @type state() :: :waiting | :in_progress | :succeeded | :failed | :frozen
 
   @type t() :: %__MODULE__{
@@ -23,6 +26,8 @@ defmodule ExICE.CandidatePair do
                 state: :frozen
               ]
 
+  @doc false
+  @spec new(Candidate.t(), Candidate.t(), ICEAgent.role(), state()) :: t()
   def new(local_cand, remote_cand, agent_role, state) do
     priority = priority(agent_role, local_cand, remote_cand)
 

@@ -602,7 +602,6 @@ defmodule ExICE.ICEAgent do
       |> Message.with_integrity(state.remote_pwd)
       |> Message.with_fingerprint()
 
-    src = {pair.local_cand.base_address, pair.local_cand.base_port}
     dst = {pair.remote_cand.address, pair.remote_cand.port}
 
     do_send(pair.local_cand.socket, dst, Message.encode(req))

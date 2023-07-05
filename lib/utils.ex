@@ -1,4 +1,6 @@
 defmodule ExICE.Utils do
+  @moduledoc false
+
   @spec family(:inet.ip_address()) :: :ipv4 | :ipv6
   def family(ip) do
     case ip do
