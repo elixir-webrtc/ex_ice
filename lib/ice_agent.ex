@@ -453,7 +453,7 @@ defmodule ExICE.ICEAgent do
 
     Logger.debug("New srflx candidate: #{inspect(c)}")
 
-    send(state.controlling_process, {:new_candidate, Candidate.marshal(c)})
+    send(state.controlling_process, {self(), {:new_candidate, Candidate.marshal(c)}})
 
     # TODO we should create pairs
 
@@ -464,22 +464,16 @@ defmodule ExICE.ICEAgent do
 
   defp handle_binding_response(socket, src_ip, src_port, msg, state)
        when is_map_key(state.conn_checks, msg.transaction_id) do
-    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
+    {%CandidatePair{} = pair, state} = pop_in(state, [:conn_checks, msg.transaction_id])
 
-    {{conn_check_src, {remote_cand_address, remote_cand_port} = conn_check_dst}, state} =
-      pop_in(state, [:conn_checks, msg.transaction_id])
+    {^pair, idx} = find_pair_with_index(state.checklist, pair)
 
-    # if there is conn_check, there must be remote cand
-    %Candidate{} =
-      remote_cand = find_cand(state.remote_cands, remote_cand_address, remote_cand_port)
-
-    {%CandidatePair{} = pair, idx} =
-      find_pair_with_index(state.checklist, local_cand, remote_cand)
+    {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
 
     # check that the source and destination transport
     # adresses are symmetric
-    if {src_ip, src_port} == conn_check_dst and
-         {local_cand.base_address, local_cand.base_port} == conn_check_src do
+    if {src_ip, src_port} == {pair.remote_cand.address, pair.remote_cand.port} and
+         socket == pair.local_cand.socket do
       if pair.nominate? do
         pair = %CandidatePair{pair | state: :succeeded, nominate?: false, nominated?: true}
         state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
@@ -497,8 +491,8 @@ defmodule ExICE.ICEAgent do
     else
       Logger.warn("""
       Ignoring conn check response, non-symmetric src and dst addresses.
-      Send from: #{inspect(conn_check_src)}, to: #{inspect(conn_check_dst)}
-      Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base_address, local_cand.base_port})}
+      Sent from: #{inspect({pair.local_cand.base_address, pair.local_cand.base_port})}, to: #{inspect({pair.remote_cand.address, pair.remote_cand.port})}
+      Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({socket_ip, socket_port})}
       """)
 
       pair = %CandidatePair{pair | state: :failed}
@@ -615,7 +609,7 @@ defmodule ExICE.ICEAgent do
 
     pair = %CandidatePair{pair | state: :in_progress}
 
-    state = put_in(state, [:conn_checks, req.transaction_id], {src, dst})
+    state = put_in(state, [:conn_checks, req.transaction_id], pair)
 
     {pair, state}
   end
