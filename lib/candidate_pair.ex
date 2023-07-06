@@ -15,7 +15,8 @@ defmodule ExICE.CandidatePair do
           nominated?: boolean(),
           priority: non_neg_integer(),
           remote_cand: Candidate.t(),
-          state: state()
+          state: state(),
+          valid?: boolean
         }
 
   @enforce_keys [:local_cand, :remote_cand, :priority]
@@ -23,7 +24,8 @@ defmodule ExICE.CandidatePair do
               [
                 nominate?: false,
                 nominated?: false,
-                state: :frozen
+                state: :frozen,
+                valid?: false
               ]
 
   @doc false
