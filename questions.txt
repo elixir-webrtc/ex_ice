@@ -8,3 +8,6 @@ and pruned if redundant - see section 6.1.2.4
 7. Is it possible not to prune some srflx candidate - sec 6.1.2.4?
 8. Is it possible to receive binding response to binding request with USE-CANDIDATE that will result in creating
 a new valid pair? sec 7.2.5.3.4
+9. A Trickle ICE agent MUST NOT pair a local candidate until it has been trickled to the remote party. 
+- How can we know that the candidate has been trickled to the remote party? Does any implementation
+exposes in its API ability to mark the candidate as trickled?

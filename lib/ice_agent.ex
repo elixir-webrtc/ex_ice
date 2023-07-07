@@ -152,37 +152,25 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New remote candidate #{inspect(remote_cand)}")
     start_ta? = state.checklist == []
 
-    remote_cand_family = Candidate.family(remote_cand)
+    local_cands = get_matching_candidates(state.local_cands, remote_cand)
 
-    local_cands = Enum.filter(state.local_cands, &(Candidate.family(&1) == remote_cand_family))
-
-    checklist_foundations =
-      for cand_pair <- state.checklist do
-        {cand_pair.local_cand.foundation, cand_pair.remote_cand.foundation}
-      end
+    checklist_foundations = get_checklist_foundations(state.checklist)
 
     new_pairs =
       for local_cand <- local_cands do
-        pair_state =
-          if {local_cand.foundation, remote_cand.foundation} in checklist_foundations do
-            :frozen
-          else
-            :waiting
-          end
-
+        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
         pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
-
         Logger.debug("New candidate pair #{inspect(pair)}")
         pair
       end
 
-    state = %{
+    state =
       state
-      | checklist: state.checklist ++ new_pairs,
-        remote_cands: state.remote_cands ++ [remote_cand]
-    }
+      |> update_in([:checklist], fn checklist -> prune_checklist(checklist ++ new_pairs) end)
+      |> update_in([:remote_cands], fn remote_cands -> remote_cands ++ [remote_cand] end)
 
     if start_ta? do
+      Logger.debug("Starting Ta timer")
       Process.send_after(self(), :ta_timeout, @ta_timeout)
     end
 
@@ -288,8 +276,8 @@ defmodule ExICE.ICEAgent do
          state
        ) do
     Logger.debug("""
-    Sending binding request to gather srflx candidate for: 
-    host_cand: #{inspect(host_cand)}, 
+    Sending binding request to gather srflx candidate for:
+    host_cand: #{inspect(host_cand)},
     stun_server: #{inspect(stun_server)}
     """)
 
@@ -419,7 +407,7 @@ defmodule ExICE.ICEAgent do
             pair = %CandidatePair{pair | nominated?: true}
             state = %{state | selected_pair: pair}
             send(state.controlling_process, {self(), {:selected_pair, pair}})
-            update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
+            update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
           else
             # TODO should we check if this pair is not in failed?
             Logger.debug("""
@@ -429,7 +417,7 @@ defmodule ExICE.ICEAgent do
             """)
 
             pair = %CandidatePair{pair | nominate?: true}
-            update_in(state.checklist, &List.update_at(&1, idx, fn -> pair end))
+            update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
           end
         else
           state
@@ -460,48 +448,24 @@ defmodule ExICE.ICEAgent do
 
     # replace address and port with candidate base
     # and prune the checklist - see sec. 6.1.2.4
-    local_cand = %Candidate{c | address: t.host_cand.address, port: t.host_cand.port}
+    local_cand = %Candidate{c | address: c.base_address, port: c.base_port}
 
-    remote_cands =
-      Enum.filter(state.remote_cands, &(Candidate.family(&1) == Candidate.family(local_cand)))
+    remote_cands = get_matching_candidates(state.remote_cands, local_cand)
 
-    checklist_foundations =
-      for cand_pair <- state.checklist do
-        {cand_pair.local_cand.foundation, cand_pair.remote_cand.foundation}
-      end
+    checklist_foundations = get_checklist_foundations(state.checklist)
 
     new_pairs =
       for remote_cand <- remote_cands do
-        pair_state =
-          if {local_cand.foundation, remote_cand.foundation} in checklist_foundations do
-            :frozen
-          else
-            :waiting
-          end
-
+        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
         pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
-
         Logger.debug("New candidate pair #{inspect(pair)}")
         pair
       end
 
-    new_pairs =
-      Enum.filter(new_pairs, fn pair ->
-        prune? = prune?(state.checklist, pair)
-
-        if prune? do
-          Logger.debug("Pruning pair: #{inspect(pair)}")
-        else
-          Logger.debug("Not prunning pair: #{inspect(pair)}")
-        end
-
-        prune?
-      end)
-
     state
     |> update_in([:local_cands], fn local_cands -> [local_cand | local_cands] end)
     |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
-    |> update_in([:checklist], fn checklist -> checklist ++ new_pairs end)
+    |> update_in([:checklist], fn checklist -> prune_checklist(checklist ++ new_pairs) end)
   end
 
   defp handle_binding_response(socket, src_ip, src_port, msg, state)
@@ -515,12 +479,8 @@ defmodule ExICE.ICEAgent do
     {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
 
     # check that the source and destination transport
-    # adresses are symmetric
-    if {src_ip, src_port} ==
-         {conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port} and
-         socket == conn_check_pair.local_cand.socket do
-      # TODO use XORMappedAddress and check against prflx
-
+    # adresses are symmetric - see sec. 7.2.5.2.1
+    if is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
       {:ok, xor_addr} = Message.get_attribute(msg, XORMappedAddress)
 
       local_cand = find_cand(state.local_cands, xor_addr.address, xor_addr.port)
@@ -630,11 +590,32 @@ defmodule ExICE.ICEAgent do
     state
   end
 
+  defp get_matching_candidates(candidates, cand) do
+    Enum.filter(candidates, &(Candidate.family(&1) == Candidate.family(cand)))
+  end
+
+  defp get_checklist_foundations(checklist) do
+    for cand_pair <- checklist do
+      {cand_pair.local_cand.foundation, cand_pair.remote_cand.foundation}
+    end
+  end
+
+  defp is_symmetric(socket, response_src, conn_check_pair) do
+    request_dst = {conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port}
+    response_src == request_dst and socket == conn_check_pair.local_cand.socket
+  end
+
+  defp get_pair_state(local_cand, remote_cand, checklist_foundations) do
+    f = {local_cand.foundation, remote_cand.foundation}
+    if f in checklist_foundations, do: :frozen, else: :waiting
+  end
+
   # TODO sec. 7.2.5.3.3
   # The agent MUST set the states for all other Frozen candidate pairs in
   # all checklists with the same foundation to Waiting.
   defp add_valid_pair(valid_pair, conn_check_pair, conn_check_pair_idx, _, _, state)
        when are_pairs_equal(valid_pair, conn_check_pair) do
+    Logger.debug("New valid pair: #{inspect(conn_check_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
 
     send(state.controlling_process, {self(), :connected})
@@ -655,6 +636,7 @@ defmodule ExICE.ICEAgent do
          state
        )
        when are_pairs_equal(valid_pair, checklist_pair) do
+    Logger.debug("New valid pair: #{inspect(checklist_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
     checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
 
@@ -673,6 +655,7 @@ defmodule ExICE.ICEAgent do
 
   defp add_valid_pair(valid_pair, conn_check_pair, conn_check_pair_idx, _, _, state) do
     # TODO compute priority according to sec 7.2.5.3.2
+    Logger.debug("New valid pair: #{inspect(valid_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
 
     send(state.controlling_process, {self(), :connected})
@@ -685,14 +668,12 @@ defmodule ExICE.ICEAgent do
     |> update_in([:checklist], &(&1 ++ [valid_pair]))
   end
 
-  defp prune?(checklist, pair) do
-    # see sec 6.1.2.4
-    # FIXME we should take into account priority
-    Enum.find(checklist, fn p ->
-      p.local_cand.base_address == pair.local_cand.base_address and
-        p.local_cand.base_port == pair.local_cand.base_port and
-        p.remote_cand == pair.remote_cand
-    end) == true
+  defp prune_checklist(checklist) do
+    # uniq_by keeps first occurence of a term
+    # so we need to sort checklist at first
+    checklist
+    |> Enum.sort_by(fn p -> p.priority end, :desc)
+    |> Enum.uniq_by(fn p -> {p.local_cand.base_address, p.local_cand.base_port, p.remote_cand} end)
   end
 
   defp do_gather_candidates(state) do
