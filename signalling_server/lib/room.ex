@@ -18,18 +18,20 @@ defmodule SignallingServer.Room do
   @impl true
   def init(_opts) do
     Logger.info("Creating the room")
-    {:ok, %{p1: nil, p2: nil}}
+    {:ok, %{p1: nil, p1_ref: nil, p2: nil, p2_ref: nil}}
   end
 
   @impl true
   def handle_call(:join, {from, _}, %{p1: nil} = state) do
-    state = put_in(state, [:p1], from)
+    ref = Process.monitor(from)
+    state = %{state | p1: from, p1_ref: ref}
     {:reply, :ok, state}
   end
 
   @impl true
   def handle_call(:join, {from, _}, %{p2: nil} = state) do
-    state = put_in(state, [:p2], from)
+    ref = Process.monitor(from)
+    state = %{state | p2: from, p2_ref: ref}
 
     if state.p1 do
       send(state.p2, {:forward, Jason.encode!(%{type: "peer_joined", role: "controlled"})})
@@ -46,13 +48,37 @@ defmodule SignallingServer.Room do
 
   @impl true
   def handle_call({:forward, msg}, {p1, _}, %{p1: p1} = state) do
-    send(state.p2, {:forward, msg})
+    if state.p2 do
+      send(state.p2, {:forward, msg})
+    else
+      Logger.warn("Not forwarding msg as there is no p2")
+    end
+
     {:reply, :ok, state}
   end
 
   @impl true
   def handle_call({:forward, msg}, {p2, _}, %{p2: p2} = state) do
-    send(state.p1, {:forward, msg})
+    if state.p1 do
+      send(state.p1, {:forward, msg})
+    else
+      Logger.warn("Not forwarding msg as there is no p1")
+    end
+
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, _, _, _}, state) do
+    Logger.info("Peer left the room")
+
+    state =
+      if ref == state.p1_ref do
+        %{state | p1_ref: nil, p1: nil}
+      else
+        %{state | p2_ref: nil, p2: nil}
+      end
+
+    {:noreply, state}
   end
 end

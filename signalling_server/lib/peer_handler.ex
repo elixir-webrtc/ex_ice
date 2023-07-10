@@ -24,7 +24,7 @@ defmodule SignallingServer.PeerHandler do
     {:ok, state}
   end
 
-  def terminate(:timeout, state) do
+  def terminate(_reason, state) do
     {:ok, state}
   end
 end
