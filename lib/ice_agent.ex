@@ -88,6 +88,7 @@ defmodule ExICE.ICEAgent do
 
     state = %{
       started?: false,
+      state: :new,
       controlling_process: Keyword.fetch!(opts, :controlling_process),
       gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
@@ -236,7 +237,7 @@ defmodule ExICE.ICEAgent do
         nil -> handle_checklist(state)
       end
 
-    if state.selected_pair == nil do
+    if state.selected_pair == nil and state.state != :failed do
       Process.send_after(self(), :ta_timeout, @ta_timeout)
     end
 
@@ -333,8 +334,12 @@ defmodule ExICE.ICEAgent do
             {_, state} = handle_info(:ta_timeout, state)
             state
           else
-            send(state.controlling_process, {:ex_ice, self(), :failed})
-            state
+            if state.eoc == true and state.state == :in_progress do
+              send(state.controlling_process, {:ex_ice, self(), :failed})
+              %{state | state: :failed}
+            else
+              state
+            end
           end
         else
           state
@@ -624,13 +629,13 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New valid pair: #{inspect(conn_check_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
 
-    send(state.controlling_process, {:ex_ice, self(), :connected})
+    if state.state != :connected do
+      send(state.controlling_process, {:ex_ice, self(), :connected})
+    end
 
-    update_in(
-      state,
-      [:checklist],
-      &List.update_at(&1, conn_check_pair_idx, fn _ -> conn_check_pair end)
-    )
+    checklist = List.update_at(state.checklist, conn_check_pair_idx, fn _ -> conn_check_pair end)
+
+    %{state | state: :connected, checklist: checklist}
   end
 
   defp add_valid_pair(
