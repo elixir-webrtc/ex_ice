@@ -281,9 +281,15 @@ defmodule ExICE.ICEAgent do
     stun_server: #{inspect(stun_server)}
     """)
 
-    :ok = Gatherer.gather_srflx_candidate(t_id, host_cand, stun_server)
-    t = %{t | state: :in_progress}
-    put_in(state, [:gathering_transactions, t_id], t)
+    case Gatherer.gather_srflx_candidate(t_id, host_cand, stun_server) do
+      :ok ->
+        t = %{t | state: :in_progress}
+        put_in(state, [:gathering_transactions, t_id], t)
+
+      :error ->
+        {_t, state} = pop_in(state, [:gathering_transactions, t_id])
+        state
+    end
   end
 
   defp handle_checklist(state) do
@@ -680,7 +686,10 @@ defmodule ExICE.ICEAgent do
     {:ok, host_candidates} = Gatherer.gather_host_candidates(state.ip_filter)
 
     for cand <- host_candidates do
-      send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(cand)}})
+      send(
+        state.controlling_process,
+        {:ex_ice, self(), {:new_candidate, Candidate.marshal(cand)}}
+      )
     end
 
     # TODO should we override?

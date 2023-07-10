@@ -1,7 +1,7 @@
 defmodule ExICE.Gatherer do
   @moduledoc false
 
-  alias ExICE.Candidate
+  alias ExICE.{Candidate, Utils}
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
 
@@ -41,8 +41,22 @@ defmodule ExICE.Gatherer do
 
     ip = List.first(ips)
     port = stun_server.port
-    :ok = :gen_udp.send(host_candidate.socket, {ip, port}, binding_request)
-    :ok
+
+    cand_family = Utils.family(host_candidate.base_address)
+    stun_family = Utils.family(ip)
+
+    if cand_family == stun_family do
+      :ok = :gen_udp.send(host_candidate.socket, {ip, port}, binding_request)
+      :ok
+    else
+      Logger.debug("""
+      Not gathering srflx candidate becasue of incompatible ip adress families.
+      Candidate family: #{inspect(cand_family)}
+      STUN server family: #{inspect(stun_family)}
+      Candidate: #{inspect(host_candidate)}
+      STUN server: #{inspect(stun_server)}
+      """)
+    end
   end
 
   defp is_loopback_if({_int_name, int}) do
