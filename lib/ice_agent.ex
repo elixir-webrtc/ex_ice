@@ -8,7 +8,7 @@ defmodule ExICE.ICEAgent do
 
   require Logger
 
-  alias ExICE.{Candidate, CandidatePair, Gatherer}
+  alias ExICE.{Candidate, CandidatePair, Checklist, Gatherer}
   alias ExICE.Attribute.{ICEControlling, ICEControlled, UseCandidate}
 
   alias ExSTUN.Message
@@ -46,11 +46,6 @@ defmodule ExICE.ICEAgent do
   @spec set_remote_credentials(pid(), binary(), binary()) :: :ok
   def set_remote_credentials(ice_agent, ufrag, passwd) do
     GenServer.cast(ice_agent, {:set_remote_credentials, ufrag, passwd})
-  end
-
-  @spec gather_candidates(pid()) :: :ok
-  def gather_candidates(ice_agent) do
-    GenServer.cast(ice_agent, :gather_candidates)
   end
 
   @spec add_remote_candidate(pid(), String.t()) :: :ok
@@ -124,7 +119,9 @@ defmodule ExICE.ICEAgent do
     pwd = :crypto.strong_rand_bytes(16)
     state = %{state | started?: true, local_ufrag: ufrag, local_pwd: pwd}
     send(state.controlling_process, {:ex_ice, self(), {:local_credentials, ufrag, pwd}})
-    state = do_gather_candidates(state)
+    state = gather_candidates(state)
+    Logger.debug("Starting Ta timer")
+    Process.send_after(self(), :ta_timeout, @ta_timeout)
     {:noreply, state}
   end
 
@@ -132,12 +129,6 @@ defmodule ExICE.ICEAgent do
   def handle_cast({:set_remote_credentials, ufrag, passwd}, state) do
     Logger.debug("Setting remote credentials: #{inspect(ufrag)}:#{inspect(passwd)}")
     state = %{state | remote_ufrag: ufrag, remote_pwd: passwd}
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_cast(:gather_candidates, state) do
-    state = do_gather_candidates(state)
     {:noreply, state}
   end
 
@@ -151,81 +142,48 @@ defmodule ExICE.ICEAgent do
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
     {:ok, remote_cand} = Candidate.unmarshal(remote_cand)
     Logger.debug("New remote candidate #{inspect(remote_cand)}")
-    start_ta? = state.checklist == []
 
     local_cands = get_matching_candidates(state.local_cands, remote_cand)
 
-    checklist_foundations = get_checklist_foundations(state.checklist)
+    checklist_foundations = Checklist.get_foundations(state.checklist)
 
     new_pairs =
       for local_cand <- local_cands do
+        local_cand =
+          if local_cand.type == :srflx do
+            %Candidate{local_cand | address: local_cand.base_address, port: local_cand.base_port}
+          else
+            local_cand
+          end
+
         pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
-        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
-        Logger.debug("New candidate pair #{inspect(pair)}")
-        pair
+        CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
       end
 
-    state =
-      state
-      |> update_in([:checklist], fn checklist -> prune_checklist(checklist ++ new_pairs) end)
-      |> update_in([:remote_cands], fn remote_cands -> remote_cands ++ [remote_cand] end)
+    checklist = Checklist.prune(state.checklist ++ new_pairs)
 
-    if start_ta? do
-      Logger.debug("Starting Ta timer")
-      Process.send_after(self(), :ta_timeout, @ta_timeout)
+    added_pairs = checklist -- state.checklist
+
+    if added_pairs == [] do
+      Logger.debug("Not adding any new pairs as they were redundant")
+    else
+      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
     end
+
+    state = %{state | checklist: checklist, remote_cands: [remote_cand | state.remote_cands]}
 
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast(:end_of_candidates, %{role: :controlled} = state) do
-    Logger.debug("Received end-of-candidates in role controlled.")
-    {:noreply, %{state | eoc: true}}
-  end
-
-  @impl true
-  def handle_cast(:end_of_candidates, %{role: :controlling} = state) do
+  def handle_cast(:end_of_candidates, state) do
     state = %{state | eoc: true}
-    in_progress = Enum.any?(state.checklist, fn pair -> pair.state == :in_progress end)
-    waiting = Enum.any?(state.checklist, fn pair -> pair.state == :waiting end)
 
-    if waiting or in_progress do
-      Logger.debug("""
-      Received end-of-candidates but there are checks waiting or in-progress. \
-      Waiting with nomination.
-      """)
-
+    if nominate?(state) do
+      state = nominate(state)
       {:noreply, state}
     else
-      # TODO check whether gathering process has finished
-      pair_idx =
-        state.checklist
-        |> Enum.with_index()
-        |> Enum.filter(fn {pair, _idx} -> pair.state == :succeeded end)
-        |> Enum.max_by(fn {pair, _idx} -> pair.priority end)
-
-      if pair_idx do
-        {pair, idx} = pair_idx
-
-        Logger.debug("""
-        Received end-of-candidates. There are no checks waiting or in-progress. \
-        Enqueuing pair for nomination: #{inspect(pair)}"
-        """)
-
-        pair = %CandidatePair{pair | state: :waiting, nominate?: true}
-        # TODO use triggered check queue
-        state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-        {:noreply, state}
-      else
-        Logger.debug("""
-        Received end-of-candidates but there are no valid pairs and no checks waiting or in-progress. \
-        ICE failed.
-        """)
-
-        send(state.controlling_process, {:ex_ice, self(), :failed})
-        {:noreply, state}
-      end
+      {:noreply, state}
     end
   end
 
@@ -237,7 +195,7 @@ defmodule ExICE.ICEAgent do
         nil -> handle_checklist(state)
       end
 
-    if state.selected_pair == nil and state.state != :failed do
+    if state.state not in [:completed, :failed] do
       Process.send_after(self(), :ta_timeout, @ta_timeout)
     end
 
@@ -294,15 +252,7 @@ defmodule ExICE.ICEAgent do
   end
 
   defp handle_checklist(state) do
-    pair_idx =
-      state.checklist
-      |> Enum.with_index()
-      |> Enum.filter(fn {pair, _idx} -> pair.state == :waiting end)
-      |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
-
-    in_progress = Enum.any?(state.checklist, fn pair -> pair.state == :waiting end)
-
-    case pair_idx do
+    case Checklist.get_next_pair(state.checklist) do
       {pair, idx} ->
         Logger.debug("Sending conn check on pair: #{inspect(pair)}")
 
@@ -311,36 +261,8 @@ defmodule ExICE.ICEAgent do
         %{state | checklist: List.update_at(state.checklist, idx, fn _ -> pair end)}
 
       nil ->
-        if not in_progress and state.role == :controlling do
-          # nominate pair
-          # TODO check whether gathering process has finished
-          pair_idx =
-            state.checklist
-            |> Enum.with_index()
-            |> Enum.filter(fn {pair, _idx} -> pair.state == :succeeded end)
-            |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
-
-          if pair_idx do
-            {pair, idx} = pair_idx
-
-            Logger.debug("""
-            Enqueuing pair for nomination: #{inspect(pair)}"
-            """)
-
-            pair = %CandidatePair{pair | state: :waiting, nominate?: true}
-            # TODO use triggered check queue
-            state = update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
-
-            {_, state} = handle_info(:ta_timeout, state)
-            state
-          else
-            if state.eoc == true and state.state == :in_progress do
-              send(state.controlling_process, {:ex_ice, self(), :failed})
-              %{state | state: :failed}
-            else
-              state
-            end
-          end
+        if nominate?(state) do
+          nominate(state)
         else
           state
         end
@@ -349,15 +271,29 @@ defmodule ExICE.ICEAgent do
 
   defp handle_stun_msg(socket, src_ip, src_port, %Message{} = msg, state) do
     # TODO revisit 7.3.1.4
+
+    {:ok, socket_addr} = :inet.sockname(socket)
+
     case msg.type do
       %Type{class: :request, method: :binding} ->
+        Logger.debug("""
+        Received binding request from: #{inspect({src_ip, src_port})}, on: #{inspect(socket_addr)} \
+        """)
+
         handle_binding_request(socket, src_ip, src_port, msg, state)
 
       %Type{class: :success_response, method: :binding} ->
+        Logger.debug("""
+        Received binding response from: #{inspect({src_ip, src_port})}, on: #{inspect(socket_addr)} \
+        """)
+
         handle_binding_response(socket, src_ip, src_port, msg, state)
 
       other ->
-        Logger.warn("Unknown msg: #{inspect(other)}")
+        Logger.warn("""
+        Unknown msg from: #{inspect({src_ip, src_port})}, on: #{inspect(socket_addr)}, msg: #{inspect(other)} \
+        """)
+
         state
     end
   end
@@ -396,7 +332,7 @@ defmodule ExICE.ICEAgent do
     pair = CandidatePair.new(local_cand, remote_cand, state.role, :waiting)
 
     # TODO use triggered check queue
-    case find_pair_with_index(state.checklist, pair) do
+    case Checklist.find_pair(state.checklist, pair) do
       nil ->
         if use_candidate do
           Logger.debug(
@@ -416,8 +352,9 @@ defmodule ExICE.ICEAgent do
             # TODO should we call this selected or nominated pair
             Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair)}")
             pair = %CandidatePair{pair | nominated?: true}
-            state = %{state | selected_pair: pair}
+            state = %{state | selected_pair: pair, state: :completed}
             send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
+            send(state.controlling_process, {:ex_ice, self(), :completed})
             update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
           else
             # TODO should we check if this pair is not in failed?
@@ -463,20 +400,28 @@ defmodule ExICE.ICEAgent do
 
     remote_cands = get_matching_candidates(state.remote_cands, local_cand)
 
-    checklist_foundations = get_checklist_foundations(state.checklist)
+    checklist_foundations = Checklist.get_foundations(state.checklist)
 
     new_pairs =
       for remote_cand <- remote_cands do
         pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
-        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
-        Logger.debug("New candidate pair #{inspect(pair)}")
-        pair
+        CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
       end
 
+    checklist = Checklist.prune(state.checklist ++ new_pairs)
+
+    added_pairs = checklist -- state.checklist
+
+    if added_pairs == [] do
+      Logger.debug("Not adding any new pairs as they were redundant")
+    else
+      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
+    end
+
     state
-    |> update_in([:local_cands], fn local_cands -> [local_cand | local_cands] end)
+    |> update_in([:local_cands], fn local_cands -> [c | local_cands] end)
     |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
-    |> update_in([:checklist], fn checklist -> prune_checklist(checklist ++ new_pairs) end)
+    |> update_in([:checklist], fn _ -> checklist end)
   end
 
   defp handle_binding_response(socket, src_ip, src_port, msg, state)
@@ -485,91 +430,14 @@ defmodule ExICE.ICEAgent do
       pop_in(state, [:conn_checks, msg.transaction_id])
 
     {^conn_check_pair, conn_check_pair_idx} =
-      find_pair_with_index(state.checklist, conn_check_pair)
+      Checklist.find_exact_pair(state.checklist, conn_check_pair)
 
     {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
 
     # check that the source and destination transport
     # adresses are symmetric - see sec. 7.2.5.2.1
     if is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
-      {:ok, xor_addr} = Message.get_attribute(msg, XORMappedAddress)
-
-      local_cand = find_cand(state.local_cands, xor_addr.address, xor_addr.port)
-
-      {local_cand, state} =
-        if local_cand do
-          {local_cand, state}
-        else
-          # prflx candidate sec 7.2.5.3.1
-          # TODO calculate correct prio and foundation
-          c =
-            Candidate.new(
-              :prflx,
-              xor_addr.address,
-              xor_addr.port,
-              conn_check_pair.local_cand.base_address,
-              conn_check_pair.local_cand.base_port,
-              conn_check_pair.local_cand.socket
-            )
-
-          Logger.debug("New prflx candidate: #{inspect(c)}")
-          state = %{state | local_cands: state.local_cands ++ [c]}
-          {c, state}
-        end
-
-      valid_pair =
-        CandidatePair.new(local_cand, conn_check_pair.remote_cand, state.role, :succeeded)
-
-      valid_pair = %CandidatePair{valid_pair | valid?: true}
-
-      {checklist_pair, checklist_pair_idx} =
-        case find_pair_with_index(state.checklist, valid_pair) do
-          nil -> {nil, nil}
-          other -> other
-        end
-
-      case find_pair_with_index(state.checklist, valid_pair) do
-        nil ->
-          add_valid_pair(
-            valid_pair,
-            conn_check_pair,
-            conn_check_pair_idx,
-            checklist_pair,
-            checklist_pair_idx,
-            state
-          )
-
-        {%CandidatePair{valid?: false}, _idx} ->
-          add_valid_pair(
-            valid_pair,
-            conn_check_pair,
-            conn_check_pair_idx,
-            checklist_pair,
-            checklist_pair_idx,
-            state
-          )
-
-        {pair, idx} ->
-          true = pair.nominate?
-
-          pair = %CandidatePair{
-            pair
-            | state: :succeeded,
-              nominate?: false,
-              nominated?: true
-          }
-
-          state =
-            update_in(
-              state,
-              [:checklist],
-              &List.update_at(&1, idx, fn _ -> pair end)
-            )
-
-          Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
-          send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
-          %{state | selected_pair: pair}
-      end
+      handle_conn_check(msg, conn_check_pair, conn_check_pair_idx, state)
     else
       Logger.warn("""
       Ignoring conn check response, non-symmetric src and dst addresses.
@@ -579,11 +447,10 @@ defmodule ExICE.ICEAgent do
 
       conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
 
-      update_in(
-        state,
-        [:checklist],
-        &List.update_at(&1, conn_check_pair_idx, fn _ -> conn_check_pair end)
-      )
+      checklist =
+        List.update_at(state.checklist, conn_check_pair_idx, fn _ -> conn_check_pair end)
+
+      %{state | checklist: checklist}
     end
   end
 
@@ -601,14 +468,68 @@ defmodule ExICE.ICEAgent do
     state
   end
 
-  defp get_matching_candidates(candidates, cand) do
-    Enum.filter(candidates, &(Candidate.family(&1) == Candidate.family(cand)))
+  defp handle_conn_check(msg, conn_check_pair, conn_check_pair_idx, state) do
+    {:ok, xor_addr} = Message.get_attribute(msg, XORMappedAddress)
+
+    {local_cand, state} = get_or_create_cand(xor_addr, conn_check_pair, state)
+
+    valid_pair =
+      CandidatePair.new(local_cand, conn_check_pair.remote_cand, state.role, :succeeded)
+
+    valid_pair = %CandidatePair{valid_pair | valid?: true}
+
+    {checklist_pair, checklist_pair_idx} =
+      case Checklist.find_pair(state.checklist, valid_pair) do
+        nil -> {nil, nil}
+        other -> other
+      end
+
+    case {checklist_pair, checklist_pair_idx} do
+      {nil, nil} ->
+        add_valid_pair(
+          valid_pair,
+          conn_check_pair,
+          conn_check_pair_idx,
+          checklist_pair,
+          checklist_pair_idx,
+          state
+        )
+
+      {%CandidatePair{valid?: false}, _idx} ->
+        add_valid_pair(
+          valid_pair,
+          conn_check_pair,
+          conn_check_pair_idx,
+          checklist_pair,
+          checklist_pair_idx,
+          state
+        )
+
+      {pair, idx} ->
+        # FIXME this still might happen
+        # e.g. when gathering srflx candidate
+        # and pairing it with remote host cand
+        # when we already have pair consisting of
+        # srflx base as host and remote host
+        # that is in progress
+        true = pair.nominate?
+
+        pair = %CandidatePair{
+          pair
+          | state: :succeeded,
+            nominate?: false,
+            nominated?: true
+        }
+
+        Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
+        send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
+        checklist = List.update_at(state.checklist, idx, fn _ -> pair end)
+        %{state | checklist: checklist, state: :completed, selected_pair: pair}
+    end
   end
 
-  defp get_checklist_foundations(checklist) do
-    for cand_pair <- checklist do
-      {cand_pair.local_cand.foundation, cand_pair.remote_cand.foundation}
-    end
+  defp get_matching_candidates(candidates, cand) do
+    Enum.filter(candidates, &(Candidate.family(&1) == Candidate.family(cand)))
   end
 
   defp is_symmetric(socket, response_src, conn_check_pair) do
@@ -619,6 +540,30 @@ defmodule ExICE.ICEAgent do
   defp get_pair_state(local_cand, remote_cand, checklist_foundations) do
     f = {local_cand.foundation, remote_cand.foundation}
     if f in checklist_foundations, do: :frozen, else: :waiting
+  end
+
+  defp get_or_create_cand(xor_addr, conn_check_pair, state) do
+    local_cand = find_cand(state.local_cands, xor_addr.address, xor_addr.port)
+
+    if local_cand do
+      {local_cand, state}
+    else
+      # prflx candidate sec 7.2.5.3.1
+      # TODO calculate correct prio and foundation
+      c =
+        Candidate.new(
+          :prflx,
+          xor_addr.address,
+          xor_addr.port,
+          conn_check_pair.local_cand.base_address,
+          conn_check_pair.local_cand.base_port,
+          conn_check_pair.local_cand.socket
+        )
+
+      Logger.debug("New prflx candidate: #{inspect(c)}")
+      state = %{state | local_cands: [c | state.local_cands]}
+      {c, state}
+    end
   end
 
   # TODO sec. 7.2.5.3.3
@@ -679,24 +624,42 @@ defmodule ExICE.ICEAgent do
     |> update_in([:checklist], &(&1 ++ [valid_pair]))
   end
 
-  defp prune_checklist(checklist) do
-    # uniq_by keeps first occurence of a term
-    # so we need to sort checklist at first
+  defp nominate?(state) do
+    # if we know there won't be further candidates,
+    # there are no checks waiting or in-progress,
+    # and we are the controlling agent, then we can nominate
+    waiting = Checklist.waiting?(state.checklist)
+    in_progress = Checklist.in_progress?(state.checklist)
 
-    {waiting, in_flight_or_done} =
-      Enum.split_with(checklist, fn p -> p.state in [:waiting, :frozen] end)
-
-    waiting =
-      waiting
-      |> Enum.sort_by(fn p -> p.priority end, :desc)
-      |> Enum.uniq_by(fn p ->
-        {p.local_cand.base_address, p.local_cand.base_port, p.remote_cand}
-      end)
-
-    waiting ++ in_flight_or_done
+    state.gathering_state == :complete and
+      state.eoc and
+      not (waiting or in_progress) and
+      state.role == :controlling
   end
 
-  defp do_gather_candidates(state) do
+  defp nominate(state) do
+    case Checklist.get_pair_for_nomination(state.checklist) do
+      {pair, idx} ->
+        Logger.debug("""
+        Enqueuing pair for nomination: #{inspect(pair)}"
+        """)
+
+        pair = %CandidatePair{pair | state: :waiting, nominate?: true}
+        # TODO use triggered check queue
+        checklist = List.update_at(state.checklist, idx, fn _ -> pair end)
+        state = %{state | checklist: checklist}
+
+        {_, state} = handle_info(:ta_timeout, state)
+        state
+
+      nil ->
+        # TODO revisit this
+        # should we check if state.state == :in_progress?
+        send(state.controlling_process, {:ex_ice, self(), :failed})
+    end
+  end
+
+  defp gather_candidates(state) do
     {:ok, host_candidates} = Gatherer.gather_host_candidates(state.ip_filter)
 
     for cand <- host_candidates do
@@ -731,30 +694,13 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  defp find_pair_with_index(pairs, pair) do
-    find_pair_with_index(pairs, pair.local_cand, pair.remote_cand)
-  end
-
-  defp find_pair_with_index(pairs, local_cand, remote_cand) do
-    # TODO which pairs are actually the same?
-    pairs
-    |> Enum.with_index()
-    |> Enum.find(fn {p, _idx} ->
-      p.local_cand.base_address == local_cand.base_address and
-        p.local_cand.base_port == local_cand.base_port and
-        p.local_cand.address == local_cand.address and
-        p.local_cand.port == local_cand.port and
-        p.remote_cand.address == remote_cand.address and
-        p.remote_cand.port == remote_cand.port
-    end)
-  end
-
   defp find_cand(cands, ip, port) do
     Enum.find(cands, fn cand -> cand.address == ip and cand.port == port end)
   end
 
   defp find_cand(cands, socket) do
-    Enum.find(cands, fn cand -> cand.socket == socket end)
+    # this function returns only host candidates
+    Enum.find(cands, fn cand -> cand.socket == socket and cand.type == :host end)
   end
 
   defp send_conn_check(pair, state) do

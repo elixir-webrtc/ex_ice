@@ -72,7 +72,10 @@ defmodule Peer do
 
     {:ok, pid} =
       ICEAgent.start_link(role,
-        ip_filter: fn _ -> true end,
+        ip_filter: fn
+          {_, _, _, _} -> true
+          {_, _, _, _, _, _, _, _} -> false
+        end,
         stun_servers: ["stun:stun.l.google.com:19302"]
       )
 

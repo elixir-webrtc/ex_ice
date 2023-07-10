@@ -6,10 +6,11 @@ defmodule ExICE.Integration.P2PTest do
   @tag :p2p
   test "P2P connection" do
     stun_servers = ["stun:stun.l.google.com:19302"]
+    # stun_servers = []
 
     ip_filter = fn
-      {_, _, _, _, _, _, _, _} -> true
-      {172, 17, 0, 1} -> true
+      {_, _, _, _, _, _, _, _} -> false
+      {172, _, _, _} -> false
       _other -> true
     end
 
@@ -61,7 +62,7 @@ defmodule ExICE.Integration.P2PTest do
       {:ex_ice, ^agent2, {:selected_pair, _p}} ->
         p2p(agent1, agent2, a1_status, true)
     after
-      4000 -> false
+      6000 -> false
     end
   end
 end

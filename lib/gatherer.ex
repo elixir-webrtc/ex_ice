@@ -93,6 +93,7 @@ defmodule ExICE.Gatherer do
     with {:ok, socket} <-
            :gen_udp.open(0, [
              {:inet_backend, :socket},
+             {:ip, ip},
              {:active, true},
              :binary,
              inet
