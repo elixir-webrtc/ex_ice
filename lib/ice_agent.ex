@@ -798,7 +798,14 @@ defmodule ExICE.ICEAgent do
 
       err ->
         Logger.error("UDP send error: #{inspect(err)}. Retrying...")
-        do_send(socket, dst, data)
+
+        case :gen_udp.send(socket, dst, data) do
+          :ok ->
+            Logger.debug("Successful retry")
+
+          err ->
+            Logger.error("Unseccessful retry: #{inspect(err)}. Giving up.")
+        end
     end
   end
 end
