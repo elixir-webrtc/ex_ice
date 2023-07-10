@@ -682,9 +682,18 @@ defmodule ExICE.ICEAgent do
   defp prune_checklist(checklist) do
     # uniq_by keeps first occurence of a term
     # so we need to sort checklist at first
-    checklist
-    |> Enum.sort_by(fn p -> p.priority end, :desc)
-    |> Enum.uniq_by(fn p -> {p.local_cand.base_address, p.local_cand.base_port, p.remote_cand} end)
+
+    {waiting, in_flight_or_done} =
+      Enum.split_with(checklist, fn p -> p.state in [:waiting, :frozen] end)
+
+    waiting =
+      waiting
+      |> Enum.sort_by(fn p -> p.priority end, :desc)
+      |> Enum.uniq_by(fn p ->
+        {p.local_cand.base_address, p.local_cand.base_port, p.remote_cand}
+      end)
+
+    waiting ++ in_flight_or_done
   end
 
   defp do_gather_candidates(state) do
