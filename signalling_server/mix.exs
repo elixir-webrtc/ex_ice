@@ -22,6 +22,7 @@ defmodule SignallingServer.MixProject do
   # Run "mix help deps" to learn about dependencies.
   defp deps do
     [
+      {:jason, "~> 1.4.0"},
       {:plug, "~> 1.14.0"},
       {:bandit, "~> 1.0.0-pre.10"},
       {:websock_adapter, "~> 0.5.0"}

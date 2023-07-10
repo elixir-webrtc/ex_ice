@@ -31,34 +31,34 @@ defmodule ExICE.Integration.P2PTest do
 
   defp p2p(agent1, agent2, a1_status, a2_status) do
     receive do
-      {^agent1, {:new_candidate, cand}} ->
+      {:ex_ice, ^agent1, {:new_candidate, cand}} ->
         ICEAgent.add_remote_candidate(agent2, cand)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent1, {:local_credentials, ufrag, passwd}} ->
+      {:ex_ice, ^agent1, {:local_credentials, ufrag, passwd}} ->
         ICEAgent.set_remote_credentials(agent2, ufrag, passwd)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent1, :gathering_complete} ->
+      {:ex_ice, ^agent1, :gathering_complete} ->
         ICEAgent.end_of_candidates(agent2)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent1, {:selected_pair, _p}} ->
+      {:ex_ice, ^agent1, {:selected_pair, _p}} ->
         p2p(agent1, agent2, true, a2_status)
 
-      {^agent2, {:new_candidate, cand}} ->
+      {:ex_ice, ^agent2, {:new_candidate, cand}} ->
         ICEAgent.add_remote_candidate(agent1, cand)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent2, {:local_credentials, ufrag, passwd}} ->
+      {:ex_ice, ^agent2, {:local_credentials, ufrag, passwd}} ->
         ICEAgent.set_remote_credentials(agent1, ufrag, passwd)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent2, :gathering_complete} ->
+      {:ex_ice, ^agent2, :gathering_complete} ->
         ICEAgent.end_of_candidates(agent1)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {^agent2, {:selected_pair, _p}} ->
+      {:ex_ice, ^agent2, {:selected_pair, _p}} ->
         p2p(agent1, agent2, a1_status, true)
     after
       4000 -> false

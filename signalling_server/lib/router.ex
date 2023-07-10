@@ -17,7 +17,7 @@ defmodule SignallingServer.Router do
 
   get "/websocket" do
     conn
-    |> WebSockAdapter.upgrade(PeerHandler, [], timeout: 60_000)
+    |> WebSockAdapter.upgrade(SignallingServer.PeerHandler, [], timeout: 60_000)
     |> halt()
   end
 

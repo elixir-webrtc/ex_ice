@@ -122,7 +122,7 @@ defmodule ExICE.ICEAgent do
     ufrag = :crypto.strong_rand_bytes(3)
     pwd = :crypto.strong_rand_bytes(16)
     state = %{state | started?: true, local_ufrag: ufrag, local_pwd: pwd}
-    send(state.controlling_process, {self(), {:local_credentials, ufrag, pwd}})
+    send(state.controlling_process, {:ex_ice, self(), {:local_credentials, ufrag, pwd}})
     state = do_gather_candidates(state)
     {:noreply, state}
   end
@@ -222,7 +222,7 @@ defmodule ExICE.ICEAgent do
         ICE failed.
         """)
 
-        send(state.controlling_process, {self(), :failed})
+        send(state.controlling_process, {:ex_ice, self(), :failed})
         {:noreply, state}
       end
     end
@@ -327,7 +327,7 @@ defmodule ExICE.ICEAgent do
             {_, state} = handle_info(:ta_timeout, state)
             state
           else
-            send(state.controlling_process, {self(), :failed})
+            send(state.controlling_process, {:ex_ice, self(), :failed})
             state
           end
         else
@@ -406,7 +406,7 @@ defmodule ExICE.ICEAgent do
             Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair)}")
             pair = %CandidatePair{pair | nominated?: true}
             state = %{state | selected_pair: pair}
-            send(state.controlling_process, {self(), {:selected_pair, pair}})
+            send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
             update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
           else
             # TODO should we check if this pair is not in failed?
@@ -444,7 +444,7 @@ defmodule ExICE.ICEAgent do
 
     Logger.debug("New srflx candidate: #{inspect(c)}")
 
-    send(state.controlling_process, {self(), {:new_candidate, Candidate.marshal(c)}})
+    send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(c)}})
 
     # replace address and port with candidate base
     # and prune the checklist - see sec. 6.1.2.4
@@ -556,7 +556,7 @@ defmodule ExICE.ICEAgent do
             )
 
           Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
-          send(state.controlling_process, {self(), {:selected_pair, pair}})
+          send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
           %{state | selected_pair: pair}
       end
     else
@@ -618,7 +618,7 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New valid pair: #{inspect(conn_check_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
 
-    send(state.controlling_process, {self(), :connected})
+    send(state.controlling_process, {:ex_ice, self(), :connected})
 
     update_in(
       state,
@@ -640,7 +640,7 @@ defmodule ExICE.ICEAgent do
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
     checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
 
-    send(state.controlling_process, {self(), :connected})
+    send(state.controlling_process, {:ex_ice, self(), :connected})
 
     state
     |> update_in(
@@ -658,7 +658,7 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New valid pair: #{inspect(valid_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
 
-    send(state.controlling_process, {self(), :connected})
+    send(state.controlling_process, {:ex_ice, self(), :connected})
 
     state
     |> update_in(
@@ -680,7 +680,7 @@ defmodule ExICE.ICEAgent do
     {:ok, host_candidates} = Gatherer.gather_host_candidates(state.ip_filter)
 
     for cand <- host_candidates do
-      send(state.controlling_process, {self(), {:new_candidate, Candidate.marshal(cand)}})
+      send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(cand)}})
     end
 
     # TODO should we override?
@@ -701,7 +701,7 @@ defmodule ExICE.ICEAgent do
       end
 
     if gathering_transactions == %{} do
-      send(state.controlling_process, {self(), :gathering_complete})
+      send(state.controlling_process, {:ex_ice, self(), :gathering_complete})
       %{state | gathering_state: :complete}
     else
       %{state | gathering_transactions: gathering_transactions, gathering_state: :gathering}
