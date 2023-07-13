@@ -9,8 +9,8 @@ defmodule ExICE.Integration.P2PTest do
     # stun_servers = []
 
     ip_filter = fn
-      {_, _, _, _, _, _, _, _} -> false
-      {172, _, _, _} -> false
+      {_, _, _, _, _, _, _, _} -> true
+      {172, _, _, _} -> true
       _other -> true
     end
 

@@ -57,7 +57,7 @@ defmodule ExICE.Checklist do
     # uniq_by keeps first occurence of a term
     # so we need to sort checklist at first
 
-    #TODO this still needs to be revisited:
+    # TODO this still needs to be revisited:
     # a new pair might be redundant
     # but we won't prune it as we filter out
     # in flight pairs

@@ -18,6 +18,10 @@ defmodule ExICE.ICEAgent do
   # Ta timeout in ms
   @ta_timeout 50
 
+  # transaction timeout in ms
+  # see appendix B.1
+  @hto 500
+
   @type role() :: :controlling | :controlled
 
   @type opts() :: [
@@ -189,6 +193,8 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_info(:ta_timeout, state) do
+    state = timeout_pending_transactions(state)
+
     state =
       case get_next_gathering_transaction(state.gathering_transactions) do
         {_t_id, transaction} -> handle_gathering_transaction(transaction, state)
@@ -242,7 +248,8 @@ defmodule ExICE.ICEAgent do
 
     case Gatherer.gather_srflx_candidate(t_id, host_cand, stun_server) do
       :ok ->
-        t = %{t | state: :in_progress}
+        now = System.monotonic_time(:millisecond)
+        t = %{t | state: :in_progress, send_time: now}
         put_in(state, [:gathering_transactions, t_id], t)
 
       :error ->
@@ -267,6 +274,54 @@ defmodule ExICE.ICEAgent do
           state
         end
     end
+  end
+
+  defp timeout_pending_transactions(state) do
+    now = System.monotonic_time(:millisecond)
+
+    {stale_cc, cc} =
+      Enum.split_with(state.conn_checks, fn {_id, %{send_time: send_time}} ->
+        now - send_time >= @hto
+      end)
+
+    stale_cc = Map.new(stale_cc)
+    cc = Map.new(cc)
+
+    stale_cc_ids = Enum.map(stale_cc, fn {id, _} -> id end)
+
+    if stale_cc_ids != [] do
+      Logger.debug("Connectivity checks timed out: #{inspect(stale_cc_ids)}")
+    end
+
+    stale_pairs = Enum.map(stale_cc, fn {_id, %{pair: pair}} -> pair end)
+
+    checklist =
+      Enum.map(state.checklist, fn pair ->
+        if pair in stale_pairs do
+          Logger.debug("Pair failed. Reason: timeout. Pair: #{inspect(pair)}")
+          %CandidatePair{pair | state: :failed}
+        else
+          pair
+        end
+      end)
+
+    {stale_gath_trans, gath_trans} =
+      Enum.split_with(state.gathering_transactions, fn {_id,
+                                                        %{state: t_state, send_time: send_time}} ->
+        t_state == :in_progress and now - send_time >= @hto
+      end)
+
+    gath_trans = Map.new(gath_trans)
+
+    if stale_gath_trans != [] do
+      Logger.debug("""
+      Removing gathering transactions. Reason: timeout. \ 
+      Transactions: #{inspect(stale_gath_trans)}"\
+      """)
+    end
+
+    %{state | checklist: checklist, conn_checks: cc, gathering_transactions: gath_trans}
+    |> update_gathering_state()
   end
 
   defp handle_stun_msg(socket, src_ip, src_port, %Message{} = msg, state) do
@@ -422,12 +477,12 @@ defmodule ExICE.ICEAgent do
     |> update_in([:local_cands], fn local_cands -> [c | local_cands] end)
     |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
     |> update_in([:checklist], fn _ -> checklist end)
+    |> update_gathering_state()
   end
 
   defp handle_binding_response(socket, src_ip, src_port, msg, state)
        when is_map_key(state.conn_checks, msg.transaction_id) do
-    {%CandidatePair{} = conn_check_pair, state} =
-      pop_in(state, [:conn_checks, msg.transaction_id])
+    {%{pair: conn_check_pair}, state} = pop_in(state, [:conn_checks, msg.transaction_id])
 
     {^conn_check_pair, conn_check_pair_idx} =
       Checklist.find_exact_pair(state.checklist, conn_check_pair)
@@ -656,6 +711,24 @@ defmodule ExICE.ICEAgent do
         # TODO revisit this
         # should we check if state.state == :in_progress?
         send(state.controlling_process, {:ex_ice, self(), :failed})
+        state
+    end
+  end
+
+  defp update_gathering_state(%{gathering_state: :complete} = state), do: state
+
+  defp update_gathering_state(state) do
+    gathering_in_progress? =
+      Enum.any?(state.gathering_transactions, fn {_id, %{state: t_state}} ->
+        t_state in [:waiting, :in_progress]
+      end)
+
+    if gathering_in_progress? do
+      state
+    else
+      Logger.debug("Gathering finished")
+      send(state.controlling_process, {:ex_ice, self(), :gathering_complete})
+      %{state | gathering_state: :complete}
     end
   end
 
@@ -680,6 +753,7 @@ defmodule ExICE.ICEAgent do
           t_id: t_id,
           host_cand: host_cand,
           stun_server: stun_server,
+          send_time: nil,
           state: :waiting
         }
 
@@ -739,7 +813,12 @@ defmodule ExICE.ICEAgent do
 
     pair = %CandidatePair{pair | state: :in_progress}
 
-    state = put_in(state, [:conn_checks, req.transaction_id], pair)
+    conn_check = %{
+      pair: pair,
+      send_time: System.monotonic_time(:millisecond)
+    }
+
+    state = put_in(state, [:conn_checks, req.transaction_id], conn_check)
 
     {pair, state}
   end
