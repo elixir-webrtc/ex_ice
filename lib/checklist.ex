@@ -15,6 +15,10 @@ defmodule ExICE.Checklist do
     |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
   end
 
+  def get_valid_pair(checklist) do
+    Enum.find(checklist, fn pair -> pair.valid? end)
+  end
+
   def find_pair(checklist, pair) do
     find_pair(checklist, pair.local_cand, pair.remote_cand)
   end

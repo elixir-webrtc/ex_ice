@@ -62,6 +62,11 @@ defmodule ExICE.ICEAgent do
     GenServer.cast(ice_agent, :end_of_candidates)
   end
 
+  @spec send_data(pid(), binary()) :: :ok
+  def send_data(ice_agent, data) do
+    GenServer.cast(ice_agent, {:send_data, data})
+  end
+
   ### Server
 
   @impl true
@@ -192,6 +197,25 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
+  def handle_cast({:send_data, data}, %{state: ice_state} = state)
+      when ice_state in [:connected, :completed] do
+    %CandidatePair{} = pair = Checklist.get_valid_pair(state.checklist)
+    dst = {pair.remote_cand.address, pair.remote_cand.port}
+    do_send(pair.local_cand.socket, dst, data)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(_, %{state: ice_state} = state) do
+    Logger.warn("""
+    Cannot send data in ICE state: #{inspect(ice_state)}. \
+    Data can only be sent in state :connected or :completed. Ignoring.\
+    """)
+
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(:ta_timeout, state) do
     state = timeout_pending_transactions(state)
 
@@ -221,7 +245,7 @@ defmodule ExICE.ICEAgent do
           {:noreply, state}
       end
     else
-      Logger.warn("Got non-stun packet: #{inspect(packet)}. Ignoring...")
+      send(state.controlling_process, {:ex_ice, self(), {:data, packet}})
       {:noreply, state}
     end
   end
@@ -629,7 +653,7 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New valid pair: #{inspect(conn_check_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
 
-    if state.state != :connected do
+    if state.state not in [:connected, :completed] do
       send(state.controlling_process, {:ex_ice, self(), :connected})
     end
 
@@ -651,7 +675,9 @@ defmodule ExICE.ICEAgent do
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
     checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
 
-    send(state.controlling_process, {:ex_ice, self(), :connected})
+    if state.state not in [:connected, :completed] do
+      send(state.controlling_process, {:ex_ice, self(), :connected})
+    end
 
     state
     |> update_in(
@@ -669,7 +695,9 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New valid pair: #{inspect(valid_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
 
-    send(state.controlling_process, {:ex_ice, self(), :connected})
+    if state.state not in [:connected, :completed] do
+      send(state.controlling_process, {:ex_ice, self(), :connected})
+    end
 
     state
     |> update_in(
