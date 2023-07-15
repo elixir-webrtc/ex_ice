@@ -699,7 +699,7 @@ defmodule ExICE.ICEAgent do
         # TODO revisit this
         # should we check if state.state == :in_progress?
         send(state.controlling_process, {:ex_ice, self(), :failed})
-        state
+        %{state | state: :failed}
     end
   end
 
