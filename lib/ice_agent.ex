@@ -286,7 +286,7 @@ defmodule ExICE.ICEAgent do
   defp handle_checklist(state) do
     case Checklist.get_next_pair(state.checklist) do
       %CandidatePair{} = pair ->
-        Logger.debug("Sending conn check on pair: #{inspect(pair)}")
+        Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
 
         {pair, state} = send_conn_check(pair, state)
 
@@ -406,9 +406,10 @@ defmodule ExICE.ICEAgent do
     case Checklist.find_pair(state.checklist, pair) do
       nil ->
         if use_candidate do
-          Logger.debug(
-            "Adding new candidate pair that will be nominated after successfull conn check: #{inspect(pair)}"
-          )
+          Logger.debug("""
+          Adding new candidate pair that will be nominated after \
+          successfull conn check: #{inspect(pair.id)}\
+          """)
 
           pair = %CandidatePair{pair | nominate?: true}
           put_in(state, [:checklist, pair.id], pair)
@@ -421,7 +422,7 @@ defmodule ExICE.ICEAgent do
         if use_candidate do
           if pair.state == :succeeded do
             # TODO should we call this selected or nominated pair
-            Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair)}")
+            Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair.id)}")
             pair = %CandidatePair{pair | nominated?: true}
             state = %{state | selected_pair: pair, state: :completed}
             send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
@@ -432,7 +433,7 @@ defmodule ExICE.ICEAgent do
             Logger.debug("""
             Nomination request on pair that hasn't been verified yet.
             We will nominate pair once conn check passes.
-            Pair: #{inspect(pair)}
+            Pair: #{inspect(pair.id)}
             """)
 
             pair = %CandidatePair{pair | nominate?: true}
@@ -571,7 +572,7 @@ defmodule ExICE.ICEAgent do
             nominated?: true
         }
 
-        Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
+        Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair.id)}")
         send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
         checklist = Map.replace!(state.checklist, pair.id, pair)
         %{state | checklist: checklist, state: :completed, selected_pair: pair}
@@ -621,7 +622,11 @@ defmodule ExICE.ICEAgent do
   # all checklists with the same foundation to Waiting.
   defp add_valid_pair(valid_pair, conn_check_pair, _, state)
        when are_pairs_equal(valid_pair, conn_check_pair) do
-    Logger.debug("New valid pair: #{inspect(conn_check_pair)}")
+    Logger.debug("""
+    New valid pair: #{inspect(conn_check_pair.id)} \
+    resulted from conn check on pair: #{inspect(conn_check_pair.id)}\
+    """)
+
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
 
     if state.state not in [:connected, :completed] do
@@ -635,7 +640,11 @@ defmodule ExICE.ICEAgent do
 
   defp add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
        when are_pairs_equal(valid_pair, checklist_pair) do
-    Logger.debug("New valid pair: #{inspect(checklist_pair)}")
+    Logger.debug("""
+    New valid pair: #{inspect(checklist_pair.id)} \
+    resulted from conn check on pair: #{inspect(conn_check_pair.id)}\
+    """)
+
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
     checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
 
@@ -653,7 +662,13 @@ defmodule ExICE.ICEAgent do
 
   defp add_valid_pair(valid_pair, conn_check_pair, _, state) do
     # TODO compute priority according to sec 7.2.5.3.2
-    Logger.debug("New valid pair: #{inspect(valid_pair)}")
+    Logger.debug("""
+    Adding new candidate pair resulted from conn check \
+    on pair: #{inspect(conn_check_pair.id)}. Pair: #{inspect(valid_pair)}\
+    """)
+
+    Logger.debug("New valid pair: #{inspect(valid_pair.id)}")
+
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
 
     if state.state not in [:connected, :completed] do
@@ -684,9 +699,7 @@ defmodule ExICE.ICEAgent do
   defp nominate(state) do
     case Checklist.get_pair_for_nomination(state.checklist) do
       %CandidatePair{} = pair ->
-        Logger.debug("""
-        Enqueuing pair for nomination: #{inspect(pair)}"
-        """)
+        Logger.debug("Enqueuing pair for nomination: #{inspect(pair.id)}")
 
         pair = %CandidatePair{pair | state: :waiting, nominate?: true}
         # TODO use triggered check queue
