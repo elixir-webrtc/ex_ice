@@ -97,7 +97,7 @@ defmodule ExICE.ICEAgent do
       gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
       role: Keyword.fetch!(opts, :role),
-      checklist: [],
+      checklist: %{},
       tr_check_q: [],
       selected_pair: nil,
       conn_checks: %{},
@@ -157,7 +157,7 @@ defmodule ExICE.ICEAgent do
     checklist_foundations = Checklist.get_foundations(state.checklist)
 
     new_pairs =
-      for local_cand <- local_cands do
+      for local_cand <- local_cands, into: %{} do
         local_cand =
           if local_cand.type == :srflx do
             %Candidate{local_cand | address: local_cand.base_address, port: local_cand.base_port}
@@ -166,12 +166,13 @@ defmodule ExICE.ICEAgent do
           end
 
         pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
-        CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
+        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
+        {pair.id, pair}
       end
 
-    checklist = Checklist.prune(state.checklist ++ new_pairs)
+    checklist = Checklist.prune(Map.merge(state.checklist, new_pairs))
 
-    added_pairs = checklist -- state.checklist
+    added_pairs = Map.drop(checklist, Map.keys(state.checklist))
 
     if added_pairs == [] do
       Logger.debug("Not adding any new pairs as they were redundant")
@@ -284,12 +285,12 @@ defmodule ExICE.ICEAgent do
 
   defp handle_checklist(state) do
     case Checklist.get_next_pair(state.checklist) do
-      {pair, idx} ->
+      %CandidatePair{} = pair ->
         Logger.debug("Sending conn check on pair: #{inspect(pair)}")
 
         {pair, state} = send_conn_check(pair, state)
 
-        %{state | checklist: List.update_at(state.checklist, idx, fn _ -> pair end)}
+        put_in(state, [:checklist, pair.id], pair)
 
       nil ->
         if nominate?(state) do
@@ -308,26 +309,20 @@ defmodule ExICE.ICEAgent do
         now - send_time >= @hto
       end)
 
-    stale_cc = Map.new(stale_cc)
-    cc = Map.new(cc)
+    {stale_cc, cc} = {Map.new(stale_cc), Map.new(cc)}
 
-    stale_cc_ids = Enum.map(stale_cc, fn {id, _} -> id end)
-
-    if stale_cc_ids != [] do
+    if stale_cc != %{} do
+      stale_cc_ids = Enum.map(stale_cc, fn {id, _} -> id end)
       Logger.debug("Connectivity checks timed out: #{inspect(stale_cc_ids)}")
     end
 
-    stale_pairs = Enum.map(stale_cc, fn {_id, %{pair: pair}} -> pair end)
+    stale_pair_ids = Enum.map(stale_cc, fn {_id, %{pair_id: pair_id}} -> pair_id end)
 
-    checklist =
-      Enum.map(state.checklist, fn pair ->
-        if pair in stale_pairs do
-          Logger.debug("Pair failed. Reason: timeout. Pair: #{inspect(pair)}")
-          %CandidatePair{pair | state: :failed}
-        else
-          pair
-        end
-      end)
+    if stale_pair_ids != [] do
+      Logger.debug("Pairs failed. Reason: timeout. Pairs: #{inspect(stale_pair_ids)}")
+    end
+
+    checklist = Checklist.timeout_pairs(state.checklist, stale_pair_ids)
 
     {stale_gath_trans, gath_trans} =
       Enum.split_with(state.gathering_transactions, fn {_id,
@@ -338,10 +333,7 @@ defmodule ExICE.ICEAgent do
     gath_trans = Map.new(gath_trans)
 
     if stale_gath_trans != [] do
-      Logger.debug("""
-      Removing gathering transactions. Reason: timeout. \ 
-      Transactions: #{inspect(stale_gath_trans)}"\
-      """)
+      Logger.debug("Gathering transactions timed out: #{inspect(stale_gath_trans)}")
     end
 
     %{state | checklist: checklist, conn_checks: cc, gathering_transactions: gath_trans}
@@ -419,13 +411,13 @@ defmodule ExICE.ICEAgent do
           )
 
           pair = %CandidatePair{pair | nominate?: true}
-          %{state | checklist: [pair | state.checklist]}
+          put_in(state, [:checklist, pair.id], pair)
         else
           Logger.debug("Adding new candidate pair: #{inspect(pair)}")
-          %{state | checklist: [pair | state.checklist]}
+          put_in(state, [:checklist, pair.id], pair)
         end
 
-      {%CandidatePair{} = pair, idx} ->
+      %CandidatePair{} = pair ->
         if use_candidate do
           if pair.state == :succeeded do
             # TODO should we call this selected or nominated pair
@@ -434,7 +426,7 @@ defmodule ExICE.ICEAgent do
             state = %{state | selected_pair: pair, state: :completed}
             send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
             send(state.controlling_process, {:ex_ice, self(), :completed})
-            update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+            put_in(state, [:checklist, pair.id], pair)
           else
             # TODO should we check if this pair is not in failed?
             Logger.debug("""
@@ -444,7 +436,7 @@ defmodule ExICE.ICEAgent do
             """)
 
             pair = %CandidatePair{pair | nominate?: true}
-            update_in(state, [:checklist], &List.update_at(&1, idx, fn _ -> pair end))
+            put_in(state, [:checklist, pair.id], pair)
           end
         else
           state
@@ -482,14 +474,15 @@ defmodule ExICE.ICEAgent do
     checklist_foundations = Checklist.get_foundations(state.checklist)
 
     new_pairs =
-      for remote_cand <- remote_cands do
+      for remote_cand <- remote_cands, into: %{} do
         pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
-        CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
+        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
+        {pair.id, pair}
       end
 
-    checklist = Checklist.prune(state.checklist ++ new_pairs)
+    checklist = Checklist.prune(Map.merge(state.checklist, new_pairs))
 
-    added_pairs = checklist -- state.checklist
+    added_pairs = Map.drop(checklist, Map.keys(state.checklist))
 
     if added_pairs == [] do
       Logger.debug("Not adding any new pairs as they were redundant")
@@ -506,17 +499,16 @@ defmodule ExICE.ICEAgent do
 
   defp handle_binding_response(socket, src_ip, src_port, msg, state)
        when is_map_key(state.conn_checks, msg.transaction_id) do
-    {%{pair: conn_check_pair}, state} = pop_in(state, [:conn_checks, msg.transaction_id])
+    {%{pair_id: pair_id}, state} = pop_in(state, [:conn_checks, msg.transaction_id])
 
-    {^conn_check_pair, conn_check_pair_idx} =
-      Checklist.find_exact_pair(state.checklist, conn_check_pair)
+    conn_check_pair = Map.fetch!(state.checklist, pair_id)
 
     {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
 
     # check that the source and destination transport
     # adresses are symmetric - see sec. 7.2.5.2.1
     if is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
-      handle_conn_check(msg, conn_check_pair, conn_check_pair_idx, state)
+      handle_conn_check(msg, conn_check_pair, state)
     else
       Logger.warn("""
       Ignoring conn check response, non-symmetric src and dst addresses.
@@ -526,10 +518,7 @@ defmodule ExICE.ICEAgent do
 
       conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
 
-      checklist =
-        List.update_at(state.checklist, conn_check_pair_idx, fn _ -> conn_check_pair end)
-
-      %{state | checklist: checklist}
+      put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
     end
   end
 
@@ -547,7 +536,7 @@ defmodule ExICE.ICEAgent do
     state
   end
 
-  defp handle_conn_check(msg, conn_check_pair, conn_check_pair_idx, state) do
+  defp handle_conn_check(msg, conn_check_pair, state) do
     {:ok, xor_addr} = Message.get_attribute(msg, XORMappedAddress)
 
     {local_cand, state} = get_or_create_cand(xor_addr, conn_check_pair, state)
@@ -557,34 +546,16 @@ defmodule ExICE.ICEAgent do
 
     valid_pair = %CandidatePair{valid_pair | valid?: true}
 
-    {checklist_pair, checklist_pair_idx} =
-      case Checklist.find_pair(state.checklist, valid_pair) do
-        nil -> {nil, nil}
-        other -> other
-      end
+    checklist_pair = Checklist.find_pair(state.checklist, valid_pair)
 
-    case {checklist_pair, checklist_pair_idx} do
-      {nil, nil} ->
-        add_valid_pair(
-          valid_pair,
-          conn_check_pair,
-          conn_check_pair_idx,
-          checklist_pair,
-          checklist_pair_idx,
-          state
-        )
+    case checklist_pair do
+      nil ->
+        add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
 
-      {%CandidatePair{valid?: false}, _idx} ->
-        add_valid_pair(
-          valid_pair,
-          conn_check_pair,
-          conn_check_pair_idx,
-          checklist_pair,
-          checklist_pair_idx,
-          state
-        )
+      %CandidatePair{valid?: false} ->
+        add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
 
-      {pair, idx} ->
+      pair ->
         # FIXME this still might happen
         # e.g. when gathering srflx candidate
         # and pairing it with remote host cand
@@ -602,7 +573,7 @@ defmodule ExICE.ICEAgent do
 
         Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair)}")
         send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
-        checklist = List.update_at(state.checklist, idx, fn _ -> pair end)
+        checklist = Map.replace!(state.checklist, pair.id, pair)
         %{state | checklist: checklist, state: :completed, selected_pair: pair}
     end
   end
@@ -648,7 +619,7 @@ defmodule ExICE.ICEAgent do
   # TODO sec. 7.2.5.3.3
   # The agent MUST set the states for all other Frozen candidate pairs in
   # all checklists with the same foundation to Waiting.
-  defp add_valid_pair(valid_pair, conn_check_pair, conn_check_pair_idx, _, _, state)
+  defp add_valid_pair(valid_pair, conn_check_pair, _, state)
        when are_pairs_equal(valid_pair, conn_check_pair) do
     Logger.debug("New valid pair: #{inspect(conn_check_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
@@ -657,19 +628,12 @@ defmodule ExICE.ICEAgent do
       send(state.controlling_process, {:ex_ice, self(), :connected})
     end
 
-    checklist = List.update_at(state.checklist, conn_check_pair_idx, fn _ -> conn_check_pair end)
+    checklist = Map.replace!(state.checklist, conn_check_pair.id, conn_check_pair)
 
     %{state | state: :connected, checklist: checklist}
   end
 
-  defp add_valid_pair(
-         valid_pair,
-         conn_check_pair,
-         conn_check_pair_idx,
-         checklist_pair,
-         checklist_pair_idx,
-         state
-       )
+  defp add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
        when are_pairs_equal(valid_pair, checklist_pair) do
     Logger.debug("New valid pair: #{inspect(checklist_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
@@ -679,18 +643,15 @@ defmodule ExICE.ICEAgent do
       send(state.controlling_process, {:ex_ice, self(), :connected})
     end
 
-    state
-    |> update_in(
-      [:checklist],
-      &List.update_at(&1, conn_check_pair_idx, fn _ -> conn_check_pair end)
-    )
-    |> update_in(
-      [:checklist],
-      &List.update_at(&1, checklist_pair_idx, fn _ -> checklist_pair end)
-    )
+    checklist =
+      state.checklist
+      |> Map.replace!(conn_check_pair.id, conn_check_pair)
+      |> Map.replace!(checklist_pair.id, checklist_pair)
+
+    %{state | checklist: checklist}
   end
 
-  defp add_valid_pair(valid_pair, conn_check_pair, conn_check_pair_idx, _, _, state) do
+  defp add_valid_pair(valid_pair, conn_check_pair, _, state) do
     # TODO compute priority according to sec 7.2.5.3.2
     Logger.debug("New valid pair: #{inspect(valid_pair)}")
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
@@ -699,12 +660,12 @@ defmodule ExICE.ICEAgent do
       send(state.controlling_process, {:ex_ice, self(), :connected})
     end
 
-    state
-    |> update_in(
-      [:checklist],
-      &List.update_at(&1, conn_check_pair_idx, fn _ -> conn_check_pair end)
-    )
-    |> update_in([:checklist], &(&1 ++ [valid_pair]))
+    checklist =
+      state.checklist
+      |> Map.replace!(conn_check_pair.id, conn_check_pair)
+      |> Map.put(valid_pair.id, valid_pair)
+
+    %{state | checklist: checklist}
   end
 
   defp nominate?(state) do
@@ -722,15 +683,14 @@ defmodule ExICE.ICEAgent do
 
   defp nominate(state) do
     case Checklist.get_pair_for_nomination(state.checklist) do
-      {pair, idx} ->
+      %CandidatePair{} = pair ->
         Logger.debug("""
         Enqueuing pair for nomination: #{inspect(pair)}"
         """)
 
         pair = %CandidatePair{pair | state: :waiting, nominate?: true}
         # TODO use triggered check queue
-        checklist = List.update_at(state.checklist, idx, fn _ -> pair end)
-        state = %{state | checklist: checklist}
+        state = put_in(state, [:checklist, pair.id], pair)
 
         {_, state} = handle_info(:ta_timeout, state)
         state
@@ -842,7 +802,7 @@ defmodule ExICE.ICEAgent do
     pair = %CandidatePair{pair | state: :in_progress}
 
     conn_check = %{
-      pair: pair,
+      pair_id: pair.id,
       send_time: System.monotonic_time(:millisecond)
     }
 

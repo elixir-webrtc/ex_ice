@@ -10,6 +10,7 @@ defmodule ExICE.CandidatePair do
   @type state() :: :waiting | :in_progress | :succeeded | :failed | :frozen
 
   @type t() :: %__MODULE__{
+          id: integer(),
           local_cand: Candidate.t(),
           nominate?: boolean(),
           nominated?: boolean(),
@@ -19,7 +20,7 @@ defmodule ExICE.CandidatePair do
           valid?: boolean
         }
 
-  @enforce_keys [:local_cand, :remote_cand, :priority]
+  @enforce_keys [:id, :local_cand, :remote_cand, :priority]
   defstruct @enforce_keys ++
               [
                 nominate?: false,
@@ -33,7 +34,10 @@ defmodule ExICE.CandidatePair do
   def new(local_cand, remote_cand, agent_role, state) do
     priority = priority(agent_role, local_cand, remote_cand)
 
+    <<id::12*8>> = :crypto.strong_rand_bytes(12)
+
     %__MODULE__{
+      id: id,
       local_cand: local_cand,
       remote_cand: remote_cand,
       priority: priority,

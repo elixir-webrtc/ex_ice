@@ -1,22 +1,26 @@
 defmodule ExICE.Checklist do
   @moduledoc false
 
+  alias ExICE.CandidatePair
+
   def get_next_pair(checklist) do
     checklist
-    |> Enum.with_index()
-    |> Enum.filter(fn {pair, _idx} -> pair.state == :waiting end)
-    |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
+    |> Enum.filter(fn {_id, pair} -> pair.state == :waiting end)
+    |> Enum.max_by(fn {_id, pair} -> pair.priority end, fn -> {nil, nil} end)
+    |> elem(1)
   end
 
   def get_pair_for_nomination(checklist) do
     checklist
-    |> Enum.with_index()
-    |> Enum.filter(fn {pair, _idx} -> pair.valid? end)
-    |> Enum.max_by(fn {pair, _idx} -> pair.priority end, fn -> nil end)
+    |> Enum.filter(fn {_id, pair} -> pair.valid? end)
+    |> Enum.max_by(fn {_id, pair} -> pair.priority end, fn -> {nil, nil} end)
+    |> elem(1)
   end
 
   def get_valid_pair(checklist) do
-    Enum.find(checklist, fn pair -> pair.valid? end)
+    checklist
+    |> Enum.find({nil, nil}, fn {_id, pair} -> pair.valid? end)
+    |> elem(1)
   end
 
   def find_pair(checklist, pair) do
@@ -26,8 +30,7 @@ defmodule ExICE.Checklist do
   def find_pair(checklist, local_cand, remote_cand) do
     # TODO which pairs are actually the same?
     checklist
-    |> Enum.with_index()
-    |> Enum.find(fn {p, _idx} ->
+    |> Enum.find({nil, nil}, fn {_id, p} ->
       p.local_cand.base_address == local_cand.base_address and
         p.local_cand.base_port == local_cand.base_port and
         p.local_cand.address == local_cand.address and
@@ -35,25 +38,20 @@ defmodule ExICE.Checklist do
         p.remote_cand.address == remote_cand.address and
         p.remote_cand.port == remote_cand.port
     end)
-  end
-
-  def find_exact_pair(checklist, pair) do
-    checklist
-    |> Enum.with_index()
-    |> Enum.find(fn {p, _idx} -> p == pair end)
+    |> elem(1)
   end
 
   def waiting?(checklist) do
-    Enum.any?(checklist, fn pair -> pair.state == :waiting end)
+    Enum.any?(checklist, fn {_id, pair} -> pair.state == :waiting end)
   end
 
   def in_progress?(checklist) do
-    Enum.any?(checklist, fn pair -> pair.state == :in_progress end)
+    Enum.any?(checklist, fn {_id, pair} -> pair.state == :in_progress end)
   end
 
   def get_foundations(checklist) do
-    for cand_pair <- checklist do
-      {cand_pair.local_cand.foundation, cand_pair.remote_cand.foundation}
+    for {_id, pair} <- checklist do
+      {pair.local_cand.foundation, pair.remote_cand.foundation}
     end
   end
 
@@ -67,15 +65,25 @@ defmodule ExICE.Checklist do
     # in flight pairs
 
     {waiting, in_flight_or_done} =
-      Enum.split_with(checklist, fn p -> p.state in [:waiting, :frozen] end)
+      Enum.split_with(checklist, fn {_id, p} -> p.state in [:waiting, :frozen] end)
 
     waiting =
       waiting
-      |> Enum.sort_by(fn p -> p.priority end, :desc)
-      |> Enum.uniq_by(fn p ->
+      |> Enum.sort_by(fn {_id, p} -> p.priority end, :desc)
+      |> Enum.uniq_by(fn {_id, p} ->
         {p.local_cand.base_address, p.local_cand.base_port, p.remote_cand}
       end)
 
-    waiting ++ in_flight_or_done
+    Map.new(waiting ++ in_flight_or_done)
+  end
+
+  def timeout_pairs(checklist, ids) do
+    for {_id, pair} <- checklist, into: %{} do
+      if pair.id in ids do
+        {pair.id, %CandidatePair{pair | state: :failed}}
+      else
+        {pair.id, pair}
+      end
+    end
   end
 end
