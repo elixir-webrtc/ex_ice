@@ -1,6 +1,8 @@
 defmodule ExICE.Integration.P2PTest do
   use ExUnit.Case
 
+  require Logger
+
   alias ExICE.ICEAgent
 
   @tag :p2p
@@ -27,8 +29,8 @@ defmodule ExICE.Integration.P2PTest do
     a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
     a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
 
-    a1_status = %{fd: a1_fd, selected_pair: false, data_recv: false}
-    a2_status = %{fd: a2_fd, selected_pair: false, data_recv: false}
+    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
 
     assert p2p(agent1, agent2, a1_status, a2_status)
 
@@ -37,10 +39,29 @@ defmodule ExICE.Integration.P2PTest do
 
     assert File.read!(Path.join([tmp_dir, "a2_recv_data"])) ==
              File.read!("./test/fixtures/lotr.txt")
+
+    :ok = File.close(a1_fd)
+    :ok = File.close(a2_fd)
+
+    a1_fd = File.open!(Path.join([tmp_dir, "a1_restart_recv_data"]), [:append])
+    a2_fd = File.open!(Path.join([tmp_dir, "a2_restart_recv_data"]), [:append])
+
+    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
+
+    :ok = ICEAgent.restart(agent1)
+
+    assert p2p(agent1, agent2, a1_status, a2_status)
+
+    assert File.read!(Path.join([tmp_dir, "a1_restart_recv_data"])) ==
+             File.read!("./test/fixtures/lotr.txt")
+
+    assert File.read!(Path.join([tmp_dir, "a2_restart_recv_data"])) ==
+             File.read!("./test/fixtures/lotr.txt")
   end
 
-  defp p2p(_agent1, _agent2, %{selected_pair: true, data_recv: true}, %{
-         selected_pair: true,
+  defp p2p(_agent1, _agent2, %{completed: true, data_recv: true}, %{
+         completed: true,
          data_recv: true
        }),
        do: true
@@ -60,6 +81,8 @@ defmodule ExICE.Integration.P2PTest do
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent1, :connected} ->
+        Logger.info("Connected, sending file...")
+
         Task.start(fn ->
           File.stream!("./test/fixtures/lotr.txt", [], 1000)
           |> Stream.each(fn chunk -> ICEAgent.send_data(agent1, chunk) end)
@@ -77,8 +100,9 @@ defmodule ExICE.Integration.P2PTest do
         :ok = IO.binwrite(a1_status.fd, data)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent1, {:selected_pair, _p}} ->
-        a1_status = %{a1_status | selected_pair: true}
+      {:ex_ice, ^agent1, :completed} ->
+        Logger.info("Completed")
+        a1_status = %{a1_status | completed: true}
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent2, {:new_candidate, cand}} ->
@@ -93,11 +117,14 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.end_of_candidates(agent1)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent2, {:selected_pair, _p}} ->
-        a2_status = %{a2_status | selected_pair: true}
+      {:ex_ice, ^agent2, :completed} ->
+        Logger.info("Completed")
+        a2_status = %{a2_status | completed: true}
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent2, :connected} ->
+        Logger.info("Connected, sending file...")
+
         Task.start(fn ->
           File.stream!("./test/fixtures/lotr.txt", [], 1000)
           |> Stream.each(fn chunk -> ICEAgent.send_data(agent2, chunk) end)

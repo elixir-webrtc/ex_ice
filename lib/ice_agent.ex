@@ -67,6 +67,11 @@ defmodule ExICE.ICEAgent do
     GenServer.cast(ice_agent, {:send_data, data})
   end
 
+  @spec restart(pid()) :: :ok
+  def restart(ice_agent) do
+    GenServer.cast(ice_agent, :restart)
+  end
+
   ### Server
 
   @impl true
@@ -93,15 +98,15 @@ defmodule ExICE.ICEAgent do
     state = %{
       started?: false,
       state: :new,
+      ta_timer: nil,
       controlling_process: Keyword.fetch!(opts, :controlling_process),
       gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
       role: Keyword.fetch!(opts, :role),
       checklist: %{},
-      tr_check_q: [],
       selected_pair: nil,
       conn_checks: %{},
-      gathering_state: nil,
+      gathering_state: :new,
       eoc: false,
       local_ufrag: nil,
       local_pwd: nil,
@@ -124,20 +129,39 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_cast(:run, state) do
-    ufrag = :crypto.strong_rand_bytes(3)
-    pwd = :crypto.strong_rand_bytes(16)
+    {ufrag, pwd} = generate_credentials()
     state = %{state | started?: true, local_ufrag: ufrag, local_pwd: pwd}
     send(state.controlling_process, {:ex_ice, self(), {:local_credentials, ufrag, pwd}})
     state = gather_candidates(state)
     Logger.debug("Starting Ta timer")
-    Process.send_after(self(), :ta_timeout, @ta_timeout)
+    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+    {:noreply, %{state | ta_timer: ta_timer}}
+  end
+
+  @impl true
+  def handle_cast(
+        {:set_remote_credentials, ufrag, pwd},
+        %{remote_ufrag: nil, remote_pwd: nil} = state
+      ) do
+    Logger.debug("Setting remote credentials: #{inspect(ufrag)}:#{inspect(pwd)}")
+    state = %{state | remote_ufrag: ufrag, remote_pwd: pwd}
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast({:set_remote_credentials, ufrag, passwd}, state) do
-    Logger.debug("Setting remote credentials: #{inspect(ufrag)}:#{inspect(passwd)}")
-    state = %{state | remote_ufrag: ufrag, remote_pwd: passwd}
+  def handle_cast(
+        {:set_remote_credentials, ufrag, pwd},
+        %{remote_ufrag: ufrag, remote_pwd: pwd} = state
+      ) do
+    Logger.warn("Passed the same remote credentials to be set. Ignoring.")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast({:set_remote_credentials, ufrag, pwd}, state) do
+    Logger.debug("New remote credentials different than the current ones. Restarting ICE")
+    state = do_restart(state)
+    state = %{state | remote_ufrag: ufrag, remote_pwd: pwd}
     {:noreply, state}
   end
 
@@ -187,32 +211,32 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_cast(:end_of_candidates, state) do
-    state = %{state | eoc: true}
-
-    if nominate?(state) do
-      state = nominate(state)
-      {:noreply, state}
-    else
-      {:noreply, state}
-    end
+    {:noreply, %{state | eoc: true}}
   end
 
   @impl true
   def handle_cast({:send_data, data}, %{state: ice_state} = state)
       when ice_state in [:connected, :completed] do
-    %CandidatePair{} = pair = Checklist.get_valid_pair(state.checklist)
+    %CandidatePair{} = pair = state.selected_pair || Checklist.get_valid_pair(state.checklist)
     dst = {pair.remote_cand.address, pair.remote_cand.port}
     do_send(pair.local_cand.socket, dst, data)
     {:noreply, state}
   end
 
   @impl true
-  def handle_cast(_, %{state: ice_state} = state) do
+  def handle_cast({:send_data, _data}, %{state: ice_state} = state) do
     Logger.warn("""
     Cannot send data in ICE state: #{inspect(ice_state)}. \
     Data can only be sent in state :connected or :completed. Ignoring.\
     """)
 
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:restart, state) do
+    Logger.debug("Restarting ICE")
+    state = do_restart(state)
     {:noreply, state}
   end
 
@@ -226,9 +250,15 @@ defmodule ExICE.ICEAgent do
         nil -> handle_checklist(state)
       end
 
-    if state.state not in [:completed, :failed] do
-      Process.send_after(self(), :ta_timeout, @ta_timeout)
-    end
+    state =
+      if state.state not in [:completed, :failed] do
+        ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+        %{state | ta_timer: ta_timer}
+      else
+        Logger.debug("Stoping Ta timer")
+        Process.cancel_timer(state.ta_timer)
+        %{state | ta_timer: nil}
+      end
 
     {:noreply, state}
   end
@@ -424,9 +454,12 @@ defmodule ExICE.ICEAgent do
             # TODO should we call this selected or nominated pair
             Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair.id)}")
             pair = %CandidatePair{pair | nominated?: true}
+
+            if state.state != :completed do
+              send(state.controlling_process, {:ex_ice, self(), :completed})
+            end
+
             state = %{state | selected_pair: pair, state: :completed}
-            send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
-            send(state.controlling_process, {:ex_ice, self(), :completed})
             put_in(state, [:checklist, pair.id], pair)
           else
             # TODO should we check if this pair is not in failed?
@@ -573,7 +606,7 @@ defmodule ExICE.ICEAgent do
         }
 
         Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair.id)}")
-        send(state.controlling_process, {:ex_ice, self(), {:selected_pair, pair}})
+        send(state.controlling_process, {:ex_ice, self(), :completed})
         checklist = Map.replace!(state.checklist, pair.id, pair)
         %{state | checklist: checklist, state: :completed, selected_pair: pair}
     end
@@ -657,7 +690,7 @@ defmodule ExICE.ICEAgent do
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
       |> Map.replace!(checklist_pair.id, checklist_pair)
 
-    %{state | checklist: checklist}
+    %{state | state: :connected, checklist: checklist}
   end
 
   defp add_valid_pair(valid_pair, conn_check_pair, _, state) do
@@ -680,7 +713,7 @@ defmodule ExICE.ICEAgent do
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
       |> Map.put(valid_pair.id, valid_pair)
 
-    %{state | checklist: checklist}
+    %{state | state: :connected, checklist: checklist}
   end
 
   defp nominate?(state) do
@@ -705,12 +738,12 @@ defmodule ExICE.ICEAgent do
         # TODO use triggered check queue
         state = put_in(state, [:checklist, pair.id], pair)
 
-        {_, state} = handle_info(:ta_timeout, state)
-        state
+        handle_checklist(state)
 
       nil ->
         # TODO revisit this
         # should we check if state.state == :in_progress?
+        Logger.debug("No pairs for nomination. ICE failed.")
         send(state.controlling_process, {:ex_ice, self(), :failed})
         %{state | state: :failed}
     end
@@ -731,6 +764,75 @@ defmodule ExICE.ICEAgent do
       send(state.controlling_process, {:ex_ice, self(), :gathering_complete})
       %{state | gathering_state: :complete}
     end
+  end
+
+  defp do_restart(state) do
+    state =
+      if state.ta_timer do
+        Logger.debug("Stoping Ta timer #{inspect(state.ta_timer)}")
+        Process.cancel_timer(state.ta_timer)
+        # flush mailbox
+        receive do
+          :ta_timeout -> :ok
+        after
+          0 -> :ok
+        end
+
+        %{state | ta_timer: nil}
+      else
+        state
+      end
+
+    state.local_cands
+    |> Enum.uniq_by(fn c -> {c.base_address, c.base_port} end)
+    |> Enum.each(fn c ->
+      if state.selected_pair == nil or
+           (c.base_address != state.selected_pair.local_cand.base_address and
+              c.base_port != state.selected_pair.local_cand.base_port) do
+        Logger.debug(
+          "Closing local candidate's socket: #{inspect(c.base_address)}:#{c.base_port}"
+        )
+
+        :ok = :gen_udp.close(c.socket)
+      end
+    end)
+
+    {ufrag, pwd} = generate_credentials()
+
+    send(state.controlling_process, {:ex_ice, self(), {:local_credentials, ufrag, pwd}})
+
+    new_ice_state =
+      cond do
+        state.state in [:disconnected, :failed] -> :checking
+        state.state == :completed -> :connected
+        true -> state.state
+      end
+
+    if new_ice_state != state.state do
+      send(state.controlling_process, {:ex_ice, self(), new_ice_state})
+    end
+
+    state = %{
+      state
+      | state: new_ice_state,
+        gathering_state: :new,
+        gathering_transactions: %{},
+        conn_checks: %{},
+        checklist: %{},
+        local_cands: [],
+        remote_cands: [],
+        local_ufrag: ufrag,
+        local_pwd: pwd,
+        remote_ufrag: nil,
+        remote_pwd: nil,
+        eoc: false
+    }
+
+    Logger.debug("Starting Ta timer")
+    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+    state = %{state | ta_timer: ta_timer}
+
+    gather_candidates(state)
   end
 
   defp gather_candidates(state) do
@@ -776,6 +878,12 @@ defmodule ExICE.ICEAgent do
   defp find_cand(cands, socket) do
     # this function returns only host candidates
     Enum.find(cands, fn cand -> cand.socket == socket and cand.type == :host end)
+  end
+
+  defp generate_credentials() do
+    ufrag = :crypto.strong_rand_bytes(3)
+    pwd = :crypto.strong_rand_bytes(16)
+    {ufrag, pwd}
   end
 
   defp send_conn_check(pair, state) do
