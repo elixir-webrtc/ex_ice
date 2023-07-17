@@ -11,3 +11,16 @@ a new valid pair? sec 7.2.5.3.4
 9. A Trickle ICE agent MUST NOT pair a local candidate until it has been trickled to the remote party. 
 - How can we know that the candidate has been trickled to the remote party? Does any implementation
 exposes in its API ability to mark the candidate as trickled?
+10. What data use for keepalives and how often?
+Chrome seems to send binding requests every 2-2.5s which is a discouraged behavior
+according to appendinx B.8 of RFC 8445.
+Chrome also sends those keepalives even when the data is flowing which is also
+an opposite behavior comparing to what RFC says.
+Pion seems to send Binding Indications 2 seconds after there is no traffic.
+In general, we should send Binding Indications and only when there is no media traffic.
+RFC says that we should send keepalives after 15 seconds of inactivity.
+"Though Binding Indications are used for
+keepalives, an agent MUST be prepared to receive a connectivity check
+as well.  If a connectivity check is received, a response is
+generated as discussed in [RFC5389], but there is no impact on ICE
+processing otherwise."
