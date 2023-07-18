@@ -42,14 +42,19 @@ defmodule ExICE.ICEAgent do
     GenServer.start_link(__MODULE__, opts ++ [role: role, controlling_process: self()])
   end
 
-  @spec run(pid()) :: :ok
-  def run(ice_agent) do
-    GenServer.cast(ice_agent, :run)
+  @spec get_local_credentials(pid()) :: {:ok, ufrag :: binary(), pwd :: binary()}
+  def get_local_credentials(ice_agent) do
+    GenServer.call(ice_agent, :get_local_credentials)
   end
 
   @spec set_remote_credentials(pid(), binary(), binary()) :: :ok
   def set_remote_credentials(ice_agent, ufrag, passwd) do
     GenServer.cast(ice_agent, {:set_remote_credentials, ufrag, passwd})
+  end
+
+  @spec gather_candidates(pid()) :: :ok
+  def gather_candidates(ice_agent) do
+    GenServer.cast(ice_agent, :gather_candidates)
   end
 
   @spec add_remote_candidate(pid(), String.t()) :: :ok
@@ -95,10 +100,14 @@ defmodule ExICE.ICEAgent do
       end)
       |> Enum.reject(&(&1 == nil))
 
+    {local_ufrag, local_pwd} = generate_credentials()
+
+    Logger.debug("Starting Ta timer")
+    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+
     state = %{
-      started?: false,
       state: :new,
-      ta_timer: nil,
+      ta_timer: ta_timer,
       controlling_process: Keyword.fetch!(opts, :controlling_process),
       gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
@@ -108,8 +117,8 @@ defmodule ExICE.ICEAgent do
       conn_checks: %{},
       gathering_state: :new,
       eoc: false,
-      local_ufrag: nil,
-      local_pwd: nil,
+      local_ufrag: local_ufrag,
+      local_pwd: local_pwd,
       local_cands: [],
       remote_ufrag: nil,
       remote_pwd: nil,
@@ -122,20 +131,8 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def handle_cast(:run, %{started?: true} = state) do
-    Logger.warn("ICE already started. Ignoring.")
-    {:noreply, state}
-  end
-
-  @impl true
-  def handle_cast(:run, state) do
-    {ufrag, pwd} = generate_credentials()
-    state = %{state | started?: true, local_ufrag: ufrag, local_pwd: pwd}
-    send(state.controlling_process, {:ex_ice, self(), {:local_credentials, ufrag, pwd}})
-    state = gather_candidates(state)
-    Logger.debug("Starting Ta timer")
-    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
-    {:noreply, %{state | ta_timer: ta_timer}}
+  def handle_call(:get_local_credentials, _from, state) do
+    {:reply, {:ok, state.local_ufrag, state.local_pwd}, state}
   end
 
   @impl true
@@ -162,6 +159,12 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New remote credentials different than the current ones. Restarting ICE")
     state = do_restart(state)
     state = %{state | remote_ufrag: ufrag, remote_pwd: pwd}
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:gather_candidates, state) do
+    state = do_gather_candidates(state)
     {:noreply, state}
   end
 
@@ -799,8 +802,6 @@ defmodule ExICE.ICEAgent do
 
     {ufrag, pwd} = generate_credentials()
 
-    send(state.controlling_process, {:ex_ice, self(), {:local_credentials, ufrag, pwd}})
-
     new_ice_state =
       cond do
         state.state in [:disconnected, :failed] -> :checking
@@ -812,9 +813,13 @@ defmodule ExICE.ICEAgent do
       send(state.controlling_process, {:ex_ice, self(), new_ice_state})
     end
 
-    state = %{
+    Logger.debug("Starting Ta timer")
+    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+
+    %{
       state
       | state: new_ice_state,
+        ta_timer: ta_timer,
         gathering_state: :new,
         gathering_transactions: %{},
         conn_checks: %{},
@@ -827,15 +832,9 @@ defmodule ExICE.ICEAgent do
         remote_pwd: nil,
         eoc: false
     }
-
-    Logger.debug("Starting Ta timer")
-    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
-    state = %{state | ta_timer: ta_timer}
-
-    gather_candidates(state)
   end
 
-  defp gather_candidates(state) do
+  defp do_gather_candidates(state) do
     {:ok, host_candidates} = Gatherer.gather_host_candidates(state.ip_filter)
 
     for cand <- host_candidates do

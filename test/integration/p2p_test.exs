@@ -23,8 +23,14 @@ defmodule ExICE.Integration.P2PTest do
     {:ok, agent2} =
       ICEAgent.start_link(:controlled, ip_filter: ip_filter, stun_servers: stun_servers)
 
-    ICEAgent.run(agent1)
-    ICEAgent.run(agent2)
+    {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
+    {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
+
+    :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
+    :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    :ok = ICEAgent.gather_candidates(agent1)
+    :ok = ICEAgent.gather_candidates(agent2)
 
     a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
     a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
@@ -50,6 +56,13 @@ defmodule ExICE.Integration.P2PTest do
     a2_status = %{fd: a2_fd, completed: false, data_recv: false}
 
     :ok = ICEAgent.restart(agent1)
+    {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
+    :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
+    {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
+    :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    :ok = ICEAgent.gather_candidates(agent1)
+    :ok = ICEAgent.gather_candidates(agent2)
 
     assert p2p(agent1, agent2, a1_status, a2_status)
 
@@ -70,10 +83,6 @@ defmodule ExICE.Integration.P2PTest do
     receive do
       {:ex_ice, ^agent1, {:new_candidate, cand}} ->
         ICEAgent.add_remote_candidate(agent2, cand)
-        p2p(agent1, agent2, a1_status, a2_status)
-
-      {:ex_ice, ^agent1, {:local_credentials, ufrag, passwd}} ->
-        ICEAgent.set_remote_credentials(agent2, ufrag, passwd)
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent1, :gathering_complete} ->
@@ -107,10 +116,6 @@ defmodule ExICE.Integration.P2PTest do
 
       {:ex_ice, ^agent2, {:new_candidate, cand}} ->
         ICEAgent.add_remote_candidate(agent1, cand)
-        p2p(agent1, agent2, a1_status, a2_status)
-
-      {:ex_ice, ^agent2, {:local_credentials, ufrag, passwd}} ->
-        ICEAgent.set_remote_credentials(agent1, ufrag, passwd)
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent2, :gathering_complete} ->
