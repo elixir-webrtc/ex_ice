@@ -244,6 +244,15 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
+  def handle_info(:ta_timeout, %{remote_ufrag: nil, remote_pwd: nil} = state) do
+    # TODO we can do this better i.e.
+    # allow for executing gathering transactions
+    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+    state = %{state | ta_timer: ta_timer}
+    {:noreply, state}
+  end
+
+  @impl true
   def handle_info(:ta_timeout, state) do
     state = timeout_pending_transactions(state)
 
@@ -403,81 +412,30 @@ defmodule ExICE.ICEAgent do
   end
 
   defp handle_binding_request(socket, src_ip, src_port, msg, state) do
-    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
     # username = state.local_ufrag <> ":" <> state.remote_ufrag
-    # TODO handle error and check username
-    {:ok, key} = Message.authenticate_st(msg, state.local_pwd)
-    true = Message.check_fingerprint(msg)
-    use_candidate = Message.get_attribute(msg, UseCandidate)
-
-    type = %Type{class: :success_response, method: :binding}
-
-    resp =
-      Message.new(msg.transaction_id, type, [%XORMappedAddress{address: src_ip, port: src_port}])
-      |> Message.with_integrity(key)
-      |> Message.with_fingerprint()
-      |> Message.encode()
-
-    do_send(socket, {src_ip, src_port}, resp)
-
-    {remote_cand, state} =
-      case find_cand(state.remote_cands, src_ip, src_port) do
+    # TODO check username
+    with {:ok, key} <- Message.authenticate_st(msg, state.local_pwd),
+         true <- Message.check_fingerprint(msg) do
+      case find_cand(state.local_cands, socket) do
         nil ->
-          # TODO what about priority
-          cand = Candidate.new(:prflx, src_ip, src_port, nil, nil, nil)
-          Logger.debug("Adding new peer reflexive candidate: #{inspect(cand)}")
-          state = %{state | remote_cands: [cand | state.remote_cands]}
-          {cand, state}
-
-        %Candidate{} = cand ->
-          {cand, state}
-      end
-
-    pair = CandidatePair.new(local_cand, remote_cand, state.role, :waiting)
-
-    # TODO use triggered check queue
-    case Checklist.find_pair(state.checklist, pair) do
-      nil ->
-        if use_candidate do
-          Logger.debug("""
-          Adding new candidate pair that will be nominated after \
-          successfull conn check: #{inspect(pair.id)}\
-          """)
-
-          pair = %CandidatePair{pair | nominate?: true}
-          put_in(state, [:checklist, pair.id], pair)
-        else
-          Logger.debug("Adding new candidate pair: #{inspect(pair)}")
-          put_in(state, [:checklist, pair.id], pair)
-        end
-
-      %CandidatePair{} = pair ->
-        if use_candidate do
-          if pair.state == :succeeded do
-            # TODO should we call this selected or nominated pair
-            Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair.id)}")
-            pair = %CandidatePair{pair | nominated?: true}
-
-            if state.state != :completed do
-              send(state.controlling_process, {:ex_ice, self(), :completed})
-            end
-
-            state = %{state | selected_pair: pair, state: :completed}
-            put_in(state, [:checklist, pair.id], pair)
-          else
-            # TODO should we check if this pair is not in failed?
-            Logger.debug("""
-            Nomination request on pair that hasn't been verified yet.
-            We will nominate pair once conn check passes.
-            Pair: #{inspect(pair.id)}
-            """)
-
-            pair = %CandidatePair{pair | nominate?: true}
-            put_in(state, [:checklist, pair.id], pair)
-          end
-        else
+          # keepalive on pair selected before ice restart
+          send_binding_success_response(socket, src_ip, src_port, msg, key)
           state
-        end
+
+        %Candidate{} = local_cand ->
+          send_binding_success_response(socket, src_ip, src_port, msg, key)
+          {remote_cand, state} = get_or_create_remote_cand(src_ip, src_port, state)
+          use_candidate = Message.get_attribute(msg, UseCandidate)
+          handle_conn_check_req(local_cand, remote_cand, use_candidate, state)
+      end
+    else
+      :error ->
+        Logger.debug("Couldn't authenticate binding request. Ignoring")
+        state
+
+      false ->
+        Logger.debug("Incorrect binding request fingerprint. Ignoring")
+        state
     end
   end
 
@@ -545,7 +503,7 @@ defmodule ExICE.ICEAgent do
     # check that the source and destination transport
     # adresses are symmetric - see sec. 7.2.5.2.1
     if is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
-      handle_conn_check(msg, conn_check_pair, state)
+      handle_conn_check_resp(msg, conn_check_pair, state)
     else
       Logger.warn("""
       Ignoring conn check response, non-symmetric src and dst addresses.
@@ -573,10 +531,60 @@ defmodule ExICE.ICEAgent do
     state
   end
 
-  defp handle_conn_check(msg, conn_check_pair, state) do
+  defp handle_conn_check_req(local_cand, remote_cand, use_candidate, state) do
+    pair = CandidatePair.new(local_cand, remote_cand, state.role, :waiting)
+
+    # TODO use triggered check queue
+    case Checklist.find_pair(state.checklist, pair) do
+      nil ->
+        if use_candidate do
+          Logger.debug("""
+          Adding new candidate pair that will be nominated after \
+          successfull conn check: #{inspect(pair.id)}\
+          """)
+
+          pair = %CandidatePair{pair | nominate?: true}
+          put_in(state, [:checklist, pair.id], pair)
+        else
+          Logger.debug("Adding new candidate pair: #{inspect(pair)}")
+          put_in(state, [:checklist, pair.id], pair)
+        end
+
+      %CandidatePair{} = pair ->
+        if use_candidate do
+          if pair.state == :succeeded do
+            # TODO should we call this selected or nominated pair
+            Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair.id)}")
+
+            pair = %CandidatePair{pair | nominated?: true}
+
+            if state.state != :completed do
+              send(state.controlling_process, {:ex_ice, self(), :completed})
+            end
+
+            state = %{state | selected_pair: pair, state: :completed}
+            put_in(state, [:checklist, pair.id], pair)
+          else
+            # TODO should we check if this pair is not in failed?
+            Logger.debug("""
+            Nomination request on pair that hasn't been verified yet.
+            We will nominate pair once conn check passes.
+            Pair: #{inspect(pair.id)}
+            """)
+
+            pair = %CandidatePair{pair | nominate?: true}
+            put_in(state, [:checklist, pair.id], pair)
+          end
+        else
+          state
+        end
+    end
+  end
+
+  defp handle_conn_check_resp(msg, conn_check_pair, state) do
     {:ok, xor_addr} = Message.get_attribute(msg, XORMappedAddress)
 
-    {local_cand, state} = get_or_create_cand(xor_addr, conn_check_pair, state)
+    {local_cand, state} = get_or_create_local_cand(xor_addr, conn_check_pair, state)
 
     valid_pair =
       CandidatePair.new(local_cand, conn_check_pair.remote_cand, state.role, :succeeded)
@@ -615,6 +623,18 @@ defmodule ExICE.ICEAgent do
     end
   end
 
+  defp send_binding_success_response(socket, src_ip, src_port, req, key) do
+    type = %Type{class: :success_response, method: :binding}
+
+    resp =
+      Message.new(req.transaction_id, type, [%XORMappedAddress{address: src_ip, port: src_port}])
+      |> Message.with_integrity(key)
+      |> Message.with_fingerprint()
+      |> Message.encode()
+
+    do_send(socket, {src_ip, src_port}, resp)
+  end
+
   defp get_matching_candidates(candidates, cand) do
     Enum.filter(candidates, &(Candidate.family(&1) == Candidate.family(cand)))
   end
@@ -629,7 +649,7 @@ defmodule ExICE.ICEAgent do
     if f in checklist_foundations, do: :frozen, else: :waiting
   end
 
-  defp get_or_create_cand(xor_addr, conn_check_pair, state) do
+  defp get_or_create_local_cand(xor_addr, conn_check_pair, state) do
     local_cand = find_cand(state.local_cands, xor_addr.address, xor_addr.port)
 
     if local_cand do
@@ -637,7 +657,7 @@ defmodule ExICE.ICEAgent do
     else
       # prflx candidate sec 7.2.5.3.1
       # TODO calculate correct prio and foundation
-      c =
+      cand =
         Candidate.new(
           :prflx,
           xor_addr.address,
@@ -647,9 +667,23 @@ defmodule ExICE.ICEAgent do
           conn_check_pair.local_cand.socket
         )
 
-      Logger.debug("New prflx candidate: #{inspect(c)}")
-      state = %{state | local_cands: [c | state.local_cands]}
-      {c, state}
+      Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
+      state = %{state | local_cands: [cand | state.local_cands]}
+      {cand, state}
+    end
+  end
+
+  defp get_or_create_remote_cand(src_ip, src_port, state) do
+    case find_cand(state.remote_cands, src_ip, src_port) do
+      nil ->
+        # TODO what about priority
+        cand = Candidate.new(:prflx, src_ip, src_port, nil, nil, nil)
+        Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
+        state = %{state | remote_cands: [cand | state.remote_cands]}
+        {cand, state}
+
+      %Candidate{} = cand ->
+        {cand, state}
     end
   end
 
@@ -772,7 +806,7 @@ defmodule ExICE.ICEAgent do
   defp do_restart(state) do
     state =
       if state.ta_timer do
-        Logger.debug("Stoping Ta timer #{inspect(state.ta_timer)}")
+        Logger.debug("Stoping Ta timer")
         Process.cancel_timer(state.ta_timer)
         # flush mailbox
         receive do
@@ -835,7 +869,7 @@ defmodule ExICE.ICEAgent do
   end
 
   defp do_gather_candidates(state) do
-    {:ok, host_candidates} = Gatherer.gather_host_candidates(state.ip_filter)
+    {:ok, host_candidates} = Gatherer.gather_host_candidates(ip_filter: state.ip_filter)
 
     for cand <- host_candidates do
       send(
@@ -880,8 +914,9 @@ defmodule ExICE.ICEAgent do
   end
 
   defp generate_credentials() do
-    ufrag = :crypto.strong_rand_bytes(3)
-    pwd = :crypto.strong_rand_bytes(16)
+    # TODO am I using Base.encode64 correctly?
+    ufrag = :crypto.strong_rand_bytes(3) |> Base.encode64()
+    pwd = :crypto.strong_rand_bytes(16) |> Base.encode64()
     {ufrag, pwd}
   end
 

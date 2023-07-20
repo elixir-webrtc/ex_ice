@@ -9,9 +9,11 @@ defmodule ExICE.Gatherer do
 
   require Logger
 
-  @spec gather_host_candidates((:inet.ip_address() -> boolean)) ::
+  @spec gather_host_candidates(ip_filter: (:inet.ip_address() -> boolean)) ::
           {:ok, [Candidate.t()]} | {:error, term()}
-  def gather_host_candidates(ip_filter \\ fn _ -> true end) do
+  def gather_host_candidates(opts \\ []) do
+    ip_filter = opts[:ip_filter] || fn _ -> true end
+
     with {:ok, ints} <- :inet.getifaddrs() do
       ips =
         ints
