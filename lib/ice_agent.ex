@@ -114,6 +114,8 @@ defmodule ExICE.ICEAgent do
       role: Keyword.fetch!(opts, :role),
       checklist: %{},
       selected_pair: nil,
+      prev_selected_pair: nil,
+      prev_valid_pairs: [],
       conn_checks: %{},
       gathering_state: :new,
       eoc: false,
@@ -220,7 +222,13 @@ defmodule ExICE.ICEAgent do
   @impl true
   def handle_cast({:send_data, data}, %{state: ice_state} = state)
       when ice_state in [:connected, :completed] do
-    %CandidatePair{} = pair = state.selected_pair || Checklist.get_valid_pair(state.checklist)
+    %CandidatePair{} =
+      pair =
+      state.selected_pair ||
+        Checklist.get_valid_pair(state.checklist) ||
+        state.prev_selected_pair ||
+        List.first(state.prev_valid_pairs)
+
     dst = {pair.remote_cand.address, pair.remote_cand.port}
     do_send(pair.local_cand.socket, dst, data)
     {:noreply, state}
@@ -820,12 +828,20 @@ defmodule ExICE.ICEAgent do
         state
       end
 
+    valid_pairs = state.checklist |> Map.values() |> Enum.filter(fn pair -> pair.valid? end) 
+    valid_sockets = Enum.map(valid_pairs, fn p -> p.local_cand.socket end)
+
+    {prev_selected_pair, prev_valid_pairs} = if valid_pairs == [] do
+      {state.prev_selected_pair, state.prev_valid_pairs}
+    else
+      # TODO cleanup prev pairs
+      {state.selected_pair, valid_pairs}
+    end
+
     state.local_cands
-    |> Enum.uniq_by(fn c -> {c.base_address, c.base_port} end)
+    |> Enum.uniq_by(fn c -> c.socket end)
     |> Enum.each(fn c ->
-      if state.selected_pair == nil or
-           (c.base_address != state.selected_pair.local_cand.base_address and
-              c.base_port != state.selected_pair.local_cand.base_port) do
+      if c.socket not in valid_sockets do
         Logger.debug(
           "Closing local candidate's socket: #{inspect(c.base_address)}:#{c.base_port}"
         )
@@ -856,6 +872,9 @@ defmodule ExICE.ICEAgent do
         ta_timer: ta_timer,
         gathering_state: :new,
         gathering_transactions: %{},
+        selected_pair: nil,
+        prev_selected_pair: prev_selected_pair,
+        prev_valid_pairs: prev_valid_pairs,
         conn_checks: %{},
         checklist: %{},
         local_cands: [],

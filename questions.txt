@@ -24,3 +24,5 @@ keepalives, an agent MUST be prepared to receive a connectivity check
 as well.  If a connectivity check is received, a response is
 generated as discussed in [RFC5389], but there is no impact on ICE
 processing otherwise."
+11. Can ICE be restarted before completing?
+12. Can we send data on valid pair before regular nomination in RFC 5245?
