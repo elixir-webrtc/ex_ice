@@ -76,10 +76,11 @@ defmodule ExICE.Candidate do
 
   @spec unmarshal(String.t()) :: {:ok, t()} | {:error, term()}
   def unmarshal(string) do
-    with [f_str, c_str, tr_str, pr_str, a_str, po_str, "typ", ty_str] <- String.split(string),
+    with [f_str, c_str, tr_str, pr_str, a_str, po_str, "typ", ty_str] <-
+           String.split(string, " ", parts: 8),
          {foundation, ""} <- Integer.parse(f_str),
          {_component_id, ""} <- Integer.parse(c_str),
-         {:ok, transport} <- parse_transport(tr_str),
+         {:ok, transport} <- parse_transport(String.downcase(tr_str)),
          {priority, ""} <- Integer.parse(pr_str),
          {:ok, address} <- :inet.parse_address(String.to_charlist(a_str)),
          {port, ""} <- Integer.parse(po_str),
@@ -94,7 +95,8 @@ defmodule ExICE.Candidate do
          type: type
        }}
     else
-      _err -> {:error, :invalid_candidate}
+      err when is_list(err) -> {:error, :invalid_candidate}
+      err -> err
     end
   end
 
@@ -102,12 +104,13 @@ defmodule ExICE.Candidate do
   def family(%__MODULE__{address: {_, _, _, _}}), do: :ipv4
   def family(%__MODULE__{address: {_, _, _, _, _, _, _, _}}), do: :ipv6
 
-  defp parse_transport("UDP"), do: {:ok, :udp}
+  defp parse_transport("udp"), do: {:ok, :udp}
   defp parse_transport(_other), do: {:error, :invalid_transport}
 
-  defp parse_type("host"), do: {:ok, :host}
-  defp parse_type("srflx"), do: {:ok, :srflx}
-  defp parse_type("prflx"), do: {:ok, :prflx}
+  defp parse_type("host" <> _rest), do: {:ok, :host}
+  defp parse_type("srflx" <> _rest), do: {:ok, :srflx}
+  defp parse_type("prflx" <> _rest), do: {:ok, :prflx}
+  defp parse_type("relay" <> _rest), do: {:ok, :relay}
   defp parse_type(_other), do: {:error, :invalid_type}
 
   defp foundation(type, ip, stun_turn_ip, transport) do

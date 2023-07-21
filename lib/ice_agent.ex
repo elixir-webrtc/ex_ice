@@ -178,40 +178,16 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
-    {:ok, remote_cand} = Candidate.unmarshal(remote_cand)
-    Logger.debug("New remote candidate #{inspect(remote_cand)}")
+    case Candidate.unmarshal(remote_cand) do
+      {:ok, remote_cand} ->
+        Logger.debug("New remote candidate #{inspect(remote_cand)}")
+        state = do_add_remote_candidate(remote_cand, state)
+        {:noreply, state}
 
-    local_cands = get_matching_candidates(state.local_cands, remote_cand)
-
-    checklist_foundations = Checklist.get_foundations(state.checklist)
-
-    new_pairs =
-      for local_cand <- local_cands, into: %{} do
-        local_cand =
-          if local_cand.type == :srflx do
-            %Candidate{local_cand | address: local_cand.base_address, port: local_cand.base_port}
-          else
-            local_cand
-          end
-
-        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
-        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
-        {pair.id, pair}
-      end
-
-    checklist = Checklist.prune(Map.merge(state.checklist, new_pairs))
-
-    added_pairs = Map.drop(checklist, Map.keys(state.checklist))
-
-    if added_pairs == [] do
-      Logger.debug("Not adding any new pairs as they were redundant")
-    else
-      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
+      {:error, reason} ->
+        Logger.warn("Invalid remote candidate, reason: #{inspect(reason)}. Ignoring.")
+        {:noreply, state}
     end
-
-    state = %{state | checklist: checklist, remote_cands: [remote_cand | state.remote_cands]}
-
-    {:noreply, state}
   end
 
   @impl true
@@ -271,13 +247,13 @@ defmodule ExICE.ICEAgent do
       end
 
     state =
-      if state.state not in [:completed, :failed] do
-        ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
-        %{state | ta_timer: ta_timer}
-      else
+      if state.state in [:completed, :failed] do
         Logger.debug("Stoping Ta timer")
         Process.cancel_timer(state.ta_timer)
         %{state | ta_timer: nil}
+      else
+        ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+        %{state | ta_timer: ta_timer}
       end
 
     {:noreply, state}
@@ -305,6 +281,38 @@ defmodule ExICE.ICEAgent do
   def handle_info(msg, state) do
     Logger.warn("Got unexpected msg: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  defp do_add_remote_candidate(remote_cand, state) do
+    local_cands = get_matching_candidates(state.local_cands, remote_cand)
+
+    checklist_foundations = Checklist.get_foundations(state.checklist)
+
+    new_pairs =
+      for local_cand <- local_cands, into: %{} do
+        local_cand =
+          if local_cand.type == :srflx do
+            %Candidate{local_cand | address: local_cand.base_address, port: local_cand.base_port}
+          else
+            local_cand
+          end
+
+        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
+        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
+        {pair.id, pair}
+      end
+
+    checklist = Checklist.prune(Map.merge(state.checklist, new_pairs))
+
+    added_pairs = Map.drop(checklist, Map.keys(state.checklist))
+
+    if added_pairs == [] do
+      Logger.debug("Not adding any new pairs as they were redundant")
+    else
+      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
+    end
+
+    %{state | checklist: checklist, remote_cands: [remote_cand | state.remote_cands]}
   end
 
   defp get_next_gathering_transaction(gathering_transactions) do
@@ -526,15 +534,20 @@ defmodule ExICE.ICEAgent do
   end
 
   defp handle_binding_response(socket, src_ip, src_port, msg, state) do
-    # TODO should we have remote cand
-    # to log it instead of src ip and port?
-    %Candidate{} = local_cand = find_cand(state.local_cands, socket)
+    case find_cand(state.local_cands, socket) do
+      %Candidate{} = local_cand ->
+        Logger.warn("""
+        Ignoring conn check response with unknown tid: #{msg.transaction_id},
+        local_cand: #{inspect(local_cand)},
+        src: #{inspect(src_ip)}:#{src_port}"
+        """)
 
-    Logger.warn("""
-    Ignoring conn check response with unknown tid: #{msg.transaction_id},
-    local_cand: #{inspect(local_cand)},
-    src: #{inspect(src_ip)}:#{src_port}"
-    """)
+      nil ->
+        Logger.warn("""
+        Ignoring binding response on unknonw local candidate.
+        We have probably called ICE restart.
+        """)
+    end
 
     state
   end
@@ -828,15 +841,16 @@ defmodule ExICE.ICEAgent do
         state
       end
 
-    valid_pairs = state.checklist |> Map.values() |> Enum.filter(fn pair -> pair.valid? end) 
+    valid_pairs = state.checklist |> Map.values() |> Enum.filter(fn pair -> pair.valid? end)
     valid_sockets = Enum.map(valid_pairs, fn p -> p.local_cand.socket end)
 
-    {prev_selected_pair, prev_valid_pairs} = if valid_pairs == [] do
-      {state.prev_selected_pair, state.prev_valid_pairs}
-    else
-      # TODO cleanup prev pairs
-      {state.selected_pair, valid_pairs}
-    end
+    {prev_selected_pair, prev_valid_pairs} =
+      if valid_pairs == [] do
+        {state.prev_selected_pair, state.prev_valid_pairs}
+      else
+        # TODO cleanup prev pairs
+        {state.selected_pair, valid_pairs}
+      end
 
     state.local_cands
     |> Enum.uniq_by(fn c -> c.socket end)

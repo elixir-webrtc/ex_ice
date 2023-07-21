@@ -4,7 +4,7 @@ defmodule ExICE.MixProject do
   def project do
     [
       app: :ex_ice,
-      version: "0.1.0",
+      version: "0.0.1",
       elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
@@ -29,7 +29,7 @@ defmodule ExICE.MixProject do
 
   defp deps do
     [
-      {:ex_stun, github: "elixir-webrtc/ex_stun"},
+      {:ex_stun, git: "git@github.com:elixir-webrtc/ex_stun"},
       {:excoveralls, "~> 0.14.6", only: :test, runtime: false},
       {:ex_doc, "~> 0.27", only: :dev, runtime: false},
       {:credo, "~> 1.6", only: [:dev, :test], runtime: false}
