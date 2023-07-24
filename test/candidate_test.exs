@@ -21,9 +21,9 @@ defmodule ExICE.CandidateTest do
   test "marshal returns correct candidate string representation" do
     ip = {192, 168, 1, 1}
     port = 12_345
-    expected_m_c = "936255739 1 UDP 0 192.168.1.1 12345 typ host"
+    expected_m_c = "936255739 1 UDP 1234 192.168.1.1 12345 typ host"
 
-    c = Candidate.new(:host, ip, port, ip, port, nil)
+    c = Candidate.new(:host, ip, port, ip, port, nil, priority: 1234)
     m_c = Candidate.marshal(c)
 
     assert m_c == expected_m_c
@@ -32,8 +32,8 @@ defmodule ExICE.CandidateTest do
   test "unmarshal returns correct candidate from its string representation" do
     ip = {192, 168, 1, 1}
     port = 12_345
-    m_c = "936255739 1 UDP 0 192.168.1.1 12345 typ host"
-    expected_c = Candidate.new(:host, ip, port, nil, nil, nil)
+    m_c = "936255739 1 UDP 1234 192.168.1.1 12345 typ host"
+    expected_c = Candidate.new(:host, ip, port, nil, nil, nil, priority: 1234)
 
     assert {:ok, c} = Candidate.unmarshal(m_c)
 

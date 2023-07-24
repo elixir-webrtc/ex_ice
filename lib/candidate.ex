@@ -36,11 +36,14 @@ defmodule ExICE.Candidate do
           :inet.port_number(),
           :inet.ip_address(),
           :inet.port_number(),
-          :inet.socket()
+          :inet.socket(),
+          priority: integer()
         ) :: t()
-  def new(type, address, port, base_address, base_port, socket)
+  def new(type, address, port, base_address, base_port, socket, opts \\ [])
       when type in [:host, :srflx, :prflx, :relay] do
     transport = :udp
+
+    priority = opts[:priority] || priority(type)
 
     %__MODULE__{
       address: address,
@@ -48,7 +51,7 @@ defmodule ExICE.Candidate do
       base_port: base_port,
       foundation: foundation(type, address, nil, transport),
       port: port,
-      priority: 0,
+      priority: priority,
       transport: transport,
       socket: socket,
       type: type
@@ -121,4 +124,21 @@ defmodule ExICE.Candidate do
 
   defp address_to_string(address), do: :inet.ntoa(address)
   defp transport_to_string(:udp), do: "UDP"
+
+  defp priority(type) do
+    type_preference =
+      case type do
+        :host -> 126
+        :prflx -> 110
+        :srflx -> 100
+        :relay -> 0
+      end
+
+    # That's not fully correct as according to RFC 8445 sec. 5.1.2.1 we should:
+    # * use value of 65535 when there is only one IP address
+    # * use different values when there are multiple IP addresses
+    local_preference = 65535
+
+    2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
+  end
 end
