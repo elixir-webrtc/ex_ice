@@ -137,7 +137,7 @@ defmodule ExICE.Candidate do
     # That's not fully correct as according to RFC 8445 sec. 5.1.2.1 we should:
     # * use value of 65535 when there is only one IP address
     # * use different values when there are multiple IP addresses
-    local_preference = 65535
+    local_preference = 65_535
 
     2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
   end

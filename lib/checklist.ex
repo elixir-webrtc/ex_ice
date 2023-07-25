@@ -68,25 +68,42 @@ defmodule ExICE.Checklist do
 
   @spec prune(t()) :: t()
   def prune(checklist) do
-    # uniq_by keeps first occurence of a term
-    # so we need to sort checklist at first
+    # We sort the checklist as follows:
+    # * first in flight or done pairs
+    # * next waiting pairs
+    # * in both categories sort by priority
+    # because uniq_by keeps first occurence, we will 
+    # always drop newly added pair if the same pair 
+    # is already in flight or done. 
+    # That's not fully compliant with the RFC 8838 
+    # as sec 10 says:  
+    #
+    # The agent prunes redundant pairs by following 
+    # the rules in Section 6.1.2.4 of [RFC8445] but 
+    # checks existing pairs only if they have a state 
+    # of Waiting or Frozen;
+    #
+    #
+    # but the code is much easier if we guarantee
+    # there are no duplicate pairs in the checklist.
+    # Also, we should always pick pairs with local
+    # host candidates over local srflx candidates
+    # so it should be okay? 
 
-    # TODO this still needs to be revisited:
-    # a new pair might be redundant
-    # but we won't prune it as we filter out
-    # in flight pairs
-
-    {waiting, in_flight_or_done} =
-      Enum.split_with(checklist, fn {_id, p} -> p.state in [:waiting, :frozen] end)
-
-    waiting =
-      waiting
-      |> Enum.sort_by(fn {_id, p} -> p.priority end, :desc)
+    checklist =
+      checklist
+      |> Enum.sort_by(
+        fn {_id, p} ->
+          pair_state = if p.state in [:waiting, :frozen], do: 0, else: 1
+          {pair_state, p.priority}
+        end,
+        :desc
+      )
       |> Enum.uniq_by(fn {_id, p} ->
         {p.local_cand.base_address, p.local_cand.base_port, p.remote_cand}
       end)
 
-    Map.new(waiting ++ in_flight_or_done)
+    Map.new(checklist)
   end
 
   @spec timeout_pairs(t(), [integer()]) :: t()

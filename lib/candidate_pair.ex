@@ -30,8 +30,8 @@ defmodule ExICE.CandidatePair do
               ]
 
   @doc false
-  @spec new(Candidate.t(), Candidate.t(), ICEAgent.role(), state()) :: t()
-  def new(local_cand, remote_cand, agent_role, state) do
+  @spec new(Candidate.t(), Candidate.t(), ICEAgent.role(), state(), valid?: boolean()) :: t()
+  def new(local_cand, remote_cand, agent_role, state, opts \\ []) do
     priority = priority(agent_role, local_cand, remote_cand)
 
     <<id::12*8>> = :crypto.strong_rand_bytes(12)
@@ -41,7 +41,8 @@ defmodule ExICE.CandidatePair do
       local_cand: local_cand,
       remote_cand: remote_cand,
       priority: priority,
-      state: state
+      state: state,
+      valid?: opts[:valid?] || false
     }
   end
 

@@ -432,7 +432,7 @@ defmodule ExICE.ICEAgent do
     # TODO check username
     with {:ok, key} <- Message.authenticate_st(msg, state.local_pwd),
          true <- Message.check_fingerprint(msg) do
-      case find_cand(state.local_cands, socket) do
+      case find_host_cand(state.local_cands, socket) do
         nil ->
           # keepalive on pair selected before ice restart
           send_binding_success_response(socket, src_ip, src_port, msg, key)
@@ -514,27 +514,39 @@ defmodule ExICE.ICEAgent do
 
     conn_check_pair = Map.fetch!(state.checklist, pair_id)
 
-    {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
-
     # check that the source and destination transport
     # adresses are symmetric - see sec. 7.2.5.2.1
-    if is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
-      handle_conn_check_resp(msg, conn_check_pair, state)
+    with {:ok, xor_addr} <- Message.get_attribute(msg, XORMappedAddress),
+         true <- is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
+      handle_conn_check_resp(xor_addr, conn_check_pair, state)
     else
-      Logger.warn("""
-      Ignoring conn check response, non-symmetric src and dst addresses.
-      Sent from: #{inspect({conn_check_pair.local_cand.base_address, conn_check_pair.local_cand.base_port})}, to: #{inspect({conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port})}
-      Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({socket_ip, socket_port})}
-      """)
+      false ->
+        {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
 
-      conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+        Logger.warn("""
+        Ignoring conn check response, non-symmetric src and dst addresses.
+        Sent from: #{inspect({conn_check_pair.local_cand.base_address, conn_check_pair.local_cand.base_port})}, \
+        to: #{inspect({conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port})}
+        Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({socket_ip, socket_port})}
+        """)
 
-      put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
+        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+
+        put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
+
+      _other ->
+        Logger.debug("""
+        Invalid or no XORMappedAddress. Ignoring conn check response.
+        Conn check tid: #{inspect(msg.transaction_id)},
+        Conn check pair: #{inspect(pair_id)}.
+        """)
+
+        state
     end
   end
 
   defp handle_binding_response(socket, src_ip, src_port, msg, state) do
-    case find_cand(state.local_cands, socket) do
+    case find_host_cand(state.local_cands, socket) do
       %Candidate{} = local_cand ->
         Logger.warn("""
         Ignoring conn check response with unknown tid: #{msg.transaction_id},
@@ -602,32 +614,18 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  defp handle_conn_check_resp(msg, conn_check_pair, state) do
-    {:ok, xor_addr} = Message.get_attribute(msg, XORMappedAddress)
-
+  defp handle_conn_check_resp(xor_addr, conn_check_pair, state) do
     {local_cand, state} = get_or_create_local_cand(xor_addr, conn_check_pair, state)
+    remote_cand = conn_check_pair.remote_cand
 
-    valid_pair =
-      CandidatePair.new(local_cand, conn_check_pair.remote_cand, state.role, :succeeded)
+    valid_pair = CandidatePair.new(local_cand, remote_cand, state.role, :succeeded, valid?: true)
 
-    valid_pair = %CandidatePair{valid_pair | valid?: true}
-
-    checklist_pair = Checklist.find_pair(state.checklist, valid_pair)
-
-    case checklist_pair do
-      nil ->
-        add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
-
-      %CandidatePair{valid?: false} ->
-        add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
-
-      pair ->
-        # FIXME this still might happen
-        # e.g. when gathering srflx candidate
-        # and pairing it with remote host cand
-        # when we already have pair consisting of
-        # srflx base as host and remote host
-        # that is in progress
+    case Checklist.find_pair(state.checklist, valid_pair) do
+      %CandidatePair{valid?: true} = pair ->
+        # valid pair is already in the checklist
+        # and that wasn't first conn check on it -
+        # the pair is marked as valid so we had to
+        # nominate it
         true = pair.nominate?
 
         pair = %CandidatePair{
@@ -641,6 +639,11 @@ defmodule ExICE.ICEAgent do
         send(state.controlling_process, {:ex_ice, self(), :completed})
         checklist = Map.replace!(state.checklist, pair.id, pair)
         %{state | checklist: checklist, state: :completed, selected_pair: pair}
+
+      checklist_pair ->
+        # there is no such pair in the checklist
+        # or it is the first conn check on that pair
+        add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
     end
   end
 
@@ -708,6 +711,7 @@ defmodule ExICE.ICEAgent do
     end
   end
 
+  # Adds valid pair according to sec 7.2.5.3.2
   # TODO sec. 7.2.5.3.3
   # The agent MUST set the states for all other Frozen candidate pairs in
   # all checklists with the same foundation to Waiting.
@@ -941,7 +945,7 @@ defmodule ExICE.ICEAgent do
     Enum.find(cands, fn cand -> cand.address == ip and cand.port == port end)
   end
 
-  defp find_cand(cands, socket) do
+  defp find_host_cand(cands, socket) do
     # this function returns only host candidates
     Enum.find(cands, fn cand -> cand.socket == socket and cand.type == :host end)
   end
