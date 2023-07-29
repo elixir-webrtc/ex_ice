@@ -30,34 +30,40 @@ defmodule ExICE.Gatherer do
     end
   end
 
-  @spec gather_srflx_candidate(integer(), Candidate.t(), ExICE.URI.t()) :: :ok
+  @spec gather_srflx_candidate(integer(), Candidate.t(), ExICE.URI.t()) :: :ok | {:error, atom()}
   def gather_srflx_candidate(t_id, host_candidate, stun_server) do
     binding_request =
       Message.new(t_id, %Type{class: :request, method: :binding}, [])
       |> Message.encode()
 
-    {:ok, {:hostent, _, _, _, _, ips}} =
+    ret =
       stun_server.host
       |> then(&String.to_charlist(&1))
       |> :inet_res.gethostbyname()
 
-    ip = List.first(ips)
-    port = stun_server.port
+    case ret do
+      {:ok, {:hostent, _, _, _, _, ips}} ->
+        ip = List.first(ips)
+        port = stun_server.port
 
-    cand_family = Utils.family(host_candidate.base_address)
-    stun_family = Utils.family(ip)
+        cand_family = Utils.family(host_candidate.base_address)
+        stun_family = Utils.family(ip)
 
-    if cand_family == stun_family do
-      :ok = :gen_udp.send(host_candidate.socket, {ip, port}, binding_request)
-      :ok
-    else
-      Logger.debug("""
-      Not gathering srflx candidate becasue of incompatible ip adress families.
-      Candidate family: #{inspect(cand_family)}
-      STUN server family: #{inspect(stun_family)}
-      Candidate: #{inspect(host_candidate)}
-      STUN server: #{inspect(stun_server)}
-      """)
+        if cand_family == stun_family do
+          :gen_udp.send(host_candidate.socket, {ip, port}, binding_request)
+        else
+          Logger.debug("""
+          Not gathering srflx candidate becasue of incompatible ip adress families.
+          Candidate family: #{inspect(cand_family)}
+          STUN server family: #{inspect(stun_family)}
+          Candidate: #{inspect(host_candidate)}
+          STUN server: #{inspect(stun_server)}
+          """)
+        end
+
+      {:error, reason} ->
+        Logger.debug("Couldn't resolve STUN address: #{stun_server.host}, reason: #{reason}.")
+        {:error, :invalid_stun_server}
     end
   end
 

@@ -335,7 +335,8 @@ defmodule ExICE.ICEAgent do
         t = %{t | state: :in_progress, send_time: now}
         put_in(state, [:gathering_transactions, t_id], t)
 
-      :error ->
+      {:error, reason} ->
+        Logger.debug("Couldn't send binding request, reason: #{reason}")
         {_t, state} = pop_in(state, [:gathering_transactions, t_id])
         state
     end
