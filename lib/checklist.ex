@@ -1,6 +1,7 @@
 defmodule ExICE.Checklist do
   @moduledoc false
 
+  alias ExICE.ICEAgent
   alias ExICE.CandidatePair
   alias ExICE.Candidate
 
@@ -72,15 +73,15 @@ defmodule ExICE.Checklist do
     # * first in flight or done pairs
     # * next waiting pairs
     # * in both categories sort by priority
-    # because uniq_by keeps first occurence, we will 
-    # always drop newly added pair if the same pair 
-    # is already in flight or done. 
-    # That's not fully compliant with the RFC 8838 
-    # as sec 10 says:  
+    # because uniq_by keeps first occurence, we will
+    # always drop newly added pair if the same pair
+    # is already in flight or done.
+    # That's not fully compliant with the RFC 8838
+    # as sec 10 says:
     #
-    # The agent prunes redundant pairs by following 
-    # the rules in Section 6.1.2.4 of [RFC8445] but 
-    # checks existing pairs only if they have a state 
+    # The agent prunes redundant pairs by following
+    # the rules in Section 6.1.2.4 of [RFC8445] but
+    # checks existing pairs only if they have a state
     # of Waiting or Frozen;
     #
     #
@@ -88,7 +89,7 @@ defmodule ExICE.Checklist do
     # there are no duplicate pairs in the checklist.
     # Also, we should always pick pairs with local
     # host candidates over local srflx candidates
-    # so it should be okay? 
+    # so it should be okay?
 
     checklist =
       checklist
@@ -115,5 +116,12 @@ defmodule ExICE.Checklist do
         {pair.id, pair}
       end
     end
+  end
+
+  @spec recompute_pair_prios(t(), ICEAgent.role()) :: t()
+  def recompute_pair_prios(checklist, role) do
+    Map.new(checklist, fn {pair_id, pair} ->
+      {pair_id, CandidatePair.recompute_priority(pair, role)}
+    end)
   end
 end

@@ -46,6 +46,11 @@ defmodule ExICE.CandidatePair do
     }
   end
 
+  @spec recompute_priority(t(), ICEAgent.role()) :: t()
+  def recompute_priority(pair, role) do
+    %__MODULE__{pair | priority: priority(role, pair.local_cand, pair.remote_cand)}
+  end
+
   defp priority(:controlling, local_cand, remote_cand) do
     do_priority(local_cand.priority, remote_cand.priority)
   end

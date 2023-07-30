@@ -7,17 +7,17 @@ defmodule ExICE.Attribute.ICEControlling do
 
   @attr_type 0x802A
 
-  @type t() :: %__MODULE__{tie_breaker: integer()}
+  @type t() :: %__MODULE__{tiebreaker: integer()}
 
-  @enforce_keys [:tie_breaker]
+  @enforce_keys [:tiebreaker]
   defstruct @enforce_keys
 
   @impl true
   def type(), do: @attr_type
 
   @impl true
-  def from_raw(%RawAttribute{value: <<tie_breaker::64>>}, _message) do
-    {:ok, %__MODULE__{tie_breaker: tie_breaker}}
+  def from_raw(%RawAttribute{value: <<tiebreaker::64>>}, _message) do
+    {:ok, %__MODULE__{tiebreaker: tiebreaker}}
   end
 
   @impl true
@@ -26,7 +26,7 @@ defmodule ExICE.Attribute.ICEControlling do
   end
 
   @impl true
-  def to_raw(%__MODULE__{tie_breaker: tie_breaker}, _msg) do
-    %RawAttribute{type: @attr_type, value: <<tie_breaker::64>>}
+  def to_raw(%__MODULE__{tiebreaker: tiebreaker}, _msg) do
+    %RawAttribute{type: @attr_type, value: <<tiebreaker::64>>}
   end
 end

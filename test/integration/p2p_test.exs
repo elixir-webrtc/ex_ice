@@ -73,6 +73,48 @@ defmodule ExICE.Integration.P2PTest do
              File.read!("./test/fixtures/lotr.txt")
   end
 
+  @tag :tmp_dir
+  @tag :role_conflict
+  test "P2P connection with role conflict", %{tmp_dir: tmp_dir} do
+    stun_servers = ["stun:stun.l.google.com:19302"]
+    # stun_servers = []
+
+    ip_filter = fn
+      {_, _, _, _, _, _, _, _} -> true
+      {172, _, _, _} -> true
+      _other -> true
+    end
+
+    {:ok, agent1} =
+      ICEAgent.start_link(:controlled, ip_filter: ip_filter, stun_servers: stun_servers)
+
+    {:ok, agent2} =
+      ICEAgent.start_link(:controlled, ip_filter: ip_filter, stun_servers: stun_servers)
+
+    {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
+    {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
+
+    :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
+    :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    :ok = ICEAgent.gather_candidates(agent1)
+    :ok = ICEAgent.gather_candidates(agent2)
+
+    a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
+    a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
+
+    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
+
+    assert p2p(agent1, agent2, a1_status, a2_status)
+
+    assert File.read!(Path.join([tmp_dir, "a1_recv_data"])) ==
+             File.read!("./test/fixtures/lotr.txt")
+
+    assert File.read!(Path.join([tmp_dir, "a2_recv_data"])) ==
+             File.read!("./test/fixtures/lotr.txt")
+  end
+
   defp p2p(_agent1, _agent2, %{completed: true, data_recv: true}, %{
          completed: true,
          data_recv: true

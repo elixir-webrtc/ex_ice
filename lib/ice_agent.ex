@@ -13,7 +13,7 @@ defmodule ExICE.ICEAgent do
 
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
-  alias ExSTUN.Message.Attribute.{Username, XORMappedAddress}
+  alias ExSTUN.Message.Attribute.{ErrorCode, Username, XORMappedAddress}
 
   # Ta timeout in ms
   @ta_timeout 50
@@ -28,6 +28,8 @@ defmodule ExICE.ICEAgent do
           ip_filter: (:inet.ip_address() -> boolean),
           stun_servers: [String.t()]
         ]
+
+  defguard is_response(class) when class in [:success_response, :error_response]
 
   defguard are_pairs_equal(p1, p2)
            when p1.local_cand.base_address == p2.local_cand.base_address and
@@ -112,6 +114,7 @@ defmodule ExICE.ICEAgent do
       gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
       role: Keyword.fetch!(opts, :role),
+      tiebreaker: generate_tiebreaker(),
       checklist: %{},
       selected_pair: nil,
       prev_selected_pair: nil,
@@ -412,12 +415,29 @@ defmodule ExICE.ICEAgent do
 
         handle_binding_request(socket, src_ip, src_port, msg, state)
 
-      %Type{class: :success_response, method: :binding} ->
+      %Type{class: class, method: :binding}
+      when is_response(class) and is_map_key(state.conn_checks, msg.transaction_id) ->
         Logger.debug("""
-        Received binding response from: #{inspect({src_ip, src_port})}, on: #{inspect(socket_addr)} \
+        Received conn check response from: #{inspect({src_ip, src_port})}, on: #{inspect(socket_addr)} \
         """)
 
-        handle_binding_response(socket, src_ip, src_port, msg, state)
+        handle_conn_check_response(socket, src_ip, src_port, msg, state)
+
+      %Type{class: class, method: :binding}
+      when is_response(class) and is_map_key(state.gathering_transactions, msg.transaction_id) ->
+        Logger.debug("""
+        Received gathering transaction response from: #{inspect({src_ip, src_port})}, on: #{inspect(socket_addr)} \
+        """)
+
+        handle_gathering_transaction_response(socket, src_ip, src_port, msg, state)
+
+      %Type{class: class, method: :binding} when is_response(class) ->
+        Logger.warn("""
+        Ignoring binding response with unknown t_id: #{msg.transaction_id}.
+        Is it retransmission or we called ICE restart?
+        """)
+
+        state
 
       other ->
         Logger.warn("""
@@ -428,11 +448,14 @@ defmodule ExICE.ICEAgent do
     end
   end
 
+  ## BINDING REQUEST HANDLING ##
+
   defp handle_binding_request(socket, src_ip, src_port, msg, state) do
     # username = state.local_ufrag <> ":" <> state.remote_ufrag
     # TODO check username
-    with {:ok, key} <- Message.authenticate_st(msg, state.local_pwd),
-         true <- Message.check_fingerprint(msg) do
+    with {:ok, key} <- authenticate_msg(msg, state.local_pwd),
+         {:ok, role_attr} <- get_role_attribute(msg),
+         {{:ok, state}, _} <- {check_req_role_conflict(role_attr, state), key} do
       case find_host_cand(state.local_cands, socket) do
         nil ->
           # keepalive on pair selected before ice restart
@@ -446,123 +469,20 @@ defmodule ExICE.ICEAgent do
           handle_conn_check_req(local_cand, remote_cand, use_candidate, state)
       end
     else
-      :error ->
-        Logger.debug("Couldn't authenticate binding request. Ignoring")
+      {:error, reason} ->
+        Logger.debug("Ignoring binding request, reason: #{reason}")
         state
 
-      false ->
-        Logger.debug("Incorrect binding request fingerprint. Ignoring")
-        state
-    end
-  end
-
-  defp handle_binding_response(_socket, _src_ip, _src_port, msg, state)
-       when is_map_key(state.gathering_transactions, msg.transaction_id) do
-    t = Map.fetch!(state.gathering_transactions, msg.transaction_id)
-
-    {:ok, %XORMappedAddress{address: address, port: port}} =
-      Message.get_attribute(msg, XORMappedAddress)
-
-    c =
-      Candidate.new(
-        :srflx,
-        address,
-        port,
-        t.host_cand.address,
-        t.host_cand.port,
-        t.host_cand.socket
-      )
-
-    Logger.debug("New srflx candidate: #{inspect(c)}")
-
-    send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(c)}})
-
-    # replace address and port with candidate base
-    # and prune the checklist - see sec. 6.1.2.4
-    local_cand = %Candidate{c | address: c.base_address, port: c.base_port}
-
-    remote_cands = get_matching_candidates(state.remote_cands, local_cand)
-
-    checklist_foundations = Checklist.get_foundations(state.checklist)
-
-    new_pairs =
-      for remote_cand <- remote_cands, into: %{} do
-        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
-        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
-        {pair.id, pair}
-      end
-
-    checklist = Checklist.prune(Map.merge(state.checklist, new_pairs))
-
-    added_pairs = Map.drop(checklist, Map.keys(state.checklist))
-
-    if added_pairs == [] do
-      Logger.debug("Not adding any new pairs as they were redundant")
-    else
-      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
-    end
-
-    state
-    |> update_in([:local_cands], fn local_cands -> [c | local_cands] end)
-    |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
-    |> update_in([:checklist], fn _ -> checklist end)
-    |> update_gathering_state()
-  end
-
-  defp handle_binding_response(socket, src_ip, src_port, msg, state)
-       when is_map_key(state.conn_checks, msg.transaction_id) do
-    {%{pair_id: pair_id}, state} = pop_in(state, [:conn_checks, msg.transaction_id])
-
-    conn_check_pair = Map.fetch!(state.checklist, pair_id)
-
-    # check that the source and destination transport
-    # adresses are symmetric - see sec. 7.2.5.2.1
-    with {:ok, xor_addr} <- Message.get_attribute(msg, XORMappedAddress),
-         true <- is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
-      handle_conn_check_resp(xor_addr, conn_check_pair, state)
-    else
-      false ->
-        {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
-
-        Logger.warn("""
-        Ignoring conn check response, non-symmetric src and dst addresses.
-        Sent from: #{inspect({conn_check_pair.local_cand.base_address, conn_check_pair.local_cand.base_port})}, \
-        to: #{inspect({conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port})}
-        Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({socket_ip, socket_port})}
-        """)
-
-        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
-
-        put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
-
-      _other ->
+      {{:error, :role_conflict, tiebreaker}, key} ->
         Logger.debug("""
-        Invalid or no XORMappedAddress. Ignoring conn check response.
-        Conn check tid: #{inspect(msg.transaction_id)},
-        Conn check pair: #{inspect(pair_id)}.
+        Role conflict. We retain our role which is: #{state.role}. Sending error response.
+        Our tiebreaker: #{state.tiebreaker}
+        Peer's tiebreaker: #{tiebreaker}\
         """)
 
+        send_role_conflict_error_response(socket, src_ip, src_port, msg, key)
         state
     end
-  end
-
-  defp handle_binding_response(socket, src_ip, src_port, msg, state) do
-    case find_host_cand(state.local_cands, socket) do
-      %Candidate{} = local_cand ->
-        Logger.warn("""
-        Ignoring conn check response with unknown tid: #{msg.transaction_id},
-        local_cand: #{inspect(local_cand)},
-        src: #{inspect(src_ip)}:#{src_port}"
-        """)
-
-      nil ->
-        Logger.warn("""
-        Ignoring binding response on unknonw local candidate.
-        We have probably called ICE restart.
-        """)
-    end
-
-    state
   end
 
   defp handle_conn_check_req(local_cand, remote_cand, use_candidate, state) do
@@ -615,36 +535,244 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  defp handle_conn_check_resp(xor_addr, conn_check_pair, state) do
-    {local_cand, state} = get_or_create_local_cand(xor_addr, conn_check_pair, state)
-    remote_cand = conn_check_pair.remote_cand
+  defp get_role_attribute(msg) do
+    role_attr =
+      Message.get_attribute(msg, ICEControlling) || Message.get_attribute(msg, ICEControlled)
 
-    valid_pair = CandidatePair.new(local_cand, remote_cand, state.role, :succeeded, valid?: true)
+    case role_attr do
+      {:ok, _} -> role_attr
+      {:error, _} -> {:error, :invalid_role_attribute}
+      nil -> {:error, :no_role_attribute}
+    end
+  end
 
-    case Checklist.find_pair(state.checklist, valid_pair) do
-      %CandidatePair{valid?: true} = pair ->
-        # valid pair is already in the checklist
-        # and that wasn't first conn check on it -
-        # the pair is marked as valid so we had to
-        # nominate it
-        true = pair.nominate?
+  defp check_req_role_conflict(
+         %ICEControlling{tiebreaker: tiebreaker},
+         %{role: :controlling} = state
+       )
+       when state.tiebreaker >= tiebreaker do
+    {:error, :role_conflict, tiebreaker}
+  end
 
-        pair = %CandidatePair{
-          pair
-          | state: :succeeded,
-            nominate?: false,
-            nominated?: true
-        }
+  defp check_req_role_conflict(
+         %ICEControlling{tiebreaker: tiebreaker},
+         %{role: :controlling} = state
+       ) do
+    Logger.debug("""
+    Role conflict, switching our role to controlled. Recomputing pairs priority.
+    Our tiebreaker: #{state.tiebreaker}
+    Peer's tiebreaker: #{tiebreaker}\
+    """)
 
-        Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair.id)}")
-        send(state.controlling_process, {:ex_ice, self(), :completed})
-        checklist = Map.replace!(state.checklist, pair.id, pair)
-        %{state | checklist: checklist, state: :completed, selected_pair: pair}
+    checklist = Checklist.recompute_pair_prios(state.checklist, :controlled)
+    {:ok, %{state | role: :controlled, checklist: checklist}}
+  end
 
-      checklist_pair ->
-        # there is no such pair in the checklist
-        # or it is the first conn check on that pair
-        add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
+  defp check_req_role_conflict(
+         %ICEControlled{tiebreaker: tiebreaker},
+         %{role: :controlled} = state
+       )
+       when state.tiebreaker >= tiebreaker do
+    Logger.debug("""
+    Role conflict, switching our role to controlling. Recomputing pairs priority.
+    Our tiebreaker: #{state.tiebreaker}
+    Peer's tiebreaker: #{tiebreaker}\
+    """)
+
+    checklist = Checklist.recompute_pair_prios(state.checklist, :controlling)
+    {:ok, %{state | role: :controlling, checklist: checklist}}
+  end
+
+  defp check_req_role_conflict(%ICEControlled{tiebreaker: tiebreaker}, %{role: :controlled}) do
+    {:error, :role_conflict, tiebreaker}
+  end
+
+  defp check_req_role_conflict(_role_attr, state), do: {:ok, state}
+
+  ## BINDING RESPONSE HANDLING ## 
+
+  defp handle_gathering_transaction_response(socket, src_ip, src_port, msg, state) do
+    case msg.type.class do
+      :success_response ->
+        handle_gathering_transaction_success_response(socket, src_ip, src_port, msg, state)
+
+      :error_response ->
+        handle_gathering_transaction_error_response(socket, src_ip, src_port, msg, state)
+    end
+  end
+
+  defp handle_gathering_transaction_success_response(_socket, _src_ip, _src_port, msg, state) do
+    t = Map.fetch!(state.gathering_transactions, msg.transaction_id)
+
+    {:ok, %XORMappedAddress{address: address, port: port}} =
+      Message.get_attribute(msg, XORMappedAddress)
+
+    c =
+      Candidate.new(
+        :srflx,
+        address,
+        port,
+        t.host_cand.address,
+        t.host_cand.port,
+        t.host_cand.socket
+      )
+
+    Logger.debug("New srflx candidate: #{inspect(c)}")
+
+    send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(c)}})
+
+    # replace address and port with candidate base
+    # and prune the checklist - see sec. 6.1.2.4
+    local_cand = %Candidate{c | address: c.base_address, port: c.base_port}
+
+    remote_cands = get_matching_candidates(state.remote_cands, local_cand)
+
+    checklist_foundations = Checklist.get_foundations(state.checklist)
+
+    new_pairs =
+      for remote_cand <- remote_cands, into: %{} do
+        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
+        pair = CandidatePair.new(local_cand, remote_cand, state.role, pair_state)
+        {pair.id, pair}
+      end
+
+    checklist = Checklist.prune(Map.merge(state.checklist, new_pairs))
+
+    added_pairs = Map.drop(checklist, Map.keys(state.checklist))
+
+    if added_pairs == [] do
+      Logger.debug("Not adding any new pairs as they were redundant")
+    else
+      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
+    end
+
+    state
+    |> update_in([:local_cands], fn local_cands -> [c | local_cands] end)
+    |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
+    |> update_in([:checklist], fn _ -> checklist end)
+    |> update_gathering_state()
+  end
+
+  defp handle_gathering_transaction_error_response(_socket, _src_ip, _src_port, msg, state) do
+    t = Map.fetch!(state.gathering_transactions, msg.transaction_id)
+
+    error_code =
+      case Message.get_attribute(msg, ErrorCode) do
+        {:ok, error_code} -> error_code
+        _other -> nil
+      end
+
+    Logger.debug(
+      "Gathering transaction failed, t_id: #{msg.transaction_id}, reason: #{inspect(error_code)}"
+    )
+
+    update_in(state, [:gathering_transactions, t.t_id], fn t -> %{t | state: :failed} end)
+  end
+
+  defp handle_conn_check_response(socket, src_ip, src_port, msg, state) do
+    {%{pair_id: pair_id}, state} = pop_in(state, [:conn_checks, msg.transaction_id])
+    conn_check_pair = Map.fetch!(state.checklist, pair_id)
+
+    # check that the source and destination transport
+    # adresses are symmetric - see sec. 7.2.5.2.1
+    with {:ok, _key} <- authenticate_msg(msg, state.remote_pwd),
+         true <- is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
+      case msg.type.class do
+        :success_response -> handle_conn_check_success_response(msg, conn_check_pair, state)
+        :error_response -> handle_conn_check_error_response(msg, conn_check_pair, state)
+      end
+    else
+      {:error, reason} when reason in [:invalid_message_integrity, :invalid_fingerprint] ->
+        Logger.debug("Ignoring conn check response, reason: #{reason}")
+
+        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+
+        put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
+
+      false ->
+        {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
+
+        Logger.warn("""
+        Ignoring conn check response, non-symmetric src and dst addresses.
+        Sent from: #{inspect({conn_check_pair.local_cand.base_address, conn_check_pair.local_cand.base_port})}, \
+        to: #{inspect({conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port})}
+        Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({socket_ip, socket_port})}
+        """)
+
+        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+
+        put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
+    end
+  end
+
+  defp handle_conn_check_success_response(msg, conn_check_pair, state) do
+    case Message.get_attribute(msg, XORMappedAddress) do
+      {:ok, xor_addr} ->
+        {local_cand, state} = get_or_create_local_cand(xor_addr, conn_check_pair, state)
+        remote_cand = conn_check_pair.remote_cand
+
+        valid_pair =
+          CandidatePair.new(local_cand, remote_cand, state.role, :succeeded, valid?: true)
+
+        case Checklist.find_pair(state.checklist, valid_pair) do
+          %CandidatePair{valid?: true} = pair ->
+            # valid pair is already in the checklist
+            # and that wasn't first conn check on it -
+            # the pair is marked as valid so we had to
+            # nominate it
+            true = pair.nominate?
+
+            pair = %CandidatePair{
+              pair
+              | state: :succeeded,
+                nominate?: false,
+                nominated?: true
+            }
+
+            Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair.id)}")
+            send(state.controlling_process, {:ex_ice, self(), :completed})
+            checklist = Map.replace!(state.checklist, pair.id, pair)
+            %{state | checklist: checklist, state: :completed, selected_pair: pair}
+
+          checklist_pair ->
+            # there is no such pair in the checklist
+            # or it is the first conn check on that pair
+            add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
+        end
+
+      _other ->
+        Logger.debug("""
+        Invalid or no XORMappedAddress. Ignoring conn check response.
+        Conn check tid: #{inspect(msg.transaction_id)},
+        Conn check pair: #{inspect(conn_check_pair.id)}.
+        """)
+
+        state
+    end
+  end
+
+  defp handle_conn_check_error_response(msg, conn_check_pair, state) do
+    case Message.get_attribute(msg, ErrorCode) do
+      {:ok, %ErrorCode{code: 487}} ->
+        new_role = if state.role == :controlling, do: :controlled, else: :controlling
+
+        Logger.debug("""
+        Conn check failed due to role conflict. Changing our role to: #{new_role}, \
+        recomputing pair priorities, regenerating tiebreaker and rescheduling conn check \
+        """)
+
+        conn_check_pair = %CandidatePair{conn_check_pair | state: :waiting}
+        checklist = Map.replace!(state.checklist, conn_check_pair.id, conn_check_pair)
+        tiebreaker = generate_tiebreaker()
+        %{state | role: new_role, checklist: checklist, tiebreaker: tiebreaker}
+
+      other ->
+        Logger.debug(
+          "Conn check failed due to error resposne from the peer, error: #{inspect(other)}"
+        )
+
+        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+        put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
     end
   end
 
@@ -658,6 +786,18 @@ defmodule ExICE.ICEAgent do
       |> Message.encode()
 
     do_send(socket, {src_ip, src_port}, resp)
+  end
+
+  defp send_role_conflict_error_response(socket, src_ip, src_port, req, key) do
+    type = %Type{class: :error_response, method: :binding}
+
+    response =
+      Message.new(req.transaction_id, type, [%ErrorCode{code: 487}])
+      |> Message.with_integrity(key)
+      |> Message.with_fingerprint()
+      |> Message.encode()
+
+    do_send(socket, {src_ip, src_port}, response)
   end
 
   defp get_matching_candidates(candidates, cand) do
@@ -951,6 +1091,11 @@ defmodule ExICE.ICEAgent do
     Enum.find(cands, fn cand -> cand.socket == socket and cand.type == :host end)
   end
 
+  defp generate_tiebreaker() do
+    <<tiebreaker::64>> = :crypto.strong_rand_bytes(8)
+    tiebreaker
+  end
+
   defp generate_credentials() do
     # TODO am I using Base.encode64 correctly?
     ufrag = :crypto.strong_rand_bytes(3) |> Base.encode64()
@@ -958,15 +1103,25 @@ defmodule ExICE.ICEAgent do
     {ufrag, pwd}
   end
 
+  defp authenticate_msg(msg, local_pwd) do
+    with {:ok, key} <- Message.authenticate_st(msg, local_pwd),
+         true <- Message.check_fingerprint(msg) do
+      {:ok, key}
+    else
+      :error -> {:error, :invalid_message_integrity}
+      false -> {:error, :invalid_fingerprint}
+    end
+  end
+
   defp send_conn_check(pair, state) do
     type = %Type{class: :request, method: :binding}
 
-    # TODO setup correct tie_breakers
+    # TODO setup correct tiebreakers
     role_attr =
       if state.role == :controlling do
-        %ICEControlling{tie_breaker: 1}
+        %ICEControlling{tiebreaker: state.tiebreaker}
       else
-        %ICEControlled{tie_breaker: 2}
+        %ICEControlled{tiebreaker: state.tiebreaker}
       end
 
     attrs = [
