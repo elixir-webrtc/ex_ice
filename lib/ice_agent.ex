@@ -9,7 +9,7 @@ defmodule ExICE.ICEAgent do
   require Logger
 
   alias ExICE.{Candidate, CandidatePair, Checklist, Gatherer}
-  alias ExICE.Attribute.{ICEControlling, ICEControlled, UseCandidate}
+  alias ExICE.Attribute.{ICEControlling, ICEControlled, Priority, UseCandidate}
 
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
@@ -454,6 +454,7 @@ defmodule ExICE.ICEAgent do
     # username = state.local_ufrag <> ":" <> state.remote_ufrag
     # TODO check username
     with {:ok, key} <- authenticate_msg(msg, state.local_pwd),
+         {:ok, prio_attr} <- get_prio_attribute(msg),
          {:ok, role_attr} <- get_role_attribute(msg),
          {{:ok, state}, _} <- {check_req_role_conflict(role_attr, state), key} do
       case find_host_cand(state.local_cands, socket) do
@@ -464,11 +465,18 @@ defmodule ExICE.ICEAgent do
 
         %Candidate{} = local_cand ->
           send_binding_success_response(socket, src_ip, src_port, msg, key)
-          {remote_cand, state} = get_or_create_remote_cand(src_ip, src_port, state)
+          {remote_cand, state} = get_or_create_remote_cand(src_ip, src_port, prio_attr, state)
           use_candidate = Message.get_attribute(msg, UseCandidate)
           handle_conn_check_req(local_cand, remote_cand, use_candidate, state)
       end
     else
+      {:error, reason} when reason in [:invalid_priority_attribute, :no_priority_attribute] ->
+        # TODO should we authenticate?
+        # chrome does not authenticate but section 6.3.1.1 suggests
+        # we should add message-integrity
+        send_bad_request_error_response(socket, src_ip, src_port, msg)
+        state
+
       {:error, reason} ->
         Logger.debug("Ignoring binding request, reason: #{reason}")
         state
@@ -532,6 +540,14 @@ defmodule ExICE.ICEAgent do
         else
           state
         end
+    end
+  end
+
+  defp get_prio_attribute(msg) do
+    case Message.get_attribute(msg, Priority) do
+      {:ok, _} = attr -> attr
+      {:error, _} -> {:error, :invalid_priority_attribute}
+      nil -> {:error, :no_priority_attribute}
     end
   end
 
@@ -675,8 +691,10 @@ defmodule ExICE.ICEAgent do
 
     # check that the source and destination transport
     # adresses are symmetric - see sec. 7.2.5.2.1
-    with {:ok, _key} <- authenticate_msg(msg, state.remote_pwd),
-         true <- is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
+    with true <- is_symmetric(socket, {src_ip, src_port}, conn_check_pair),
+         # FIXME chrome seems not to include message-integrity
+         # for error responses
+         {:ok, _key} <- authenticate_msg(msg, state.remote_pwd) do
       case msg.type.class do
         :success_response -> handle_conn_check_success_response(msg, conn_check_pair, state)
         :error_response -> handle_conn_check_error_response(msg, conn_check_pair, state)
@@ -788,6 +806,16 @@ defmodule ExICE.ICEAgent do
     do_send(socket, {src_ip, src_port}, resp)
   end
 
+  defp send_bad_request_error_response(socket, src_ip, src_port, req) do
+    type = %Type{class: :error_response, method: :binding}
+
+    response =
+      Message.new(req.transaction_id, type, [%ErrorCode{code: 400}])
+      |> Message.encode()
+
+    do_send(socket, {src_ip, src_port}, response)
+  end
+
   defp send_role_conflict_error_response(socket, src_ip, src_port, req, key) do
     type = %Type{class: :error_response, method: :binding}
 
@@ -838,10 +866,10 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  defp get_or_create_remote_cand(src_ip, src_port, state) do
+  defp get_or_create_remote_cand(src_ip, src_port, _prio_attr, state) do
     case find_cand(state.remote_cands, src_ip, src_port) do
       nil ->
-        # TODO what about priority
+        # TODO calculate correct prio using prio_attr 
         cand = Candidate.new(:prflx, src_ip, src_port, nil, nil, nil)
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
         state = %{state | remote_cands: [cand | state.remote_cands]}
@@ -1124,8 +1152,14 @@ defmodule ExICE.ICEAgent do
         %ICEControlled{tiebreaker: state.tiebreaker}
       end
 
+    # priority sent to the other side has to be
+    # computed with the candidate type preference of
+    # peer-reflexive; refer to sec 7.1.1
+    priority = Candidate.priority(:prflx)
+
     attrs = [
       %Username{value: "#{state.remote_ufrag}:#{state.local_ufrag}"},
+      %Priority{priority: priority},
       role_attr
     ]
 

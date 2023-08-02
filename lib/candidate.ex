@@ -3,7 +3,7 @@ defmodule ExICE.Candidate do
   ICE candidate representation.
   """
 
-  @type type() :: :host | :srflx | :prflx
+  @type type() :: :host | :srflx | :prflx | :relay
 
   @type t() :: %__MODULE__{
           address: :inet.ip_address(),
@@ -14,7 +14,7 @@ defmodule ExICE.Candidate do
           priority: integer(),
           transport: :udp,
           socket: :inet.socket() | nil,
-          type: :host | :srflx | :prflx
+          type: type()
         }
 
   @derive {Inspect, except: [:socket]}
@@ -107,6 +107,24 @@ defmodule ExICE.Candidate do
   def family(%__MODULE__{address: {_, _, _, _}}), do: :ipv4
   def family(%__MODULE__{address: {_, _, _, _, _, _, _, _}}), do: :ipv6
 
+  @spec priority(type()) :: integer()
+  def priority(type) do
+    type_preference =
+      case type do
+        :host -> 126
+        :prflx -> 110
+        :srflx -> 100
+        :relay -> 0
+      end
+
+    # That's not fully correct as according to RFC 8445 sec. 5.1.2.1 we should:
+    # * use value of 65535 when there is only one IP address
+    # * use different values when there are multiple IP addresses
+    local_preference = 65_535
+
+    2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
+  end
+
   defp parse_transport("udp"), do: {:ok, :udp}
   defp parse_transport(_other), do: {:error, :invalid_transport}
 
@@ -124,21 +142,4 @@ defmodule ExICE.Candidate do
 
   defp address_to_string(address), do: :inet.ntoa(address)
   defp transport_to_string(:udp), do: "UDP"
-
-  defp priority(type) do
-    type_preference =
-      case type do
-        :host -> 126
-        :prflx -> 110
-        :srflx -> 100
-        :relay -> 0
-      end
-
-    # That's not fully correct as according to RFC 8445 sec. 5.1.2.1 we should:
-    # * use value of 65535 when there is only one IP address
-    # * use different values when there are multiple IP addresses
-    local_preference = 65_535
-
-    2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
-  end
 end
