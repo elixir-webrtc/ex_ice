@@ -456,21 +456,30 @@ defmodule ExICE.ICEAgent do
     with {:ok, key} <- authenticate_msg(msg, state.local_pwd),
          {:ok, prio_attr} <- get_prio_attribute(msg),
          {:ok, role_attr} <- get_role_attribute(msg),
+         use_cand_attr when use_cand_attr in [nil, %UseCandidate{}] <-
+           get_use_cand_attribute(msg),
          {{:ok, state}, _} <- {check_req_role_conflict(role_attr, state), key} do
       case find_host_cand(state.local_cands, socket) do
         nil ->
           # keepalive on pair selected before ice restart
+          # TODO can we reach this? Won't we use incorrect local_pwd for auth?
           send_binding_success_response(socket, src_ip, src_port, msg, key)
           state
 
         %Candidate{} = local_cand ->
           send_binding_success_response(socket, src_ip, src_port, msg, key)
           {remote_cand, state} = get_or_create_remote_cand(src_ip, src_port, prio_attr, state)
-          use_candidate = Message.get_attribute(msg, UseCandidate)
-          handle_conn_check_req(local_cand, remote_cand, use_candidate, state)
+          handle_conn_check_req(local_cand, remote_cand, use_cand_attr, state)
       end
     else
-      {:error, reason} when reason in [:invalid_priority_attribute, :no_priority_attribute] ->
+      {:error, reason}
+      when reason in [
+             :invalid_priority_attribute,
+             :no_priority_attribute,
+             :invalid_use_candidate_attribute
+           ] ->
+        # TODO should we reply with 400 bad request when
+        # attributes are invalid (they are present but invalid)
         # TODO should we authenticate?
         # chrome does not authenticate but section 6.3.1.1 suggests
         # we should add message-integrity
@@ -511,6 +520,11 @@ defmodule ExICE.ICEAgent do
           Logger.debug("Adding new candidate pair: #{inspect(pair)}")
           put_in(state, [:checklist, pair.id], pair)
         end
+
+      %CandidatePair{} = pair when pair == state.selected_pair ->
+        # keepalive - do nothing, we already replied 
+        Logger.debug("Keepalive on selected pair: #{pair.id}")
+        state
 
       %CandidatePair{} = pair ->
         if use_candidate do
@@ -559,6 +573,15 @@ defmodule ExICE.ICEAgent do
       {:ok, _} -> role_attr
       {:error, _} -> {:error, :invalid_role_attribute}
       nil -> {:error, :no_role_attribute}
+    end
+  end
+
+  defp get_use_cand_attribute(msg) do
+    # this function breaks the convention...
+    case Message.get_attribute(msg, UseCandidate) do
+      {:ok, attr} -> attr
+      {:error, _} -> {:error, :invalid_use_candidate_attribute}
+      nil -> nil
     end
   end
 
