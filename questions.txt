@@ -26,3 +26,39 @@ generated as discussed in [RFC5389], but there is no impact on ICE
 processing otherwise."
 11. Can ICE be restarted before completing?
 12. Can we send data on valid pair before regular nomination in RFC 5245?
+13. Why does chrome allocate only one ICE candidate?
+Chrome operates on ADAPTER_ENUMERATION flag. When ADAPTER_ENUMERATION is enabled, chrome
+will search for local NIC and create candidates. When ADAPTER_ENUMERATION is disabled or 
+the process of searching local NIC fails, chrome uses INADDR_ANY i.e. 0.0.0.0 address as its
+only candidate. When the ADAPTER_ENUMERATION can be blocked? The comment from basic_port_allocator
+says: 
+
+// If the adapter enumeration is disabled, we'll just bind to any address
+// instead of specific NIC. This is to ensure the same routing for http
+// traffic by OS is also used here to avoid any local or public IP leakage
+// during stun process.
+
+so this might have something to do with the http traffic.
+
+This might have also something to do with private networks or at least when no STUN or TURN
+server is provided. From stun_port.cc
+
+// When adapter enumeration is disabled and binding to the any address, the
+// default local address will be issued as a candidate instead if
+// `emit_local_for_anyaddress` is true. This is to allow connectivity for
+// applications which absolutely requires a HOST candidate.
+
+How the 0.0.0.0 is transported to the peer? 
+Which address is used when sending data from a socket listening on 0.0.0.0?
+
+Possibly using default local address. Refer to what is default local address".
+
+See basic_port_allocator.cc and network.cc files for reference.
+https://source.chromium.org/chromium/chromium/src/+/main:third_party/webrtc/p2p/client/basic_port_allocator.cc;l=741?q=basic_port_a&ss=chromium
+
+14. What is default local address?
+From network.h
+
+// The default local address is the local address used in multi-homed endpoint
+// when the any address (0.0.0.0 or ::) is used as the local address. It's
+// important to check the return value as a IP family may not be enabled.
