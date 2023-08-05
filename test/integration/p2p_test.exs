@@ -127,7 +127,7 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.add_remote_candidate(agent2, cand)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent1, :gathering_complete} ->
+      {:ex_ice, ^agent1, {:gathering_state_change, :complete}} ->
         ICEAgent.end_of_candidates(agent2)
         p2p(agent1, agent2, a1_status, a2_status)
 
@@ -160,7 +160,7 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.add_remote_candidate(agent1, cand)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent2, :gathering_complete} ->
+      {:ex_ice, ^agent2, {:gathering_state_change, :complete}} ->
         ICEAgent.end_of_candidates(agent1)
         p2p(agent1, agent2, a1_status, a2_status)
 

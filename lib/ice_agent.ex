@@ -50,7 +50,8 @@ defmodule ExICE.ICEAgent do
   end
 
   @spec set_remote_credentials(pid(), binary(), binary()) :: :ok
-  def set_remote_credentials(ice_agent, ufrag, passwd) do
+  def set_remote_credentials(ice_agent, ufrag, passwd)
+      when is_binary(ufrag) and is_binary(passwd) do
     GenServer.cast(ice_agent, {:set_remote_credentials, ufrag, passwd})
   end
 
@@ -60,7 +61,7 @@ defmodule ExICE.ICEAgent do
   end
 
   @spec add_remote_candidate(pid(), String.t()) :: :ok
-  def add_remote_candidate(ice_agent, candidate) do
+  def add_remote_candidate(ice_agent, candidate) when is_binary(candidate) do
     GenServer.cast(ice_agent, {:add_remote_candidate, candidate})
   end
 
@@ -70,7 +71,7 @@ defmodule ExICE.ICEAgent do
   end
 
   @spec send_data(pid(), binary()) :: :ok
-  def send_data(ice_agent, data) do
+  def send_data(ice_agent, data) when is_binary(data) do
     GenServer.cast(ice_agent, {:send_data, data})
   end
 
@@ -168,8 +169,54 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def handle_cast(:gather_candidates, state) do
-    state = do_gather_candidates(state)
+  def handle_cast(:gather_candidates, %{gathering_state: :gathering} = state) do
+    Logger.warn("Can't gather candidates. Gathering already in progress. Ignoring.")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:gather_candidates, %{gathering_state: :complete} = state) do
+    Logger.warn("Can't gather candidates. ICE restart needed. Ignoring.")
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:gather_candidates, %{gathering_state: :new} = state) do
+    Logger.debug("Gathering state change: #{state.gathering_state} -> gathering")
+    send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :gathering}})
+    state = %{state | gathering_state: :gathering}
+
+    {:ok, host_candidates} = Gatherer.gather_host_candidates(ip_filter: state.ip_filter)
+
+    for cand <- host_candidates do
+      send(
+        state.controlling_process,
+        {:ex_ice, self(), {:new_candidate, Candidate.marshal(cand)}}
+      )
+    end
+
+    # TODO should we override?
+    state = %{state | local_cands: state.local_cands ++ host_candidates}
+
+    gathering_transactions =
+      for stun_server <- state.stun_servers, host_cand <- host_candidates, into: %{} do
+        <<t_id::12*8>> = :crypto.strong_rand_bytes(12)
+
+        t = %{
+          t_id: t_id,
+          host_cand: host_cand,
+          stun_server: stun_server,
+          send_time: nil,
+          state: :waiting
+        }
+
+        {t_id, t}
+      end
+
+    state =
+      %{state | gathering_transactions: gathering_transactions}
+      |> update_gathering_state()
+
     {:noreply, state}
   end
 
@@ -181,10 +228,12 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
+    Logger.debug("New remote candidate: #{inspect(remote_cand)}")
+
     case Candidate.unmarshal(remote_cand) do
       {:ok, remote_cand} ->
-        Logger.debug("New remote candidate #{inspect(remote_cand)}")
         state = do_add_remote_candidate(remote_cand, state)
+        Logger.debug("Successfully added remote candidate.")
         {:noreply, state}
 
       {:error, reason} ->
@@ -340,8 +389,10 @@ defmodule ExICE.ICEAgent do
 
       {:error, reason} ->
         Logger.debug("Couldn't send binding request, reason: #{reason}")
-        {_t, state} = pop_in(state, [:gathering_transactions, t_id])
+
         state
+        |> put_in([:gathering_transactions, t.t_id, :state], :failed)
+        |> update_gathering_state()
     end
   end
 
@@ -463,6 +514,7 @@ defmodule ExICE.ICEAgent do
         nil ->
           # keepalive on pair selected before ice restart
           # TODO can we reach this? Won't we use incorrect local_pwd for auth?
+          Logger.debug("Keepalive on pair from previous ICE session")
           send_binding_success_response(socket, src_ip, src_port, msg, key)
           state
 
@@ -483,6 +535,11 @@ defmodule ExICE.ICEAgent do
         # TODO should we authenticate?
         # chrome does not authenticate but section 6.3.1.1 suggests
         # we should add message-integrity
+        Logger.debug("""
+        Invalid binding request, reason: #{reason}. \
+        Sending bad request error response"\
+        """)
+
         send_bad_request_error_response(socket, src_ip, src_port, msg)
         state
 
@@ -552,6 +609,7 @@ defmodule ExICE.ICEAgent do
             put_in(state, [:checklist, pair.id], pair)
           end
         else
+          # do nothing; we already replied with success response
           state
         end
     end
@@ -1006,17 +1064,24 @@ defmodule ExICE.ICEAgent do
   defp update_gathering_state(%{gathering_state: :complete} = state), do: state
 
   defp update_gathering_state(state) do
-    gathering_in_progress? =
+    transaction_in_progress? =
       Enum.any?(state.gathering_transactions, fn {_id, %{state: t_state}} ->
         t_state in [:waiting, :in_progress]
       end)
 
-    if gathering_in_progress? do
-      state
-    else
-      Logger.debug("Gathering finished")
-      send(state.controlling_process, {:ex_ice, self(), :gathering_complete})
-      %{state | gathering_state: :complete}
+    cond do
+      state.gathering_state == :new and transaction_in_progress? ->
+        Logger.debug("Gathering state change: new -> gathering")
+        send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :gathering}})
+        %{state | gathering_state: :gathering}
+
+      state.gathering_state == :gathering and not transaction_in_progress? ->
+        Logger.debug("Gathering state change: gathering -> complete")
+        send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :complete}})
+        %{state | gathering_state: :complete}
+
+      true ->
+        state
     end
   end
 
@@ -1073,6 +1138,9 @@ defmodule ExICE.ICEAgent do
       send(state.controlling_process, {:ex_ice, self(), new_ice_state})
     end
 
+    Logger.debug("Gathering state change: #{state.gathering_state} -> new")
+    send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :new}})
+
     Logger.debug("Starting Ta timer")
     ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
 
@@ -1095,42 +1163,6 @@ defmodule ExICE.ICEAgent do
         remote_pwd: nil,
         eoc: false
     }
-  end
-
-  defp do_gather_candidates(state) do
-    {:ok, host_candidates} = Gatherer.gather_host_candidates(ip_filter: state.ip_filter)
-
-    for cand <- host_candidates do
-      send(
-        state.controlling_process,
-        {:ex_ice, self(), {:new_candidate, Candidate.marshal(cand)}}
-      )
-    end
-
-    # TODO should we override?
-    state = %{state | local_cands: state.local_cands ++ host_candidates}
-
-    gathering_transactions =
-      for stun_server <- state.stun_servers, host_cand <- host_candidates, into: %{} do
-        <<t_id::12*8>> = :crypto.strong_rand_bytes(12)
-
-        t = %{
-          t_id: t_id,
-          host_cand: host_cand,
-          stun_server: stun_server,
-          send_time: nil,
-          state: :waiting
-        }
-
-        {t_id, t}
-      end
-
-    if gathering_transactions == %{} do
-      send(state.controlling_process, {:ex_ice, self(), :gathering_complete})
-      %{state | gathering_state: :complete}
-    else
-      %{state | gathering_transactions: gathering_transactions, gathering_state: :gathering}
-    end
   end
 
   defp find_cand(cands, ip, port) do
