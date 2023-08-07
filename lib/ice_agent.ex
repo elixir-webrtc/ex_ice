@@ -39,6 +39,14 @@ defmodule ExICE.ICEAgent do
           stun_servers: [String.t()]
         ]
 
+  defguard are_pairs_equal(p1, p2)
+           when p1.local_cand.base_address == p2.local_cand.base_address and
+                  p1.local_cand.base_port == p2.local_cand.base_port and
+                  p1.local_cand.address == p2.local_cand.address and
+                  p1.local_cand.port == p2.local_cand.port and
+                  p1.remote_cand.address == p2.remote_cand.address and
+                  p1.remote_cand.port == p2.remote_cand.port
+
   defguard is_response(class) when class in [:success_response, :error_response]
 
   @spec start_link(role(), opts()) :: GenServer.on_start()
@@ -669,20 +677,36 @@ defmodule ExICE.ICEAgent do
   end
 
   defp handle_conn_check_success_response(conn_check_pair, msg, state) do
-    case authenticate_msg(msg, state.remote_pwd) do
-      {:ok, _key} ->
-        @conn_check_handler[state.role].handle_conn_check_success_response(
-          state,
-          conn_check_pair,
-          msg
-        )
+    with {:ok, _key} <- authenticate_msg(msg, state.remote_pwd),
+         {:ok, xor_addr} <- Message.get_attribute(msg, XORMappedAddress) do
+      {local_cand, state} = get_or_create_local_cand(xor_addr, conn_check_pair, state)
+      remote_cand = conn_check_pair.remote_cand
 
+      valid_pair =
+        CandidatePair.new(local_cand, remote_cand, state.role, :succeeded, valid?: true)
+
+      checklist_pair = Checklist.find_pair(state.checklist, valid_pair)
+
+      {pair_id, state} = add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
+
+      nominate? = conn_check_pair.nominate?
+      @conn_check_handler[state.role].update_nominated_flag(state, pair_id, nominate?)
+    else
       {:error, reason} when reason in [:invalid_message_integrity, :invalid_fingerprint] ->
         Logger.debug("Ignoring conn check response, reason: #{reason}")
 
         conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
 
         put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
+
+      _other ->
+        Logger.debug("""
+        Invalid or no XORMappedAddress. Ignoring conn check response.
+        Conn check tid: #{inspect(msg.transaction_id)},
+        Conn check pair: #{inspect(conn_check_pair.id)}.
+        """)
+
+        state
     end
   end
 
@@ -793,6 +817,90 @@ defmodule ExICE.ICEAgent do
     update_in(state, [:gathering_transactions, t.t_id], fn t -> %{t | state: :failed} end)
   end
 
+  # Adds valid pair according to sec 7.2.5.3.2
+  # TODO sec. 7.2.5.3.3
+  # The agent MUST set the states for all other Frozen candidate pairs in
+  # all checklists with the same foundation to Waiting.
+  defp add_valid_pair(
+         valid_pair,
+         _conn_check_pair,
+         %CandidatePair{valid?: true} = checklist_pair,
+         %{role: :controlling} = state
+       )
+       when are_pairs_equal(valid_pair, checklist_pair) do
+    # valid pair is already in the checklist so
+    # this cannot be our first conn check on it -
+    # this means that nominate? flag has to be set
+    true = checklist_pair.nominate?
+    {checklist_pair.id, state}
+  end
+
+  defp add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
+       when are_pairs_equal(valid_pair, checklist_pair) do
+    Logger.debug("""
+    New valid pair: #{inspect(checklist_pair.id)} \
+    resulted from conn check on pair: #{inspect(conn_check_pair.id)}\
+    """)
+
+    conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
+    checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
+
+    if state.state not in [:connected, :completed] do
+      send(state.controlling_process, {:ex_ice, self(), :connected})
+    end
+
+    checklist =
+      state.checklist
+      |> Map.replace!(conn_check_pair.id, conn_check_pair)
+      |> Map.replace!(checklist_pair.id, checklist_pair)
+
+    state = %{state | state: :connected, checklist: checklist}
+    {checklist_pair.id, state}
+  end
+
+  defp add_valid_pair(valid_pair, conn_check_pair, _, state)
+       when are_pairs_equal(valid_pair, conn_check_pair) do
+    Logger.debug("""
+    New valid pair: #{inspect(conn_check_pair.id)} \
+    resulted from conn check on pair: #{inspect(conn_check_pair.id)}\
+    """)
+
+    conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
+
+    if state.state not in [:connected, :completed] do
+      send(state.controlling_process, {:ex_ice, self(), :connected})
+    end
+
+    checklist = Map.replace!(state.checklist, conn_check_pair.id, conn_check_pair)
+
+    state = %{state | state: :connected, checklist: checklist}
+    {conn_check_pair.id, state}
+  end
+
+  defp add_valid_pair(valid_pair, conn_check_pair, _, state) do
+    # TODO compute priority according to sec 7.2.5.3.2
+    Logger.debug("""
+    Adding new candidate pair resulted from conn check \
+    on pair: #{inspect(conn_check_pair.id)}. Pair: #{inspect(valid_pair)}\
+    """)
+
+    Logger.debug("New valid pair: #{inspect(valid_pair.id)}")
+
+    conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
+
+    if state.state not in [:connected, :completed] do
+      send(state.controlling_process, {:ex_ice, self(), :connected})
+    end
+
+    checklist =
+      state.checklist
+      |> Map.replace!(conn_check_pair.id, conn_check_pair)
+      |> Map.put(valid_pair.id, valid_pair)
+
+    state = %{state | state: :connected, checklist: checklist}
+    {valid_pair.id, state}
+  end
+
   @doc false
   @spec send_binding_success_response(CandidatePair.t(), Message.t(), binary()) :: :ok
   def send_binding_success_response(pair, msg, key) do
@@ -857,9 +965,7 @@ defmodule ExICE.ICEAgent do
     if f in checklist_foundations, do: :frozen, else: :waiting
   end
 
-  @doc false
-  @spec get_or_create_local_cand(XORMappedAddress.t(), CandidatePair.t(), map()) :: Candidate.t()
-  def get_or_create_local_cand(xor_addr, conn_check_pair, state) do
+  defp get_or_create_local_cand(xor_addr, conn_check_pair, state) do
     local_cand = find_cand(state.local_cands, xor_addr.address, xor_addr.port)
 
     if local_cand do

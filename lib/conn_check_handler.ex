@@ -7,14 +7,14 @@ defmodule ExICE.ConnCheckHandler do
   @callback handle_conn_check_request(
               ice_agent :: map(),
               pair :: CandidatePair.t(),
-              msg :: ExSTUN.Message.t(),
+              request :: ExSTUN.Message.t(),
               use_cand_attr :: UseCandidate.t(),
               key :: binary()
             ) :: map()
 
-  @callback handle_conn_check_success_response(
+  @callback update_nominated_flag(
               ice_agent :: map(),
-              conn_check_pair :: CandidatePair.t(),
-              response :: ExSTUN.Message.t()
+              pair_id :: term(),
+              nominate? :: boolean()
             ) :: map()
 end
