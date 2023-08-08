@@ -50,16 +50,8 @@ defmodule ExICE.ControlledHandler do
       %CandidatePair{} = pair ->
         if pair.state == :succeeded do
           # TODO should we call this selected or nominated pair
-          Logger.debug("Nomination request on valid pair. Selecting pair: #{inspect(pair.id)}")
-
-          pair = %CandidatePair{pair | nominated?: true}
-
-          if state.state != :completed do
-            send(state.controlling_process, {:ex_ice, self(), :completed})
-          end
-
-          state = %{state | selected_pair: pair, state: :completed}
-          put_in(state, [:checklist, pair.id], pair)
+          Logger.debug("Nomination request on valid pair: #{pair.id}.")
+          update_nominated_flag(state, pair.id, true)
         else
           # TODO should we check if this pair is not in failed?
           Logger.debug("""
@@ -80,14 +72,29 @@ defmodule ExICE.ControlledHandler do
   @impl true
   def update_nominated_flag(state, pair_id, true) do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
-    # send(state.controlling_process, {:ex_ice, self(), :completed})
+
+    checklist_finished? =
+      not (Checklist.in_progress?(state.checklist) or Checklist.waiting?(state.checklist))
+
+    state =
+      if state.eoc and checklist_finished? do
+        # In the controlled side, we can move to the completed state
+        # only if eoc was set and the checklist finished.
+        # This means, that if the other side never sets eoc,
+        # we will never move to the completed state.
+        # The same does libwebrtc.
+        Logger.debug("Connection state changed: #{state.state} -> completed")
+        send(state.controlling_process, {:ex_ice, self(), :completed})
+        %{state | state: :completed}
+      else
+        state
+      end
+
     checklist =
       Map.update!(state.checklist, pair_id, fn pair ->
         %CandidatePair{pair | nominate?: false, nominated?: true}
       end)
 
-    # %{state | checklist: checklist, state: :completed, selected_pair: Map.fetch!(state.checklist, pair_id)}
-    # TODO selected_pair?
-    %{state | checklist: checklist, selected_pair: Map.fetch!(state.checklist, pair_id)}
+    %{state | checklist: checklist, selected_pair: Map.fetch!(checklist, pair_id)}
   end
 end

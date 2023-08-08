@@ -44,8 +44,10 @@ defmodule ExICE.ControllingHandler do
   def update_nominated_flag(state, _pair_id, false), do: state
 
   @impl true
-  def update_nominated_flag(state, pair_id, true) do
+  def update_nominated_flag(%{eoc: true} = state, pair_id, true) do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
+    Logger.debug("Connection state changed: #{state.state} -> completed")
+
     send(state.controlling_process, {:ex_ice, self(), :completed})
 
     checklist =
@@ -53,11 +55,16 @@ defmodule ExICE.ControllingHandler do
         %CandidatePair{pair | nominate?: false, nominated?: true}
       end)
 
+    # the controlling agent could nominate only when eoc was set
+    # and checklist finished
+    # important: we have to check on a new checklist
+    false = Checklist.in_progress?(checklist) or Checklist.waiting?(checklist)
+
     %{
       state
       | checklist: checklist,
         state: :completed,
-        selected_pair: Map.fetch!(state.checklist, pair_id)
+        selected_pair: Map.fetch!(checklist, pair_id)
     }
   end
 end

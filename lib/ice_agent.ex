@@ -34,6 +34,39 @@ defmodule ExICE.ICEAgent do
 
   @type role() :: :controlling | :controlled
 
+  @typedoc """
+  Emitted when gathering process state has changed.
+
+  For exact meaning refer to the W3C WebRTC standard, sec 5.6.3.
+  """
+  @type gathering_state_changed() :: {:gathering_state_change, :new | :gathering | :complete}
+
+  @typedoc """
+  Emitted when connection state has changed.
+
+  For exact meaning refer to the W3C WebRTC standard, sec. 5.6.4.
+  """
+  @type connection_state_changed() :: :checking | :connected | :completed | :failed
+
+  @typedoc """
+  Messages sent by the ExICE.
+  """
+  @type signal() ::
+          {:ex_ice, pid(),
+           gathering_state_changed()
+           | connection_state_changed
+           | {:data, binary()}
+           | {:new_candidate, binary()}}
+
+  @typedoc """
+  ICE Agent configuration options.
+
+  * `ip_filter` - filter applied when gathering local candidates
+  * `stun_servers` - list of STUN servers
+
+  Currently, there is no support for local relay (TURN) candidates
+  however, remote relay candidates work correctly.
+  """
   @type opts() :: [
           ip_filter: (:inet.ip_address() -> boolean),
           stun_servers: [String.t()]
@@ -243,6 +276,16 @@ defmodule ExICE.ICEAgent do
     case Candidate.unmarshal(remote_cand) do
       {:ok, remote_cand} ->
         state = do_add_remote_candidate(remote_cand, state)
+
+        state =
+          if state.state == :new do
+            Logger.debug("Connection state changed: new -> checking")
+            send(state.controlling_process, {:ex_ice, self(), :checking})
+            %{state | state: :checking}
+          else
+            state
+          end
+
         Logger.debug("Successfully added remote candidate.")
         {:noreply, state}
 
@@ -368,7 +411,7 @@ defmodule ExICE.ICEAgent do
 
     added_pairs = Map.drop(checklist, Map.keys(state.checklist))
 
-    if added_pairs == [] do
+    if added_pairs == %{} do
       Logger.debug("Not adding any new pairs as they were redundant")
     else
       Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
@@ -668,6 +711,7 @@ defmodule ExICE.ICEAgent do
       Sent from: #{inspect({conn_check_pair.local_cand.base_address, conn_check_pair.local_cand.base_port})}, \
       to: #{inspect({conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port})}
       Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({socket_ip, socket_port})}
+      Pair failed: #{conn_check_pair.id}
       """)
 
       conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
@@ -828,10 +872,13 @@ defmodule ExICE.ICEAgent do
          %{role: :controlling} = state
        )
        when are_pairs_equal(valid_pair, checklist_pair) do
-    # valid pair is already in the checklist so
-    # this cannot be our first conn check on it -
+    # valid pair is already in the checklist and it is 
+    # marked as valid so this cannot be our first conn check on it -
     # this means that nominate? flag has to be set
     true = checklist_pair.nominate?
+    checklist_pair = %CandidatePair{checklist_pair | state: :succeeded}
+    checklist = Map.replace!(state.checklist, checklist_pair.id, checklist_pair)
+    state = %{state | checklist: checklist}
     {checklist_pair.id, state}
   end
 
@@ -846,6 +893,7 @@ defmodule ExICE.ICEAgent do
     checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
 
     if state.state not in [:connected, :completed] do
+      Logger.debug("Connection state changed: #{state.state} -> :connected")
       send(state.controlling_process, {:ex_ice, self(), :connected})
     end
 
@@ -868,6 +916,7 @@ defmodule ExICE.ICEAgent do
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
 
     if state.state not in [:connected, :completed] do
+      Logger.debug("Connection state changed: #{state.state} -> :connected")
       send(state.controlling_process, {:ex_ice, self(), :connected})
     end
 
@@ -889,6 +938,7 @@ defmodule ExICE.ICEAgent do
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
 
     if state.state not in [:connected, :completed] do
+      Logger.debug("Connection state changed: #{state.state} -> :connected")
       send(state.controlling_process, {:ex_ice, self(), :connected})
     end
 
@@ -1031,6 +1081,7 @@ defmodule ExICE.ICEAgent do
         # TODO revisit this
         # should we check if state.state == :in_progress?
         Logger.debug("No pairs for nomination. ICE failed.")
+        Logger.debug("Connection state changed: #{state.state} -> failed")
         send(state.controlling_process, {:ex_ice, self(), :failed})
         %{state | state: :failed}
     end
@@ -1110,6 +1161,7 @@ defmodule ExICE.ICEAgent do
       end
 
     if new_ice_state != state.state do
+      Logger.debug("Connection state changed: #{state.state} -> #{new_ice_state}")
       send(state.controlling_process, {:ex_ice, self(), new_ice_state})
     end
 
