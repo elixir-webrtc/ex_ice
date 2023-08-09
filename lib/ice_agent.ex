@@ -469,7 +469,12 @@ defmodule ExICE.ICEAgent do
 
   defp timeout_pending_transactions(state) do
     now = System.monotonic_time(:millisecond)
+    state = timeout_conn_checks(now, state)
+    state = timeout_gathering_transactions(now, state)
+    update_gathering_state(state)
+  end
 
+  defp timeout_conn_checks(now, state) do
     {stale_cc, cc} =
       Enum.split_with(state.conn_checks, fn {_id, %{send_time: send_time}} ->
         now - send_time >= @hto
@@ -477,19 +482,20 @@ defmodule ExICE.ICEAgent do
 
     {stale_cc, cc} = {Map.new(stale_cc), Map.new(cc)}
 
-    if stale_cc != %{} do
-      stale_cc_ids = Enum.map(stale_cc, fn {id, _} -> id end)
-      Logger.debug("Connectivity checks timed out: #{inspect(stale_cc_ids)}")
-    end
+    checklist =
+      if stale_cc != %{} do
+        Logger.debug("Connectivity checks timed out: #{inspect(Map.keys(stale_cc))}")
+        stale_pair_ids = Enum.map(stale_cc, fn {_id, %{pair_id: pair_id}} -> pair_id end)
+        Logger.debug("Pairs failed. Reason: timeout. Pairs: #{inspect(stale_pair_ids)}")
+        Checklist.timeout_pairs(state.checklist, stale_pair_ids)
+      else
+        state.checklist
+      end
 
-    stale_pair_ids = Enum.map(stale_cc, fn {_id, %{pair_id: pair_id}} -> pair_id end)
+    %{state | checklist: checklist, conn_checks: cc}
+  end
 
-    if stale_pair_ids != [] do
-      Logger.debug("Pairs failed. Reason: timeout. Pairs: #{inspect(stale_pair_ids)}")
-    end
-
-    checklist = Checklist.timeout_pairs(state.checklist, stale_pair_ids)
-
+  defp timeout_gathering_transactions(now, state) do
     {stale_gath_trans, gath_trans} =
       Enum.split_with(state.gathering_transactions, fn {_id,
                                                         %{state: t_state, send_time: send_time}} ->
@@ -499,11 +505,10 @@ defmodule ExICE.ICEAgent do
     gath_trans = Map.new(gath_trans)
 
     if stale_gath_trans != [] do
-      Logger.debug("Gathering transactions timed out: #{inspect(stale_gath_trans)}")
+      Logger.debug("Gathering transactions timed out: #{inspect(Keyword.keys(stale_gath_trans))}")
     end
 
-    %{state | checklist: checklist, conn_checks: cc, gathering_transactions: gath_trans}
-    |> update_gathering_state()
+    %{state | gathering_transactions: gath_trans}
   end
 
   defp handle_stun_msg(socket, src_ip, src_port, %Message{} = msg, state) do
@@ -690,7 +695,7 @@ defmodule ExICE.ICEAgent do
 
   defp check_req_role_conflict(_role_attr, state), do: {:ok, state}
 
-  ## BINDING RESPONSE HANDLING ## 
+  ## BINDING RESPONSE HANDLING ##
 
   defp handle_conn_check_response(socket, src_ip, src_port, msg, state) do
     {%{pair_id: pair_id}, state} = pop_in(state, [:conn_checks, msg.transaction_id])
@@ -872,7 +877,7 @@ defmodule ExICE.ICEAgent do
          %{role: :controlling} = state
        )
        when are_pairs_equal(valid_pair, checklist_pair) do
-    # valid pair is already in the checklist and it is 
+    # valid pair is already in the checklist and it is
     # marked as valid so this cannot be our first conn check on it -
     # this means that nominate? flag has to be set
     true = checklist_pair.nominate?
@@ -1042,7 +1047,7 @@ defmodule ExICE.ICEAgent do
   defp get_or_create_remote_cand(src_ip, src_port, _prio_attr, state) do
     case find_cand(state.remote_cands, src_ip, src_port) do
       nil ->
-        # TODO calculate correct prio using prio_attr 
+        # TODO calculate correct prio using prio_attr
         cand = Candidate.new(:prflx, src_ip, src_port, nil, nil, nil)
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
         state = %{state | remote_cands: [cand | state.remote_cands]}
@@ -1192,9 +1197,7 @@ defmodule ExICE.ICEAgent do
     }
   end
 
-  @doc false
-  @spec find_cand([Candidate.t()], :inet.ip_address(), :inet.port()) :: Candidate.t()
-  def find_cand(cands, ip, port) do
+  defp find_cand(cands, ip, port) do
     Enum.find(cands, fn cand -> cand.address == ip and cand.port == port end)
   end
 
@@ -1203,9 +1206,7 @@ defmodule ExICE.ICEAgent do
     Enum.find(cands, fn cand -> cand.socket == socket and cand.type == :host end)
   end
 
-  @doc false
-  @spec generate_tiebreaker() :: integer()
-  def generate_tiebreaker() do
+  defp generate_tiebreaker() do
     <<tiebreaker::64>> = :crypto.strong_rand_bytes(8)
     tiebreaker
   end
