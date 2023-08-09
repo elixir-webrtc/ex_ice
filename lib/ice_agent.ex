@@ -279,9 +279,7 @@ defmodule ExICE.ICEAgent do
 
         state =
           if state.state == :new do
-            Logger.debug("Connection state changed: new -> checking")
-            send(state.controlling_process, {:ex_ice, self(), :checking})
-            %{state | state: :checking}
+            change_connection_state(:checking, state)
           else
             state
           end
@@ -343,12 +341,15 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_info(:ta_timeout, state) do
-    state = timeout_pending_transactions(state)
+    state =
+      state
+      |> timeout_pending_transactions()
+      |> update_gathering_state()
 
     state =
       case get_next_gathering_transaction(state.gathering_transactions) do
         {_t_id, transaction} -> handle_gathering_transaction(transaction, state)
-        nil -> handle_checklist(state)
+        nil -> @conn_check_handler[state.role].handle_checklist(state)
       end
 
     state =
@@ -449,29 +450,10 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  defp handle_checklist(state) do
-    case Checklist.get_next_pair(state.checklist) do
-      %CandidatePair{} = pair ->
-        Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
-
-        {pair, state} = send_conn_check(pair, state)
-
-        put_in(state, [:checklist, pair.id], pair)
-
-      nil ->
-        if nominate?(state) do
-          nominate(state)
-        else
-          state
-        end
-    end
-  end
-
   defp timeout_pending_transactions(state) do
     now = System.monotonic_time(:millisecond)
-    state = timeout_conn_checks(now, state)
     state = timeout_gathering_transactions(now, state)
-    update_gathering_state(state)
+    timeout_conn_checks(now, state)
   end
 
   defp timeout_conn_checks(now, state) do
@@ -897,17 +879,19 @@ defmodule ExICE.ICEAgent do
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
     checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
 
-    if state.state not in [:connected, :completed] do
-      Logger.debug("Connection state changed: #{state.state} -> :connected")
-      send(state.controlling_process, {:ex_ice, self(), :connected})
-    end
+    state =
+      if state.state in [:connected, :completed] do
+        state
+      else
+        change_connection_state(:connected, state)
+      end
 
     checklist =
       state.checklist
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
       |> Map.replace!(checklist_pair.id, checklist_pair)
 
-    state = %{state | state: :connected, checklist: checklist}
+    state = %{state | checklist: checklist}
     {checklist_pair.id, state}
   end
 
@@ -920,14 +904,16 @@ defmodule ExICE.ICEAgent do
 
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
 
-    if state.state not in [:connected, :completed] do
-      Logger.debug("Connection state changed: #{state.state} -> :connected")
-      send(state.controlling_process, {:ex_ice, self(), :connected})
-    end
+    state =
+      if state.state in [:connected, :completed] do
+        state
+      else
+        change_connection_state(:connected, state)
+      end
 
     checklist = Map.replace!(state.checklist, conn_check_pair.id, conn_check_pair)
 
-    state = %{state | state: :connected, checklist: checklist}
+    state = %{state | checklist: checklist}
     {conn_check_pair.id, state}
   end
 
@@ -942,17 +928,19 @@ defmodule ExICE.ICEAgent do
 
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
 
-    if state.state not in [:connected, :completed] do
-      Logger.debug("Connection state changed: #{state.state} -> :connected")
-      send(state.controlling_process, {:ex_ice, self(), :connected})
-    end
+    state =
+      if state.state in [:connected, :completed] do
+        state
+      else
+        change_connection_state(:connected, state)
+      end
 
     checklist =
       state.checklist
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
       |> Map.put(valid_pair.id, valid_pair)
 
-    state = %{state | state: :connected, checklist: checklist}
+    state = %{state | checklist: checklist}
     {valid_pair.id, state}
   end
 
@@ -1058,37 +1046,33 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  defp nominate?(state) do
+  @doc false
+  @spec time_to_nominate?(map()) :: boolean()
+  def time_to_nominate?(state) do
     # if we know there won't be further candidates,
     # there are no checks waiting or in-progress,
     # and we are the controlling agent, then we can nominate
-    waiting = Checklist.waiting?(state.checklist)
-    in_progress = Checklist.in_progress?(state.checklist)
-
     state.gathering_state == :complete and
       state.eoc and
-      not (waiting or in_progress) and
+      Checklist.finished?(state.checklist) and
       state.role == :controlling
   end
 
-  defp nominate(state) do
+  @doc false
+  @spec try_nominate(map()) :: map()
+  def try_nominate(state) do
     case Checklist.get_pair_for_nomination(state.checklist) do
       %CandidatePair{} = pair ->
-        Logger.debug("Enqueuing pair for nomination: #{inspect(pair.id)}")
-
+        Logger.debug("Trying to nominate pair: #{inspect(pair.id)}")
         pair = %CandidatePair{pair | state: :waiting, nominate?: true}
-        # TODO use triggered check queue
-        state = put_in(state, [:checklist, pair.id], pair)
-
-        handle_checklist(state)
+        {pair, state} = send_conn_check(pair, state)
+        put_in(state, [:checklist, pair.id], pair)
 
       nil ->
         # TODO revisit this
         # should we check if state.state == :in_progress?
         Logger.debug("No pairs for nomination. ICE failed.")
-        Logger.debug("Connection state changed: #{state.state} -> failed")
-        send(state.controlling_process, {:ex_ice, self(), :failed})
-        %{state | state: :failed}
+        change_connection_state(:failed, state)
     end
   end
 
@@ -1165,10 +1149,12 @@ defmodule ExICE.ICEAgent do
         true -> state.state
       end
 
-    if new_ice_state != state.state do
-      Logger.debug("Connection state changed: #{state.state} -> #{new_ice_state}")
-      send(state.controlling_process, {:ex_ice, self(), new_ice_state})
-    end
+    state =
+      if new_ice_state != state.state do
+        change_connection_state(new_ice_state, state)
+      else
+        state
+      end
 
     Logger.debug("Gathering state change: #{state.gathering_state} -> new")
     send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :new}})
@@ -1228,7 +1214,17 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  defp send_conn_check(pair, state) do
+  @doc false
+  @spec change_connection_state(atom(), map()) :: map()
+  def change_connection_state(new_conn_state, state) do
+    Logger.debug("Connection state change: #{state.state} -> #{new_conn_state}")
+    send(state.controlling_process, {:ex_ice, self(), new_conn_state})
+    %{state | state: new_conn_state}
+  end
+
+  @doc false
+  @spec send_conn_check(CandidatePair.t(), map()) :: {CandidatePair.t(), map()}
+  def send_conn_check(pair, state) do
     type = %Type{class: :request, method: :binding}
 
     # TODO setup correct tiebreakers

@@ -8,6 +8,24 @@ defmodule ExICE.ControllingHandler do
   alias ExICE.Attribute.UseCandidate
 
   @impl true
+  def handle_checklist(state) do
+    case Checklist.get_next_pair(state.checklist) do
+      %CandidatePair{} = pair ->
+        Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
+        {pair, state} = ICEAgent.send_conn_check(pair, state)
+        put_in(state, [:checklist, pair.id], pair)
+
+      nil ->
+        if ICEAgent.time_to_nominate?(state) do
+          Logger.debug("Time to nominate a pair! Looking for a best valid pair...")
+          ICEAgent.try_nominate(state)
+        else
+          state
+        end
+    end
+  end
+
+  @impl true
   def handle_conn_check_request(state, pair, msg, %UseCandidate{}, _key) do
     Logger.debug("""
     Received conn check request with use candidate attribute but

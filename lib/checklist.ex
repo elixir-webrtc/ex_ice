@@ -60,6 +60,11 @@ defmodule ExICE.Checklist do
     Enum.any?(checklist, fn {_id, pair} -> pair.state == :in_progress end)
   end
 
+  @spec finished?(t()) :: boolean()
+  def finished?(checklist) do
+    not (waiting?(checklist) or in_progress?(checklist))
+  end
+
   @spec get_foundations(t()) :: [{integer(), integer()}]
   def get_foundations(checklist) do
     for {_id, pair} <- checklist do
@@ -111,7 +116,7 @@ defmodule ExICE.Checklist do
   def timeout_pairs(checklist, ids) do
     for {_id, pair} <- checklist, into: %{} do
       if pair.id in ids do
-        {pair.id, %CandidatePair{pair | state: :failed}}
+        {pair.id, %CandidatePair{pair | valid: false, state: :failed}}
       else
         {pair.id, pair}
       end
