@@ -8,6 +8,22 @@ defmodule ExICE.ControllingHandler do
   alias ExICE.Attribute.UseCandidate
 
   @impl true
+  def handle_checklist(%{nominating?: {true, pair_id}} = state) do
+    case Map.fetch!(state.checklist, pair_id) do
+      %CandidatePair{valid?: false, state: :failed} ->
+        # pair that we tried to nominate timed out
+        Logger.debug("""
+        Pair we tried to nominate failed. Changing connection state to failed. Pair id: #{pair_id}.\
+        """)
+
+        ICEAgent.change_connection_state(:failed, state)
+
+      _ ->
+        state
+    end
+  end
+
+  @impl true
   def handle_checklist(state) do
     case Checklist.get_next_pair(state.checklist) do
       %CandidatePair{} = pair ->
@@ -64,9 +80,7 @@ defmodule ExICE.ControllingHandler do
   @impl true
   def update_nominated_flag(%{eoc: true} = state, pair_id, true) do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
-    Logger.debug("Connection state changed: #{state.state} -> completed")
-
-    send(state.controlling_process, {:ex_ice, self(), :completed})
+    state = ICEAgent.change_connection_state(:completed, state)
 
     checklist =
       Map.update!(state.checklist, pair_id, fn pair ->
@@ -81,6 +95,7 @@ defmodule ExICE.ControllingHandler do
     %{
       state
       | checklist: checklist,
+        nominating?: {false, nil},
         state: :completed,
         selected_pair: Map.fetch!(checklist, pair_id)
     }

@@ -166,6 +166,8 @@ defmodule ExICE.ICEAgent do
       conn_checks: %{},
       gathering_state: :new,
       eoc: false,
+      # {did we nominate pair, pair id}
+      nominating?: {false, nil},
       local_ufrag: local_ufrag,
       local_pwd: local_pwd,
       local_cands: [],

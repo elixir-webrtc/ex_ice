@@ -116,7 +116,7 @@ defmodule ExICE.Checklist do
   def timeout_pairs(checklist, ids) do
     for {_id, pair} <- checklist, into: %{} do
       if pair.id in ids do
-        {pair.id, %CandidatePair{pair | valid: false, state: :failed}}
+        {pair.id, %CandidatePair{pair | valid?: false, state: :failed}}
       else
         {pair.id, pair}
       end
