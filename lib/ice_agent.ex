@@ -1181,7 +1181,8 @@ defmodule ExICE.ICEAgent do
         local_pwd: pwd,
         remote_ufrag: nil,
         remote_pwd: nil,
-        eoc: false
+        eoc: false,
+        nominating?: {false, nil}
     }
   end
 
