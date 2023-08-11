@@ -8,40 +8,6 @@ defmodule ExICE.ControllingHandler do
   alias ExICE.Attribute.UseCandidate
 
   @impl true
-  def handle_checklist(%{nominating?: {true, pair_id}} = state) do
-    case Map.fetch!(state.checklist, pair_id) do
-      %CandidatePair{valid?: false, state: :failed} ->
-        # pair that we tried to nominate timed out
-        Logger.debug("""
-        Pair we tried to nominate failed. Changing connection state to failed. Pair id: #{pair_id}.\
-        """)
-
-        ICEAgent.change_connection_state(:failed, state)
-
-      _ ->
-        state
-    end
-  end
-
-  @impl true
-  def handle_checklist(state) do
-    case Checklist.get_next_pair(state.checklist) do
-      %CandidatePair{} = pair ->
-        Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
-        {pair, state} = ICEAgent.send_conn_check(pair, state)
-        put_in(state, [:checklist, pair.id], pair)
-
-      nil ->
-        if ICEAgent.time_to_nominate?(state) do
-          Logger.debug("Time to nominate a pair! Looking for a best valid pair...")
-          ICEAgent.try_nominate(state)
-        else
-          state
-        end
-    end
-  end
-
-  @impl true
   def handle_conn_check_request(state, pair, msg, %UseCandidate{}, _key) do
     Logger.debug("""
     Received conn check request with use candidate attribute but
@@ -96,7 +62,6 @@ defmodule ExICE.ControllingHandler do
       state
       | checklist: checklist,
         nominating?: {false, nil},
-        state: :completed,
         selected_pair: Map.fetch!(checklist, pair_id)
     }
   end
