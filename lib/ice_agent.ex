@@ -148,13 +148,10 @@ defmodule ExICE.ICEAgent do
 
     {local_ufrag, local_pwd} = generate_credentials()
 
-    Logger.debug("Starting Ta timer")
-    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
-
     state = %{
       state: :new,
-      ta_timer: ta_timer,
       controlling_process: Keyword.fetch!(opts, :controlling_process),
+      ta_timer: nil,
       gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
       role: Keyword.fetch!(opts, :role),
@@ -261,6 +258,7 @@ defmodule ExICE.ICEAgent do
     state =
       %{state | gathering_transactions: gathering_transactions}
       |> update_gathering_state()
+      |> update_ta_timer()
 
     {:noreply, state}
   end
@@ -278,15 +276,9 @@ defmodule ExICE.ICEAgent do
     case Candidate.unmarshal(remote_cand) do
       {:ok, remote_cand} ->
         state = do_add_remote_candidate(remote_cand, state)
-
-        state =
-          if state.state == :new do
-            change_connection_state(:checking, state)
-          else
-            state
-          end
-
         Logger.debug("Successfully added remote candidate.")
+        state = update_connection_state(state)
+        state = update_ta_timer(state)
         {:noreply, state}
 
       {:error, reason} ->
@@ -296,8 +288,19 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def handle_cast(:end_of_candidates, state) do
-    {:noreply, %{state | eoc: true}}
+  def handle_cast(:end_of_candidates, %{role: :controlled} = state) do
+    state = %{state | eoc: true}
+    # we might need to move to the completed state
+    state = update_connection_state(state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_cast(:end_of_candidates, %{role: :controlling} = state) do
+    state = %{state | eoc: true}
+    # check wheter it's time to nominate and if yes, try noimnate
+    state = maybe_nominate(state)
+    {:noreply, state}
   end
 
   @impl true
@@ -338,6 +341,23 @@ defmodule ExICE.ICEAgent do
     # allow for executing gathering transactions
     ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
     state = %{state | ta_timer: ta_timer}
+    state = update_ta_timer(state)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info(:ta_timeout, state) when state.state in [:completed, :failed] do
+    Logger.warn("""
+    Ta timer fired in unexpected state: #{state.state}.
+    Trying to update gathering and connection states.
+    """)
+
+    state =
+      state
+      |> update_gathering_state()
+      |> update_connection_state()
+      |> update_ta_timer()
+
     {:noreply, state}
   end
 
@@ -347,24 +367,47 @@ defmodule ExICE.ICEAgent do
       state
       |> timeout_pending_transactions()
       |> update_gathering_state()
+      |> update_connection_state()
+      |> maybe_nominate()
 
-    state =
-      case get_next_gathering_transaction(state.gathering_transactions) do
-        {_t_id, transaction} -> handle_gathering_transaction(transaction, state)
-        nil -> @conn_check_handler[state.role].handle_checklist(state)
+    if state.state in [:completed, :failed] do
+      state = update_ta_timer(state)
+      {:noreply, state}
+    else
+      {transaction_executed, state} =
+        case Checklist.get_next_pair(state.checklist) do
+          %CandidatePair{} = pair ->
+            Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
+            {pair, state} = send_conn_check(pair, state)
+            state = put_in(state, [:checklist, pair.id], pair)
+            {true, state}
+
+          nil ->
+            case get_next_gathering_transaction(state.gathering_transactions) do
+              {_t_id, transaction} ->
+                case handle_gathering_transaction(transaction, state) do
+                  {:ok, state} -> {true, state}
+                  {:error, state} -> {false, state}
+                end
+
+              nil ->
+                {false, state}
+            end
+        end
+
+      unless transaction_executed do
+        Logger.debug("Couldn't find transaction to execute. Did Ta timer fired without the need?")
       end
 
-    state =
-      if state.state in [:completed, :failed] do
-        Logger.debug("Stoping Ta timer")
-        Process.cancel_timer(state.ta_timer)
-        %{state | ta_timer: nil}
-      else
-        ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
-        %{state | ta_timer: ta_timer}
-      end
+      # schedule next check and call update_ta_timer
+      # if the next check is not needed, update_ta_timer will
+      # cancel it
+      ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
+      state = %{state | ta_timer: ta_timer}
+      state = update_ta_timer(state)
 
-    {:noreply, state}
+      {:noreply, state}
+    end
   end
 
   @impl true
@@ -441,14 +484,18 @@ defmodule ExICE.ICEAgent do
       :ok ->
         now = System.monotonic_time(:millisecond)
         t = %{t | state: :in_progress, send_time: now}
-        put_in(state, [:gathering_transactions, t_id], t)
+        state = put_in(state, [:gathering_transactions, t_id], t)
+        {:ok, state}
 
       {:error, reason} ->
         Logger.debug("Couldn't send binding request, reason: #{reason}")
 
-        state
-        |> put_in([:gathering_transactions, t.t_id, :state], :failed)
-        |> update_gathering_state()
+        state =
+          state
+          |> put_in([:gathering_transactions, t.t_id, :state], :failed)
+          |> update_gathering_state()
+
+        {:error, state}
     end
   end
 
@@ -539,6 +586,10 @@ defmodule ExICE.ICEAgent do
 
         state
     end
+    |> update_gathering_state()
+    |> update_connection_state()
+    |> maybe_nominate()
+    |> update_ta_timer()
   end
 
   ## BINDING REQUEST HANDLING ##
@@ -831,7 +882,6 @@ defmodule ExICE.ICEAgent do
     |> update_in([:local_cands], fn local_cands -> [c | local_cands] end)
     |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
     |> update_in([:checklist], fn _ -> checklist end)
-    |> update_gathering_state()
   end
 
   defp handle_gathering_transaction_error_response(_socket, _src_ip, _src_port, msg, state) do
@@ -871,6 +921,24 @@ defmodule ExICE.ICEAgent do
     {checklist_pair.id, state}
   end
 
+  # check against valid_pair == conn_check_pair before
+  # checking against valid_pair == checklist_pair as
+  # the second condition is always true if the first one is
+  defp add_valid_pair(valid_pair, conn_check_pair, _, state)
+       when are_pairs_equal(valid_pair, conn_check_pair) do
+    Logger.debug("""
+    New valid pair: #{inspect(conn_check_pair.id)} \
+    resulted from conn check on pair: #{inspect(conn_check_pair.id)}\
+    """)
+
+    conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
+
+    checklist = Map.replace!(state.checklist, conn_check_pair.id, conn_check_pair)
+
+    state = %{state | checklist: checklist}
+    {conn_check_pair.id, state}
+  end
+
   defp add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
        when are_pairs_equal(valid_pair, checklist_pair) do
     Logger.debug("""
@@ -881,13 +949,6 @@ defmodule ExICE.ICEAgent do
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
     checklist_pair = %CandidatePair{checklist_pair | state: :succeeded, valid?: true}
 
-    state =
-      if state.state in [:connected, :completed] do
-        state
-      else
-        change_connection_state(:connected, state)
-      end
-
     checklist =
       state.checklist
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
@@ -895,28 +956,6 @@ defmodule ExICE.ICEAgent do
 
     state = %{state | checklist: checklist}
     {checklist_pair.id, state}
-  end
-
-  defp add_valid_pair(valid_pair, conn_check_pair, _, state)
-       when are_pairs_equal(valid_pair, conn_check_pair) do
-    Logger.debug("""
-    New valid pair: #{inspect(conn_check_pair.id)} \
-    resulted from conn check on pair: #{inspect(conn_check_pair.id)}\
-    """)
-
-    conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded, valid?: true}
-
-    state =
-      if state.state in [:connected, :completed] do
-        state
-      else
-        change_connection_state(:connected, state)
-      end
-
-    checklist = Map.replace!(state.checklist, conn_check_pair.id, conn_check_pair)
-
-    state = %{state | checklist: checklist}
-    {conn_check_pair.id, state}
   end
 
   defp add_valid_pair(valid_pair, conn_check_pair, _, state) do
@@ -929,13 +968,6 @@ defmodule ExICE.ICEAgent do
     Logger.debug("New valid pair: #{inspect(valid_pair.id)}")
 
     conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
-
-    state =
-      if state.state in [:connected, :completed] do
-        state
-      else
-        change_connection_state(:connected, state)
-      end
 
     checklist =
       state.checklist
@@ -1048,13 +1080,23 @@ defmodule ExICE.ICEAgent do
     end
   end
 
-  @doc false
-  @spec time_to_nominate?(map()) :: boolean()
-  def time_to_nominate?(state) do
-    # if we know there won't be further candidates,
+  defp maybe_nominate(state) do
+    if time_to_nominate?(state) do
+      Logger.debug("Time to nominate a pair! Looking for a best valid pair...")
+      try_nominate(state)
+    else
+      state
+    end
+  end
+
+  defp time_to_nominate?(%{state: :completed}), do: false
+
+  defp time_to_nominate?(state) do
+    {nominating?, _} = state.nominating?
+    # if we are not during nomination and we know there won't be further candidates,
     # there are no checks waiting or in-progress,
     # and we are the controlling agent, then we can nominate
-    state.gathering_state == :complete and
+    nominating? == false and state.gathering_state == :complete and
       state.eoc and
       Checklist.finished?(state.checklist) and
       state.role == :controlling
@@ -1103,22 +1145,6 @@ defmodule ExICE.ICEAgent do
   end
 
   defp do_restart(state) do
-    state =
-      if state.ta_timer do
-        Logger.debug("Stoping Ta timer")
-        Process.cancel_timer(state.ta_timer)
-        # flush mailbox
-        receive do
-          :ta_timeout -> :ok
-        after
-          0 -> :ok
-        end
-
-        %{state | ta_timer: nil}
-      else
-        state
-      end
-
     valid_pairs = state.checklist |> Map.values() |> Enum.filter(fn pair -> pair.valid? end)
     valid_sockets = Enum.map(valid_pairs, fn p -> p.local_cand.socket end)
 
@@ -1161,13 +1187,9 @@ defmodule ExICE.ICEAgent do
     Logger.debug("Gathering state change: #{state.gathering_state} -> new")
     send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :new}})
 
-    Logger.debug("Starting Ta timer")
-    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
-
     %{
       state
       | state: new_ice_state,
-        ta_timer: ta_timer,
         gathering_state: :new,
         gathering_transactions: %{},
         selected_pair: nil,
@@ -1184,6 +1206,7 @@ defmodule ExICE.ICEAgent do
         eoc: false,
         nominating?: {false, nil}
     }
+    |> update_ta_timer()
   end
 
   defp find_cand(cands, ip, port) do
@@ -1225,12 +1248,139 @@ defmodule ExICE.ICEAgent do
     %{state | state: new_conn_state}
   end
 
+  defp update_connection_state(%{state: :new} = state) do
+    if Checklist.waiting?(state.checklist) or Checklist.in_progress?(state.checklist) do
+      change_connection_state(:checking, state)
+    else
+      state
+    end
+  end
+
+  defp update_connection_state(%{state: :checking} = state) do
+    cond do
+      Checklist.get_valid_pair(state.checklist) != nil ->
+        Logger.debug("Found a valid pair. Changing connection state to connected")
+        change_connection_state(:connected, state)
+
+      state.eoc == true and state.gathering_state == :complete and
+          Checklist.finished?(state.checklist) ->
+        Logger.debug("""
+        Finished all conn checks, there won't be any further local or remote candidates
+        and we don't have any valid or selected pair. Changing connection state to failed.
+        """)
+
+        change_connection_state(:failed, state)
+
+      true ->
+        state
+    end
+  end
+
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
+  defp update_connection_state(%{state: :connected} = state) do
+    cond do
+      state.eoc == true and state.gathering_state == :complete and
+        Checklist.get_valid_pair(state.checklist) == nil and
+          Checklist.finished?(state.checklist) ->
+        change_connection_state(:failed, state)
+
+      # Assuming the controlling side uses regulard nomination,
+      # the controlled side could move to the completed
+      # state as soon as it receives nomination request (or after
+      # successful triggered check caused by nomination request).
+      # However, to be compatible with the older RFC's aggresive
+      # nomination, we wait for the end-of-candidates indication
+      # and checklist to be finished.
+      # This also means, that if the other side never sets eoc,
+      # we will never move to the completed state.
+      # This seems to be compliant with libwebrtc.
+      state.role == :controlled and state.eoc == true and state.gathering_state == :complete and
+        state.selected_pair != nil and Checklist.finished?(state.checklist) ->
+        Logger.debug("""
+        Finished all conn checks, there won't be any further local or remote candidates
+        and we have selected pair. Changing connection state to completed.
+        """)
+
+        change_connection_state(:completed, state)
+
+      state.role == :controlling and state.selected_pair != nil ->
+        change_connection_state(:completed, state)
+
+      state.role == :controlling and match?({true, _pair_id}, state.nominating?) and
+          Map.fetch!(state.checklist, elem(state.nominating?, 1)).state == :failed ->
+        {_, pair_id} = state.nominating?
+
+        Logger.debug("""
+        Pair we tried to nominate failed. Changing connection state to failed. \
+        Pair id: #{pair_id}
+        """)
+
+        change_connection_state(:failed, state)
+
+      true ->
+        state
+    end
+  end
+
+  # TODO handle more states
+  defp update_connection_state(state) do
+    state
+  end
+
+  defp update_ta_timer(state) do
+    if is_work_to_do(state) do
+      if state.ta_timer != nil do
+        # do nothing, timer already works
+        state
+      else
+        Logger.debug("Starting Ta timer")
+        enable_timer(state)
+      end
+    else
+      if state.ta_timer != nil do
+        Logger.debug("Stopping Ta timer")
+        disable_timer(state)
+      else
+        # do nothing, timer already stopped
+        state
+      end
+    end
+  end
+
+  defp is_work_to_do(state) when state.state in [:completed, :failed], do: false
+
+  defp is_work_to_do(state) do
+    gath_trans_in_progress? =
+      Enum.any?(state.gathering_transactions, fn {_id, %{state: t_state}} ->
+        t_state in [:waiting, :in_progress]
+      end)
+
+    not Checklist.finished?(state.checklist) or gath_trans_in_progress?
+  end
+
+  defp enable_timer(state) do
+    timer = Process.send_after(self(), :ta_timeout, 0)
+    %{state | ta_timer: timer}
+  end
+
+  defp disable_timer(state) do
+    Process.cancel_timer(state.ta_timer)
+
+    # flush mailbox
+    receive do
+      :ta_timeout -> :ok
+    after
+      0 -> :ok
+    end
+
+    %{state | ta_timer: nil}
+  end
+
   @doc false
   @spec send_conn_check(CandidatePair.t(), map()) :: {CandidatePair.t(), map()}
   def send_conn_check(pair, state) do
     type = %Type{class: :request, method: :binding}
 
-    # TODO setup correct tiebreakers
     role_attr =
       if state.role == :controlling do
         %ICEControlling{tiebreaker: state.tiebreaker}

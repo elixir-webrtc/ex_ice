@@ -5,11 +5,6 @@ defmodule ExICE.ConnCheckHandler do
   alias ExICE.Attribute.UseCandidate
 
   @doc """
-  Called when timer Ta fires and a new checklist transaction can be performed.
-  """
-  @callback handle_checklist(ice_agent :: map()) :: map()
-
-  @doc """
   Called when conn check request arrives.
   """
   @callback handle_conn_check_request(
