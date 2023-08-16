@@ -17,7 +17,9 @@ defmodule ExICE.CandidatePair do
           priority: non_neg_integer(),
           remote_cand: Candidate.t(),
           state: state(),
-          valid?: boolean
+          valid?: boolean,
+          succeeded_pair_id: integer() | nil,
+          discovered_pair_id: integer() | nil
         }
 
   @enforce_keys [:id, :local_cand, :remote_cand, :priority]
@@ -26,7 +28,9 @@ defmodule ExICE.CandidatePair do
                 nominate?: false,
                 nominated?: false,
                 state: :frozen,
-                valid?: false
+                valid?: false,
+                succeeded_pair_id: nil,
+                discovered_pair_id: nil
               ]
 
   @doc false
