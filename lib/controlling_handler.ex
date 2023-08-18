@@ -29,9 +29,10 @@ defmodule ExICE.ControllingHandler do
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
         put_in(state, [:checklist, pair.id], pair)
 
-      %CandidatePair{} = pair when pair == state.selected_pair ->
+      %CandidatePair{} = pair
+      when state.selected_pair != nil and pair.discovered_pair_id == state.selected_pair.id ->
         # to be honest this might also be a retransmission
-        Logger.debug("Keepalive on selected pair: #{pair.id}")
+        Logger.debug("Keepalive on selected pair: #{pair.discovered_pair_id}")
         state
 
       %CandidatePair{} ->
@@ -48,21 +49,17 @@ defmodule ExICE.ControllingHandler do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
     state = ICEAgent.change_connection_state(:completed, state)
 
-    checklist =
-      Map.update!(state.checklist, pair_id, fn pair ->
-        %CandidatePair{pair | nominate?: false, nominated?: true}
-      end)
+    pair = Map.fetch!(state.checklist, pair_id)
+    pair = %CandidatePair{pair | nominate?: false, nominated?: true}
+
+    state = put_in(state, [:checklist, pair.id], pair)
 
     # the controlling agent could nominate only when eoc was set
     # and checklist finished
-    # important: we have to check on a new checklist
-    false = Checklist.in_progress?(checklist) or Checklist.waiting?(checklist)
+    unless Checklist.finished?(state.checklist) do
+      Logger.warning("Nomination succeeded but checklist hasn't finished.")
+    end
 
-    %{
-      state
-      | checklist: checklist,
-        nominating?: {false, nil},
-        selected_pair: Map.fetch!(checklist, pair_id)
-    }
+    %{state | nominating?: {false, nil}, selected_pair: pair}
   end
 end

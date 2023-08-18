@@ -18,9 +18,10 @@ defmodule ExICE.ControlledHandler do
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
         put_in(state, [:checklist, pair.id], pair)
 
-      %CandidatePair{} = pair when pair == state.selected_pair ->
+      %CandidatePair{} = pair
+      when state.selected_pair != nil and pair.discovered_pair_id == state.selected_pair.id ->
         # to be honest this might also be a retransmission
-        Logger.debug("Keepalive on selected pair: #{pair.id}")
+        Logger.debug("Keepalive on selected pair: #{pair.discovered_pair_id}")
         state
 
       %CandidatePair{} ->
@@ -44,19 +45,15 @@ defmodule ExICE.ControlledHandler do
         pair = %CandidatePair{pair | nominate?: true}
         put_in(state, [:checklist, pair.id], pair)
 
-      %CandidatePair{} = pair when pair == state.selected_pair ->
+      %CandidatePair{} = pair
+      when state.selected_pair != nil and pair.discovered_pair_id == state.selected_pair.id ->
         Logger.debug("Keepalive on selected pair: #{pair.id}")
         state
 
       %CandidatePair{} = pair ->
         if pair.state == :succeeded do
-          # FIXME we should check against valid? flag
-          # it's possible to have to pairs: one with state succeeded
-          # and flag valid? set to false, and the other one with state
-          # succeeded and flag valid? set to true
-          # TODO should we call this selected or nominated pair
-          Logger.debug("Nomination request on valid pair: #{pair.id}.")
-          update_nominated_flag(state, pair.id, true)
+          Logger.debug("Nomination request on pair: #{pair.id}.")
+          update_nominated_flag(state, pair.discovered_pair_id, true)
         else
           # TODO should we check if this pair is not in failed?
           Logger.debug("""
@@ -79,31 +76,26 @@ defmodule ExICE.ControlledHandler do
     Logger.debug("Nomination succeeded, pair: #{pair_id}")
 
     pair = Map.fetch!(state.checklist, pair_id)
+    pair = %CandidatePair{pair | nominate?: false, nominated?: true}
 
-    state =
-      cond do
-        state.selected_pair == nil ->
-          Logger.debug("Selecting pair: #{pair_id}")
-          %{state | selected_pair: pair}
+    state = put_in(state, [:checklist, pair.id], pair)
 
-        state.selected_pair != nil and pair.priority >= state.selected_pair.priority ->
-          Logger.debug("""
-          Selecting new pair with higher priority. \
-          New pair: #{pair_id}, old pair: #{state.selected_pair.id}.\
-          """)
+    cond do
+      state.selected_pair == nil ->
+        Logger.debug("Selecting pair: #{pair_id}")
+        %{state | selected_pair: pair}
 
-          %{state | selected_pair: pair}
+      state.selected_pair != nil and pair.priority >= state.selected_pair.priority ->
+        Logger.debug("""
+        Selecting new pair with higher priority. \
+        New pair: #{pair_id}, old pair: #{state.selected_pair.id}.\
+        """)
 
-        true ->
-          Logger.debug("Not selecting a new pair as it has lower priority")
-          state
-      end
+        %{state | selected_pair: pair}
 
-    checklist =
-      Map.update!(state.checklist, pair_id, fn pair ->
-        %CandidatePair{pair | nominate?: false, nominated?: true}
-      end)
-
-    %{state | checklist: checklist, selected_pair: Map.fetch!(checklist, pair_id)}
+      true ->
+        Logger.debug("Not selecting a new pair as it has lower priority")
+        state
+    end
   end
 end

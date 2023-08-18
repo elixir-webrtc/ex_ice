@@ -20,6 +20,8 @@ defmodule ExICE.ConnCheckHandler do
 
   Its implementation is based on sec. 7.2.5.3.4.
 
+  `pair_id` is the id of valid pair, not the succeeded one.
+
   The meaning of `nominate?` flag depends on the ice agent role.
 
   In case of controlled, it means that either we received nomination
