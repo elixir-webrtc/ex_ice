@@ -339,6 +339,7 @@ defmodule ExICE.ICEAgent do
   def handle_info(:ta_timeout, %{remote_ufrag: nil, remote_pwd: nil} = state) do
     # TODO we can do this better i.e.
     # allow for executing gathering transactions
+    Logger.debug("Ta timer fired but there are no remote credentials. Scheduling next check")
     ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
     state = %{state | ta_timer: ta_timer}
     state = update_ta_timer(state)
@@ -781,7 +782,7 @@ defmodule ExICE.ICEAgent do
       state = put_in(state, [:checklist, conn_check_pair.id], conn_check_pair)
       @conn_check_handler[state.role].update_nominated_flag(state, pair_id, nominate?)
     else
-      {:error, reason} when reason in [:invalid_message_integrity, :invalid_fingerprint] ->
+      {:error, reason} when reason == :invalid_auth_attributes ->
         Logger.debug("Ignoring conn check response, reason: #{reason}")
 
         conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
@@ -1276,11 +1277,10 @@ defmodule ExICE.ICEAgent do
 
   defp authenticate_msg(msg, local_pwd) do
     with {:ok, key} <- Message.authenticate_st(msg, local_pwd),
-         true <- Message.check_fingerprint(msg) do
+         :ok <- Message.check_fingerprint(msg) do
       {:ok, key}
     else
-      :error -> {:error, :invalid_message_integrity}
-      false -> {:error, :invalid_fingerprint}
+      {:error, _reason} -> {:error, :invalid_auth_attributes}
     end
   end
 

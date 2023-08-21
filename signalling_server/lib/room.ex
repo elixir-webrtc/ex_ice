@@ -51,7 +51,7 @@ defmodule SignallingServer.Room do
     if state.p2 do
       send(state.p2, {:forward, msg})
     else
-      Logger.warn("Not forwarding msg as there is no p2")
+      Logger.warning("Not forwarding msg as there is no p2")
     end
 
     {:reply, :ok, state}
@@ -62,7 +62,7 @@ defmodule SignallingServer.Room do
     if state.p1 do
       send(state.p1, {:forward, msg})
     else
-      Logger.warn("Not forwarding msg as there is no p1")
+      Logger.warning("Not forwarding msg as there is no p1")
     end
 
     {:reply, :ok, state}
