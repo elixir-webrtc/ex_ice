@@ -5,6 +5,7 @@
 and pruned if redundant - see section 6.1.2.4
 5. Is it possible to connect ice outside docker with ice inside docker?
 6. Is it possible for initial pair state to be different than :waiting when we have only one checklist? 
+Yes, consider scenario where remote peer sends us two the same srflx candidates that differ in ports only. Remote can obtain two srflx candidates when it has multiple local interfaces or has docker bridges on its system. RFC doesnt seem to say we should filter out "redundant" candidates.
 7. Is it possible not to prune some srflx candidate - sec 6.1.2.4?
 8. Is it possible to receive binding response to binding request with USE-CANDIDATE that will result in creating
 a new valid pair? sec 7.2.5.3.4
