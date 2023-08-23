@@ -20,7 +20,7 @@ defmodule SignallingServer.PeerHandler do
   end
 
   def handle_info(msg, state) do
-    Logger.warn("Unknown msg: #{inspect(msg)}")
+    Logger.warning("Unknown msg: #{inspect(msg)}")
     {:ok, state}
   end
 
