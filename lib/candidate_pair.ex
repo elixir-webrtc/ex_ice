@@ -7,6 +7,9 @@ defmodule ExICE.CandidatePair do
   alias ExICE.ICEAgent
   alias ExICE.Candidate
 
+  # Tr timeout (keepalives) in ms
+  @tr_timeout 15 * 1000
+
   @type state() :: :waiting | :in_progress | :succeeded | :failed | :frozen
 
   @type t() :: %__MODULE__{
@@ -19,7 +22,8 @@ defmodule ExICE.CandidatePair do
           state: state(),
           valid?: boolean,
           succeeded_pair_id: integer() | nil,
-          discovered_pair_id: integer() | nil
+          discovered_pair_id: integer() | nil,
+          keepalive_timer: reference() | nil
         }
 
   @enforce_keys [:id, :local_cand, :remote_cand, :priority]
@@ -30,7 +34,8 @@ defmodule ExICE.CandidatePair do
                 state: :frozen,
                 valid?: false,
                 succeeded_pair_id: nil,
-                discovered_pair_id: nil
+                discovered_pair_id: nil,
+                keepalive_timer: nil
               ]
 
   @doc false
@@ -48,6 +53,19 @@ defmodule ExICE.CandidatePair do
       state: state,
       valid?: opts[:valid?] || false
     }
+  end
+
+  @spec schedule_keepalive(t(), Process.dest()) :: :ok
+  def schedule_keepalive(pair, dest \\ self())
+
+  def schedule_keepalive(%{keepalive_timer: timer} = pair, dest) when is_reference(timer) do
+    Process.cancel_timer(timer)
+    schedule_keepalive(%{pair | keepalive_timer: nil}, dest)
+  end
+
+  def schedule_keepalive(pair, dest) do
+    ref = Process.send_after(dest, {:keepalive, pair.id}, @tr_timeout)
+    %{pair | keepalive_timer: ref}
   end
 
   @spec recompute_priority(t(), ICEAgent.role()) :: t()

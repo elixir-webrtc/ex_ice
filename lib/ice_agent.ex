@@ -412,6 +412,42 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
+  def handle_info({:keepalive, id}, %{selected_pair: s_pair} = state)
+      when not is_nil(s_pair) and s_pair.id == id do
+    # if pair was selected, send keepalives only on that pair
+    pair = CandidatePair.schedule_keepalive(s_pair)
+    send_keepalive(state.checklist[id])
+    state = put_in(state.checklist[id], pair)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:keepalive, _id}, %{selected_pair: s_pair} = state) when not is_nil(s_pair) do
+    # note: current implementation assumes that, if selected pair exists, none of the already existing
+    # valid pairs will ever become selected (only new appearing valid pairs)
+    # that's why there's no call to `CandidatePair.schedule_keepalive/1`
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:keepalive, id}, state) do
+    # TODO: keepalives should be send only if no data has been send for @tr_timeout
+    # atm, we send keepalives anyways, also it might be better to pace them with ta_timer
+    # TODO: candidates not in a valid pair also should be kept alive (RFC 8445, sect 5.1.1.4)
+    case Map.fetch(state.checklist, id) do
+      {:ok, pair} ->
+        pair = CandidatePair.schedule_keepalive(pair)
+        state = put_in(state.checklist[id], pair)
+        send_keepalive(pair)
+        {:noreply, state}
+
+      :error ->
+        Logger.warning("Received keepalive request for non-existant candidate pair")
+        {:noreply, state}
+    end
+  end
+
+  @impl true
   def handle_info({:udp, socket, src_ip, src_port, packet}, state) do
     if ExSTUN.is_stun(packet) do
       case ExSTUN.Message.decode(packet) do
@@ -773,6 +809,9 @@ defmodule ExICE.ICEAgent do
       checklist_pair = Checklist.find_pair(state.checklist, valid_pair)
 
       {pair_id, state} = add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
+
+      pair = CandidatePair.schedule_keepalive(state.checklist[pair_id])
+      state = put_in(state.checklist[pair_id], pair)
 
       # get new conn check pair as it will have updated
       # discovered and succeeded pair fields
@@ -1443,6 +1482,18 @@ defmodule ExICE.ICEAgent do
     end
 
     %{state | ta_timer: nil}
+  end
+
+  defp send_keepalive(pair) do
+    type = %Type{class: :indication, method: :binding}
+
+    req =
+      type
+      |> Message.new()
+      |> Message.with_fingerprint()
+
+    dst = {pair.remote_cand.address, pair.remote_cand.port}
+    do_send(pair.local_cand.socket, dst, Message.encode(req))
   end
 
   @doc false
