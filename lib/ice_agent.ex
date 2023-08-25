@@ -842,23 +842,51 @@ defmodule ExICE.ICEAgent do
   defp handle_gathering_transaction_success_response(_socket, _src_ip, _src_port, msg, state) do
     t = Map.fetch!(state.gathering_transactions, msg.transaction_id)
 
-    {:ok, %XORMappedAddress{address: address, port: port}} =
+    {:ok, %XORMappedAddress{address: xor_addr, port: xor_port}} =
       Message.get_attribute(msg, XORMappedAddress)
 
-    c =
-      Candidate.new(
-        :srflx,
-        address,
-        port,
-        t.host_cand.address,
-        t.host_cand.port,
-        t.host_cand.socket
-      )
+    case find_cand(state.local_cands, xor_addr, xor_port) do
+      nil ->
+        c =
+          Candidate.new(
+            :srflx,
+            xor_addr,
+            xor_port,
+            t.host_cand.address,
+            t.host_cand.port,
+            t.host_cand.socket
+          )
 
-    Logger.debug("New srflx candidate: #{inspect(c)}")
+        Logger.debug("New srflx candidate: #{inspect(c)}")
+        send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(c)}})
+        add_srflx_cand(c, state)
 
-    send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(c)}})
+      cand ->
+        Logger.debug("""
+        Not adding srflx candidate as we already have a candidate with the same address.
+        Candidate: #{inspect(cand)}
+        """)
+    end
+    |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
+  end
 
+  defp handle_gathering_transaction_error_response(_socket, _src_ip, _src_port, msg, state) do
+    t = Map.fetch!(state.gathering_transactions, msg.transaction_id)
+
+    error_code =
+      case Message.get_attribute(msg, ErrorCode) do
+        {:ok, error_code} -> error_code
+        _other -> nil
+      end
+
+    Logger.debug(
+      "Gathering transaction failed, t_id: #{msg.transaction_id}, reason: #{inspect(error_code)}"
+    )
+
+    update_in(state, [:gathering_transactions, t.t_id], fn t -> %{t | state: :failed} end)
+  end
+
+  defp add_srflx_cand(c, state) do
     # replace address and port with candidate base
     # and prune the checklist - see sec. 6.1.2.4
     local_cand = %Candidate{c | address: c.base_address, port: c.base_port}
@@ -884,56 +912,15 @@ defmodule ExICE.ICEAgent do
       Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
     end
 
-    state
-    |> update_in([:local_cands], fn local_cands -> [c | local_cands] end)
-    |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
-    |> update_in([:checklist], fn _ -> checklist end)
-  end
-
-  defp handle_gathering_transaction_error_response(_socket, _src_ip, _src_port, msg, state) do
-    t = Map.fetch!(state.gathering_transactions, msg.transaction_id)
-
-    error_code =
-      case Message.get_attribute(msg, ErrorCode) do
-        {:ok, error_code} -> error_code
-        _other -> nil
-      end
-
-    Logger.debug(
-      "Gathering transaction failed, t_id: #{msg.transaction_id}, reason: #{inspect(error_code)}"
-    )
-
-    update_in(state, [:gathering_transactions, t.t_id], fn t -> %{t | state: :failed} end)
+    %{state | checklist: checklist, local_cands: [c | state.local_cands]}
   end
 
   # Adds valid pair according to sec 7.2.5.3.2
   # TODO sec. 7.2.5.3.3
   # The agent MUST set the states for all other Frozen candidate pairs in
   # all checklists with the same foundation to Waiting.
-  defp add_valid_pair(
-         valid_pair,
-         conn_check_pair,
-         %CandidatePair{valid?: true} = checklist_pair,
-         %{role: :controlling} = state
-       )
-       when are_pairs_equal(valid_pair, checklist_pair) do
-    # valid pair is already in the checklist and it is
-    # marked as valid so this cannot be our first conn check on it -
-    # this means that nominate? flag has to be set
-    true = checklist_pair.nominate?
-    conn_check_pair = %CandidatePair{conn_check_pair | state: :succeeded}
-    checklist_pair = %CandidatePair{checklist_pair | state: :succeeded}
-
-    checklist =
-      state.checklist
-      |> Map.replace!(checklist_pair.id, checklist_pair)
-      |> Map.replace!(conn_check_pair.id, conn_check_pair)
-
-    state = %{state | checklist: checklist}
-    {checklist_pair.id, state}
-  end
-
-  # check against valid_pair == conn_check_pair before
+  #
+  # Check against valid_pair == conn_check_pair before
   # checking against valid_pair == checklist_pair as
   # the second condition is always true if the first one is
   defp add_valid_pair(valid_pair, conn_check_pair, _, state)
@@ -955,6 +942,41 @@ defmodule ExICE.ICEAgent do
 
     state = %{state | checklist: checklist}
     {conn_check_pair.id, state}
+  end
+
+  defp add_valid_pair(
+         valid_pair,
+         conn_check_pair,
+         %CandidatePair{valid?: true} = checklist_pair,
+         state
+       )
+       when are_pairs_equal(valid_pair, checklist_pair) do
+    Logger.debug("""
+    New valid pair: #{checklist_pair.id} \
+    resulted from conn check on pair: #{conn_check_pair.id} \
+    but there is already such a pair in the checklist marked as valid.
+    Should this ever happen after we don't add redundant srflx candidates?
+    Checklist pair: #{checklist_pair.id}.
+    """)
+
+    # if we get here, don't update discovered_pair_id and succeeded_pair_id of 
+    # the checklist pair as they are already set
+    conn_check_pair = %CandidatePair{
+      conn_check_pair
+      | state: :succeeded,
+        succeeded_pair_id: conn_check_pair.id,
+        discovered_pair_id: checklist_pair.id
+    }
+
+    checklist_pair = %CandidatePair{checklist_pair | state: :succeeded}
+
+    checklist =
+      state.checklist
+      |> Map.replace!(checklist_pair.id, checklist_pair)
+      |> Map.replace!(conn_check_pair.id, conn_check_pair)
+
+    state = %{state | checklist: checklist}
+    {checklist_pair.id, state}
   end
 
   defp add_valid_pair(valid_pair, conn_check_pair, checklist_pair, state)
@@ -1150,7 +1172,7 @@ defmodule ExICE.ICEAgent do
       %CandidatePair{} = pair ->
         Logger.debug("Trying to nominate pair: #{inspect(pair.id)}")
         pair = %CandidatePair{pair | nominate?: true}
-        put_in(state, [:checklist, pair.id], pair)
+        state = put_in(state, [:checklist, pair.id], pair)
         state = %{state | nominating?: {true, pair.id}}
         pair = Map.fetch!(state.checklist, pair.succeeded_pair_id)
         pair = %CandidatePair{pair | state: :waiting, nominate?: true}
@@ -1160,7 +1182,10 @@ defmodule ExICE.ICEAgent do
       nil ->
         # TODO revisit this
         # should we check if state.state == :in_progress?
-        Logger.debug("No pairs for nomination. ICE failed.")
+        Logger.debug("""
+        No pairs for nomination. ICE failed. #{inspect(state.checklist, pretty: true)}
+        """)
+
         change_connection_state(:failed, state)
     end
   end
