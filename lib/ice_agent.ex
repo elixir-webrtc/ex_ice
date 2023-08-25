@@ -32,6 +32,11 @@ defmodule ExICE.ICEAgent do
 
   @conn_check_handler %{controlling: ControllingHandler, controlled: ControlledHandler}
 
+  @typedoc """
+  ICE agent role.
+
+  `:controlling` agent is responsible for nominating a pair.
+  """
   @type role() :: :controlling | :controlled
 
   @typedoc """
@@ -72,52 +77,98 @@ defmodule ExICE.ICEAgent do
           stun_servers: [String.t()]
         ]
 
-  defguard are_pairs_equal(p1, p2)
-           when p1.local_cand.base_address == p2.local_cand.base_address and
-                  p1.local_cand.base_port == p2.local_cand.base_port and
-                  p1.local_cand.address == p2.local_cand.address and
-                  p1.local_cand.port == p2.local_cand.port and
-                  p1.remote_cand.address == p2.remote_cand.address and
-                  p1.remote_cand.port == p2.remote_cand.port
+  defguardp are_pairs_equal(p1, p2)
+            when p1.local_cand.base_address == p2.local_cand.base_address and
+                   p1.local_cand.base_port == p2.local_cand.base_port and
+                   p1.local_cand.address == p2.local_cand.address and
+                   p1.local_cand.port == p2.local_cand.port and
+                   p1.remote_cand.address == p2.remote_cand.address and
+                   p1.remote_cand.port == p2.remote_cand.port
 
-  defguard is_response(class) when class in [:success_response, :error_response]
+  defguardp is_response(class) when class in [:success_response, :error_response]
 
+  @doc """
+  Starts and links a new ICE agent.
+
+  Process calling this function is called a `controlling process` and
+  has to be prepared for receiving ExICE messages described by `t:signal/0`.
+  """
   @spec start_link(role(), opts()) :: GenServer.on_start()
   def start_link(role, opts \\ []) do
     GenServer.start_link(__MODULE__, opts ++ [role: role, controlling_process: self()])
   end
 
+  @doc """
+  Gets local credentials.
+
+  They remain unchanged until ICE restart.
+  """
   @spec get_local_credentials(pid()) :: {:ok, ufrag :: binary(), pwd :: binary()}
   def get_local_credentials(ice_agent) do
     GenServer.call(ice_agent, :get_local_credentials)
   end
 
+  @doc """
+  Sets remote credentials.
+
+  Call to this function is mandatory to start connectivity checks.
+  """
   @spec set_remote_credentials(pid(), binary(), binary()) :: :ok
   def set_remote_credentials(ice_agent, ufrag, passwd)
       when is_binary(ufrag) and is_binary(passwd) do
     GenServer.cast(ice_agent, {:set_remote_credentials, ufrag, passwd})
   end
 
+  @doc """
+  Starts ICE gathering process.
+
+  Once a new candidate is discovered, it is sent as a message to the controlling process.
+  See `t:signal/0` for a message structure.
+  """
   @spec gather_candidates(pid()) :: :ok
   def gather_candidates(ice_agent) do
     GenServer.cast(ice_agent, :gather_candidates)
   end
 
+  @doc """
+  Adds a remote candidate.
+
+  If an ICE agent has already gathered any local candidates and
+  have remote credentials set, adding a remote candidate will start
+  connectivity checks.
+  """
   @spec add_remote_candidate(pid(), String.t()) :: :ok
   def add_remote_candidate(ice_agent, candidate) when is_binary(candidate) do
     GenServer.cast(ice_agent, {:add_remote_candidate, candidate})
   end
 
+  @doc """
+  Informs ICE agent that a remote side finished its gathering process.
+
+  Call to this function is mandatory to nominate a pair (when an agent is the `controlling` one)
+  and in turn move to the `completed` state.
+  """
   @spec end_of_candidates(pid()) :: :ok
   def end_of_candidates(ice_agent) do
     GenServer.cast(ice_agent, :end_of_candidates)
   end
 
+  @doc """
+  Sends data.
+
+  Can only be called after moving to the `connected` state.
+  """
   @spec send_data(pid(), binary()) :: :ok
   def send_data(ice_agent, data) when is_binary(data) do
     GenServer.cast(ice_agent, {:send_data, data})
   end
 
+  @doc """
+  Restarts ICE.
+
+  If there were any valid pairs in the previous ICE session,
+  data can still be sent.
+  """
   @spec restart(pid()) :: :ok
   def restart(ice_agent) do
     GenServer.cast(ice_agent, :restart)
@@ -998,7 +1049,7 @@ defmodule ExICE.ICEAgent do
     Checklist pair: #{checklist_pair.id}.
     """)
 
-    # if we get here, don't update discovered_pair_id and succeeded_pair_id of 
+    # if we get here, don't update discovered_pair_id and succeeded_pair_id of
     # the checklist pair as they are already set
     conn_check_pair = %CandidatePair{
       conn_check_pair

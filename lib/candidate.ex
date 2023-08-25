@@ -34,9 +34,9 @@ defmodule ExICE.Candidate do
           type(),
           :inet.ip_address(),
           :inet.port_number(),
-          :inet.ip_address(),
-          :inet.port_number(),
-          :inet.socket(),
+          :inet.ip_address() | nil,
+          :inet.port_number() | nil,
+          :inet.socket() | nil,
           priority: integer()
         ) :: t()
   def new(type, address, port, base_address, base_port, socket, opts \\ [])

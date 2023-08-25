@@ -55,7 +55,7 @@ defmodule ExICE.CandidatePair do
     }
   end
 
-  @spec schedule_keepalive(t(), Process.dest()) :: :ok
+  @spec schedule_keepalive(t(), Process.dest()) :: t()
   def schedule_keepalive(pair, dest \\ self())
 
   def schedule_keepalive(%{keepalive_timer: timer} = pair, dest) when is_reference(timer) do

@@ -7,7 +7,7 @@ defmodule ExICE.Checklist do
 
   @type t() :: map()
 
-  @spec get_next_pair(t()) :: CandidatePair.t()
+  @spec get_next_pair(t()) :: CandidatePair.t() | nil
   def get_next_pair(checklist) do
     # FIXME correctly handle frozen pairs, according to sec 6.1.4.2
     checklist
@@ -16,7 +16,7 @@ defmodule ExICE.Checklist do
     |> elem(1)
   end
 
-  @spec get_pair_for_nomination(t()) :: CandidatePair.t()
+  @spec get_pair_for_nomination(t()) :: CandidatePair.t() | nil
   def get_pair_for_nomination(checklist) do
     checklist
     |> Enum.filter(fn {_id, pair} -> pair.valid? end)
@@ -24,19 +24,19 @@ defmodule ExICE.Checklist do
     |> elem(1)
   end
 
-  @spec get_valid_pair(t()) :: CandidatePair.t()
+  @spec get_valid_pair(t()) :: CandidatePair.t() | nil
   def get_valid_pair(checklist) do
     checklist
     |> Enum.find({nil, nil}, fn {_id, pair} -> pair.valid? end)
     |> elem(1)
   end
 
-  @spec find_pair(t(), CandidatePair.t()) :: CandidatePair.t()
+  @spec find_pair(t(), CandidatePair.t()) :: CandidatePair.t() | nil
   def find_pair(checklist, pair) do
     find_pair(checklist, pair.local_cand, pair.remote_cand)
   end
 
-  @spec find_pair(t(), Candidate.t(), Candidate.t()) :: CandidatePair.t()
+  @spec find_pair(t(), Candidate.t(), Candidate.t()) :: CandidatePair.t() | nil
   def find_pair(checklist, local_cand, remote_cand) do
     # TODO which pairs are actually the same?
     checklist
@@ -75,7 +75,7 @@ defmodule ExICE.Checklist do
 
   @spec prune(t()) :: t()
   def prune(checklist) do
-    # This is done according to RFC 8838 sec. 10 
+    # This is done according to RFC 8838 sec. 10
     {waiting, in_flight_or_done} =
       Enum.split_with(checklist, fn {_id, p} -> p.state in [:waiting, :frozen] end)
 
