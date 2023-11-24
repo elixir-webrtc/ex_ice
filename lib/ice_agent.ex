@@ -44,22 +44,23 @@ defmodule ExICE.ICEAgent do
 
   For exact meaning refer to the W3C WebRTC standard, sec 5.6.3.
   """
-  @type gathering_state_changed() :: {:gathering_state_change, :new | :gathering | :complete}
+  @type gathering_state_change() :: {:gathering_state_change, :new | :gathering | :complete}
 
   @typedoc """
   Emitted when connection state has changed.
 
   For exact meaning refer to the W3C WebRTC standard, sec. 5.6.4.
   """
-  @type connection_state_changed() :: :checking | :connected | :completed | :failed
+  @type connection_state_change() ::
+          {:connection_state_change, :checking | :connected | :completed | :failed}
 
   @typedoc """
   Messages sent by the ExICE.
   """
   @type signal() ::
           {:ex_ice, pid(),
-           gathering_state_changed()
-           | connection_state_changed
+           gathering_state_change()
+           | connection_state_change()
            | {:data, binary()}
            | {:new_candidate, binary()}}
 
@@ -1403,7 +1404,7 @@ defmodule ExICE.ICEAgent do
   @spec change_connection_state(atom(), map()) :: map()
   def change_connection_state(new_conn_state, state) do
     Logger.debug("Connection state change: #{state.state} -> #{new_conn_state}")
-    send(state.controlling_process, {:ex_ice, self(), new_conn_state})
+    send(state.controlling_process, {:ex_ice, self(), {:connection_state_change, new_conn_state}})
     %{state | state: new_conn_state}
   end
 

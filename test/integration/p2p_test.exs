@@ -131,7 +131,7 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.end_of_candidates(agent2)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent1, :connected} ->
+      {:ex_ice, ^agent1, {:connection_state_change, :connected}} ->
         Logger.info("Connected, sending file...")
 
         Task.start(fn ->
@@ -151,7 +151,7 @@ defmodule ExICE.Integration.P2PTest do
         :ok = IO.binwrite(a1_status.fd, data)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent1, :completed} ->
+      {:ex_ice, ^agent1, {:connection_state_change, :completed}} ->
         Logger.info("Completed")
         a1_status = %{a1_status | completed: true}
         p2p(agent1, agent2, a1_status, a2_status)
@@ -164,12 +164,12 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.end_of_candidates(agent1)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent2, :completed} ->
+      {:ex_ice, ^agent2, {:connection_state_change, :completed}} ->
         Logger.info("Completed")
         a2_status = %{a2_status | completed: true}
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent2, :connected} ->
+      {:ex_ice, ^agent2, {:connection_state_change, :connected}} ->
         Logger.info("Connected, sending file...")
 
         Task.start(fn ->
