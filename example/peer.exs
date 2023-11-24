@@ -141,7 +141,7 @@ defmodule Peer do
     state
   end
 
-  def handle_ice_msg(:completed, state) do
+  def handle_ice_msg({:connection_state_change, :completed}, state) do
     Logger.info("ICE: :completed")
     Logger.info("Starting sending...")
     ref = Process.send_after(self(), :send_ping, 1000)
