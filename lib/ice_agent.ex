@@ -66,16 +66,26 @@ defmodule ExICE.ICEAgent do
 
   @typedoc """
   ICE Agent configuration options.
+  All notifications are by default sent to a process that spawns `ExICE`.
+  This behavior can be overwritten using the following options.
 
   * `ip_filter` - filter applied when gathering local candidates
   * `stun_servers` - list of STUN servers
+  * `on_gathering_state_change` - where to send gathering state change notifications. Defaults to a process that spawns `ExICE`.
+  * `on_connection_state_change` - where to send connection state change notifications. Defaults to a process that spawns `ExICE`.
+  * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.
+  * `on_new_candidate` - where to send new candidates. Defaults to a process that spawns `ExICE`.
 
   Currently, there is no support for local relay (TURN) candidates
   however, remote relay candidates work correctly.
   """
   @type opts() :: [
           ip_filter: (:inet.ip_address() -> boolean),
-          stun_servers: [String.t()]
+          stun_servers: [String.t()],
+          on_gathering_state_change: pid() | nil,
+          on_connection_state_change: pid() | nil,
+          on_data: pid() | nil,
+          on_new_candidate: pid() | nil
         ]
 
   defguardp are_pairs_equal(p1, p2)
@@ -97,6 +107,38 @@ defmodule ExICE.ICEAgent do
   @spec start_link(role(), opts()) :: GenServer.on_start()
   def start_link(role, opts \\ []) do
     GenServer.start_link(__MODULE__, opts ++ [role: role, controlling_process: self()])
+  end
+
+  @doc """
+  Configures where to send gathering state change notifications.
+  """
+  @spec on_gathering_state_change(pid(), pid() | nil) :: :ok
+  def on_gathering_state_change(ice_agent, send_to) do
+    GenServer.call(ice_agent, {:on_gathering_state_change, send_to})
+  end
+
+  @doc """
+  Configures where to send connection state change notifications.
+  """
+  @spec on_connection_state_change(pid(), pid() | nil) :: :ok
+  def on_connection_state_change(ice_agent, send_to) do
+    GenServer.call(ice_agent, {:on_connection_state_change, send_to})
+  end
+
+  @doc """
+  Configures where to send data.
+  """
+  @spec on_data(pid(), pid() | nil) :: :ok
+  def on_data(ice_agent, send_to) do
+    GenServer.call(ice_agent, {:on_data, send_to})
+  end
+
+  @doc """
+  Configures where to send new candidates.
+  """
+  @spec on_new_candidate(pid(), pid() | nil) :: :ok
+  def on_new_candidate(ice_agent, send_to) do
+    GenServer.call(ice_agent, {:on_new_candidate, send_to})
   end
 
   @doc """
@@ -200,9 +242,15 @@ defmodule ExICE.ICEAgent do
 
     {local_ufrag, local_pwd} = generate_credentials()
 
+    controlling_process = Keyword.fetch!(opts, :controlling_process)
+
     state = %{
       state: :new,
-      controlling_process: Keyword.fetch!(opts, :controlling_process),
+      controlling_process: controlling_process,
+      on_connection_state_change: opts[:on_connection_state_change] || controlling_process,
+      on_gathering_state_change: opts[:on_gathering_state_change] || controlling_process,
+      on_data: opts[:on_data] || controlling_process,
+      on_new_candidate: opts[:on_new_candidate] || controlling_process,
       ta_timer: nil,
       gathering_transactions: %{},
       ip_filter: opts[:ip_filter],
@@ -228,6 +276,26 @@ defmodule ExICE.ICEAgent do
     }
 
     {:ok, state}
+  end
+
+  @impl true
+  def handle_call({:on_gathering_state_change, send_to}, _from, state) do
+    {:reply, :ok, %{state | on_gathering_state_change: send_to}}
+  end
+
+  @impl true
+  def handle_call({:on_connection_state_change, send_to}, _from, state) do
+    {:reply, :ok, %{state | on_connection_state_change: send_to}}
+  end
+
+  @impl true
+  def handle_call({:on_data, send_to}, _from, state) do
+    {:reply, :ok, %{state | on_data: send_to}}
+  end
+
+  @impl true
+  def handle_call({:on_new_candidate, send_to}, _from, state) do
+    {:reply, :ok, %{state | on_new_candidate: send_to}}
   end
 
   @impl true
@@ -277,16 +345,13 @@ defmodule ExICE.ICEAgent do
   @impl true
   def handle_cast(:gather_candidates, %{gathering_state: :new} = state) do
     Logger.debug("Gathering state change: #{state.gathering_state} -> gathering")
-    send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :gathering}})
+    notify(state.on_gathering_state_change, {:gathering_state_change, :gathering})
     state = %{state | gathering_state: :gathering}
 
     {:ok, host_candidates} = Gatherer.gather_host_candidates(ip_filter: state.ip_filter)
 
     for cand <- host_candidates do
-      send(
-        state.controlling_process,
-        {:ex_ice, self(), {:new_candidate, Candidate.marshal(cand)}}
-      )
+      notify(state.on_new_candidate, {:new_candidate, Candidate.marshal(cand)})
     end
 
     # TODO should we override?
@@ -512,7 +577,7 @@ defmodule ExICE.ICEAgent do
           {:noreply, state}
       end
     else
-      send(state.controlling_process, {:ex_ice, self(), {:data, packet}})
+      notify(state.on_data, {:data, packet})
       {:noreply, state}
     end
   end
@@ -949,7 +1014,7 @@ defmodule ExICE.ICEAgent do
           )
 
         Logger.debug("New srflx candidate: #{inspect(c)}")
-        send(state.controlling_process, {:ex_ice, self(), {:new_candidate, Candidate.marshal(c)}})
+        notify(state.on_new_candidate, {:new_candidate, Candidate.marshal(c)})
         add_srflx_cand(c, state)
 
       cand ->
@@ -1292,12 +1357,12 @@ defmodule ExICE.ICEAgent do
     cond do
       state.gathering_state == :new and transaction_in_progress? ->
         Logger.debug("Gathering state change: new -> gathering")
-        send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :gathering}})
+        notify(state.on_gathering_state_change, {:gathering_state_change, :gathering})
         %{state | gathering_state: :gathering}
 
       state.gathering_state == :gathering and not transaction_in_progress? ->
         Logger.debug("Gathering state change: gathering -> complete")
-        send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :complete}})
+        notify(state.on_gathering_state_change, {:gathering_state_change, :complete})
         %{state | gathering_state: :complete}
 
       true ->
@@ -1346,7 +1411,7 @@ defmodule ExICE.ICEAgent do
       end
 
     Logger.debug("Gathering state change: #{state.gathering_state} -> new")
-    send(state.controlling_process, {:ex_ice, self(), {:gathering_state_change, :new}})
+    notify(state.on_gathering_state_change, {:gathering_state_change, :new})
 
     %{
       state
@@ -1404,7 +1469,7 @@ defmodule ExICE.ICEAgent do
   @spec change_connection_state(atom(), map()) :: map()
   def change_connection_state(new_conn_state, state) do
     Logger.debug("Connection state change: #{state.state} -> #{new_conn_state}")
-    send(state.controlling_process, {:ex_ice, self(), {:connection_state_change, new_conn_state}})
+    notify(state.on_connection_state_change, {:connection_state_change, new_conn_state})
     %{state | state: new_conn_state}
   end
 
@@ -1620,4 +1685,7 @@ defmodule ExICE.ICEAgent do
         end
     end
   end
+
+  defp notify(nil, _msg), do: :ok
+  defp notify(dst, msg), do: send(dst, {:ex_ice, self(), msg})
 end
