@@ -217,6 +217,14 @@ defmodule ExICE.ICEAgent do
     GenServer.cast(ice_agent, :restart)
   end
 
+  @doc """
+  Stops ICE agent and all of its sockets.
+  """
+  @spec stop(pid()) :: :ok
+  def stop(ice_agent) do
+    GenServer.stop(ice_agent)
+  end
+
   ### Server
 
   @impl true
@@ -586,6 +594,12 @@ defmodule ExICE.ICEAgent do
   def handle_info(msg, state) do
     Logger.warning("Got unexpected msg: #{inspect(msg)}")
     {:noreply, state}
+  end
+
+  @impl true
+  def terminate(reason, _state) do
+    # we don't need to close sockets manually as this is done automatically by Erlang
+    Logger.debug("Stopping ICE agent with reason: #{inspect(reason)}")
   end
 
   defp do_add_remote_candidate(remote_cand, state) do
