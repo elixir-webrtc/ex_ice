@@ -74,8 +74,16 @@ defmodule SignallingServer.Room do
 
     state =
       if ref == state.p1_ref do
+        if state.p2 do
+          send(state.p2, {:forward, Jason.encode!(%{type: "peer_left"})})
+        end
+
         %{state | p1_ref: nil, p1: nil}
       else
+        if state.p1 do
+          send(state.p1, {:forward, Jason.encode!(%{type: "peer_left"})})
+        end
+
         %{state | p2_ref: nil, p2: nil}
       end
 
