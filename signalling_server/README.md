@@ -24,3 +24,11 @@ sock  = new WebSocket("ws://localhost:4000/websocket")
 The `role` field is a role a peer that received info JSON should use to avoid role conflict.
 
 3. Send any message via WS, it will be forwarded to the other side.
+
+4. When a peer leaves, the other one receives JSON message:
+
+```json
+{
+    "type": "peer_left"
+}
+```
