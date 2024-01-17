@@ -27,7 +27,7 @@ as WebRTC multiplexes traffic on a single socket but PRs are welcomed
 ```elixir
 def deps do
   [
-    {:ex_ice, "~> 0.4.0"}
+    {:ex_ice, "~> 0.5.0"}
   ]
 end
 ```
