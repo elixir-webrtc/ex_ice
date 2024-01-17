@@ -509,6 +509,7 @@ defmodule ExICE.ICEAgent do
             {true, state}
 
           nil ->
+            # credo:disable-for-lines:3 Credo.Check.Refactor.Nesting
             case get_next_gathering_transaction(state.gathering_transactions) do
               {_t_id, transaction} ->
                 case handle_gathering_transaction(transaction, state) do
@@ -761,11 +762,9 @@ defmodule ExICE.ICEAgent do
   end
 
   ## BINDING REQUEST HANDLING ##
-
   defp handle_binding_request(socket, src_ip, src_port, msg, state) do
-    # username = state.local_ufrag <> ":" <> state.remote_ufrag
-    # TODO check username
-    with {:ok, key} <- authenticate_msg(msg, state.local_pwd),
+    with :ok <- check_username(msg, state.local_ufrag),
+         {:ok, key} <- authenticate_msg(msg, state.local_pwd),
          {:ok, prio_attr} <- get_prio_attribute(msg),
          {:ok, role_attr} <- get_role_attribute(msg),
          use_cand_attr when use_cand_attr in [nil, %UseCandidate{}] <-
@@ -805,10 +804,19 @@ defmodule ExICE.ICEAgent do
         # we should add message-integrity
         Logger.debug("""
         Invalid binding request, reason: #{reason}. \
-        Sending bad request error response"\
+        Sending bad request error response\
         """)
 
         send_bad_request_error_response(socket, src_ip, src_port, msg)
+        state
+
+      {:error, reason} when reason in [:missing_username, :invalid_username] ->
+        Logger.debug("""
+        Invalid binding request, reason: #{reason}. \
+        Sending unauthenticated error response\
+        """)
+
+        send_unauthenticated_error_response(socket, src_ip, src_port, msg)
         state
 
       {:error, reason} ->
@@ -897,6 +905,19 @@ defmodule ExICE.ICEAgent do
   end
 
   defp check_req_role_conflict(_role_attr, state), do: {:ok, state}
+
+  defp check_username(msg, local_ufrag) do
+    # See RFC 8445, sec. 7.3.
+    case Message.get_attribute(msg, Username) do
+      {:ok, %Username{value: username}} ->
+        if String.starts_with?(username, local_ufrag <> ":"),
+          do: :ok,
+          else: {:error, :invalid_username}
+
+      nil ->
+        {:error, :missing_username}
+    end
+  end
 
   ## BINDING RESPONSE HANDLING ##
 
@@ -1219,14 +1240,6 @@ defmodule ExICE.ICEAgent do
     send_binding_success_response(pair.local_cand.socket, src_ip, src_port, msg, key)
   end
 
-  @doc false
-  @spec send_bad_request_error_response(CandidatePair.t(), Message.t()) :: :ok
-  def send_bad_request_error_response(pair, msg) do
-    src_ip = pair.remote_cand.address
-    src_port = pair.remote_cand.port
-    send_bad_request_error_response(pair.local_cand.socket, src_ip, src_port, msg)
-  end
-
   defp send_binding_success_response(socket, src_ip, src_port, req, key) do
     type = %Type{class: :success_response, method: :binding}
 
@@ -1239,11 +1252,29 @@ defmodule ExICE.ICEAgent do
     do_send(socket, {src_ip, src_port}, resp)
   end
 
+  @doc false
+  @spec send_bad_request_error_response(CandidatePair.t(), Message.t()) :: :ok
+  def send_bad_request_error_response(pair, msg) do
+    src_ip = pair.remote_cand.address
+    src_port = pair.remote_cand.port
+    send_bad_request_error_response(pair.local_cand.socket, src_ip, src_port, msg)
+  end
+
   defp send_bad_request_error_response(socket, src_ip, src_port, req) do
     type = %Type{class: :error_response, method: :binding}
 
     response =
       Message.new(req.transaction_id, type, [%ErrorCode{code: 400}])
+      |> Message.encode()
+
+    do_send(socket, {src_ip, src_port}, response)
+  end
+
+  defp send_unauthenticated_error_response(socket, src_ip, src_port, req) do
+    type = %Type{class: :error_response, method: :binding}
+
+    response =
+      Message.new(req.transaction_id, type, [%ErrorCode{code: 401}])
       |> Message.encode()
 
     do_send(socket, {src_ip, src_port}, response)
