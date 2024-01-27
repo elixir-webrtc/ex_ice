@@ -207,6 +207,22 @@ defmodule ExICE.ICEAgent do
   end
 
   @doc """
+  Gathers ICE agent statistics.
+
+  * `bytes_sent` - data bytes sent. This does not include connectivity checks and UDP/IP header sizes.
+  * `bytes_received` - data bytes received. This does not include connectivity checks and UDP/IP header sizes.
+  * `candidate_pairs` - list of current candidate pairs. It will change after doing an ICE restart.
+  """
+  @spec get_stats(pid()) :: %{
+          bytes_sent: non_neg_integer(),
+          bytes_received: non_neg_integer,
+          candidate_pairs: [CandidatePair.t()]
+        }
+  def get_stats(ice_agent) do
+    GenServer.call(ice_agent, :get_stats)
+  end
+
+  @doc """
   Restarts ICE.
 
   If there were any valid pairs in the previous ICE session,
@@ -280,7 +296,10 @@ defmodule ExICE.ICEAgent do
       remote_pwd: nil,
       remote_cands: [],
       stun_servers: stun_servers,
-      turn_servers: []
+      turn_servers: [],
+      # stats
+      bytes_sent: 0,
+      bytes_received: 0
     }
 
     {:ok, state}
@@ -309,6 +328,17 @@ defmodule ExICE.ICEAgent do
   @impl true
   def handle_call(:get_local_credentials, _from, state) do
     {:reply, {:ok, state.local_ufrag, state.local_pwd}, state}
+  end
+
+  @impl true
+  def handle_call(:get_stats, _from, state) do
+    stats = %{
+      bytes_sent: state.bytes_sent,
+      bytes_received: state.bytes_received,
+      candidate_pairs: Map.values(state.checklist)
+    }
+
+    {:reply, stats, state}
   end
 
   @impl true
@@ -439,8 +469,8 @@ defmodule ExICE.ICEAgent do
         List.first(state.prev_valid_pairs)
 
     dst = {pair.remote_cand.address, pair.remote_cand.port}
-    do_send(pair.local_cand.socket, dst, data)
-    {:noreply, state}
+    bytes_sent = do_send(pair.local_cand.socket, dst, data)
+    {:noreply, %{state | bytes_sent: state.bytes_sent + bytes_sent}}
   end
 
   @impl true
@@ -587,7 +617,7 @@ defmodule ExICE.ICEAgent do
       end
     else
       notify(state.on_data, {:data, packet})
-      {:noreply, state}
+      {:noreply, %{state | bytes_received: state.bytes_received + byte_size(packet)}}
     end
   end
 
@@ -1716,7 +1746,7 @@ defmodule ExICE.ICEAgent do
     # retrying after getting EPERM seems to help
     case :gen_udp.send(socket, dst, data) do
       :ok ->
-        :ok
+        byte_size(data)
 
       err ->
         Logger.error("UDP send error: #{inspect(err)}. Retrying...")
@@ -1724,9 +1754,11 @@ defmodule ExICE.ICEAgent do
         case :gen_udp.send(socket, dst, data) do
           :ok ->
             Logger.debug("Successful retry")
+            byte_size(data)
 
           err ->
             Logger.error("Unseccessful retry: #{inspect(err)}. Giving up.")
+            0
         end
     end
   end
