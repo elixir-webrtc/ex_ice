@@ -21,9 +21,21 @@ defmodule ExICE.ICEAgentTest do
   test "get_stats/1" do
     {:ok, agent} = ICEAgent.start_link(:controlling)
 
-    assert %{bytes_sent: 0, bytes_received: 0, candidate_pairs: candidate_pairs} =
+    assert %{
+             bytes_sent: 0,
+             bytes_received: 0,
+             packets_sent: 0,
+             packets_received: 0,
+             state: :new,
+             role: :controlling,
+             local_ufrag: local_ufrag,
+             local_candidates: [],
+             remote_candidates: [],
+             candidate_pairs: candidate_pairs
+           } =
              ICEAgent.get_stats(agent)
 
     assert is_list(candidate_pairs)
+    assert is_binary(local_ufrag)
   end
 end

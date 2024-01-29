@@ -8,4 +8,10 @@ defmodule ExICE.Utils do
       {_, _, _, _, _, _, _, _} -> :ipv6
     end
   end
+
+  @spec id() :: non_neg_integer()
+  def id() do
+    <<id::12*8>> = :crypto.strong_rand_bytes(12)
+    id
+  end
 end

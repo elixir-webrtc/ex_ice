@@ -4,8 +4,7 @@ defmodule ExICE.CandidatePair do
   """
   require Logger
 
-  alias ExICE.ICEAgent
-  alias ExICE.Candidate
+  alias ExICE.{Candidate, ICEAgent, Utils}
 
   # Tr timeout (keepalives) in ms
   @tr_timeout 15 * 1000
@@ -43,10 +42,8 @@ defmodule ExICE.CandidatePair do
   def new(local_cand, remote_cand, agent_role, state, opts \\ []) do
     priority = priority(agent_role, local_cand, remote_cand)
 
-    <<id::12*8>> = :crypto.strong_rand_bytes(12)
-
     %__MODULE__{
-      id: id,
+      id: Utils.id(),
       local_cand: local_cand,
       remote_cand: remote_cand,
       priority: priority,
