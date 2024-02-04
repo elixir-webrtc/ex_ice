@@ -36,7 +36,7 @@ defmodule ExICE.CandidateTest do
     expected_c = Candidate.new(:host, ip, port, nil, nil, nil, priority: 1234)
 
     assert {:ok, c} = Candidate.unmarshal(m_c)
-
+    c = %Candidate{c | id: expected_c.id}
     assert c == expected_c
   end
 end

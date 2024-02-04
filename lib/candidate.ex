@@ -3,9 +3,12 @@ defmodule ExICE.Candidate do
   ICE candidate representation.
   """
 
+  alias ExICE.Utils
+
   @type type() :: :host | :srflx | :prflx | :relay
 
   @type t() :: %__MODULE__{
+          id: integer(),
           address: :inet.ip_address(),
           base_address: :inet.ip_address() | nil,
           base_port: :inet.port_number() | nil,
@@ -19,6 +22,7 @@ defmodule ExICE.Candidate do
 
   @derive {Inspect, except: [:socket]}
   defstruct [
+    :id,
     :address,
     :base_address,
     :base_port,
@@ -46,6 +50,7 @@ defmodule ExICE.Candidate do
     priority = opts[:priority] || priority(type)
 
     %__MODULE__{
+      id: Utils.id(),
       address: address,
       base_address: base_address,
       base_port: base_port,
@@ -90,6 +95,7 @@ defmodule ExICE.Candidate do
          {:ok, type} <- parse_type(ty_str) do
       {:ok,
        %__MODULE__{
+         id: Utils.id(),
          address: address,
          foundation: foundation,
          port: port,

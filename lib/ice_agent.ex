@@ -211,11 +211,20 @@ defmodule ExICE.ICEAgent do
 
   * `bytes_sent` - data bytes sent. This does not include connectivity checks and UDP/IP header sizes.
   * `bytes_received` - data bytes received. This does not include connectivity checks and UDP/IP header sizes.
-  * `candidate_pairs` - list of current candidate pairs. It will change after doing an ICE restart.
+  * `packets_sent` - data packets sent. This does not include connectivity checks.
+  * `packets_received` - data packets received. This does not include connectivity checks.
+  * `candidate_pairs` - list of current candidate pairs. Changes after doing an ICE restart.
   """
   @spec get_stats(pid()) :: %{
           bytes_sent: non_neg_integer(),
-          bytes_received: non_neg_integer,
+          bytes_received: non_neg_integer(),
+          packets_sent: non_neg_integer(),
+          packets_received: non_neg_integer(),
+          state: atom(),
+          role: atom(),
+          local_ufrag: binary(),
+          local_candidates: [Candidate.t()],
+          remote_candidates: [Candidate.t()],
           candidate_pairs: [CandidatePair.t()]
         }
   def get_stats(ice_agent) do
@@ -299,7 +308,9 @@ defmodule ExICE.ICEAgent do
       turn_servers: [],
       # stats
       bytes_sent: 0,
-      bytes_received: 0
+      bytes_received: 0,
+      packets_sent: 0,
+      packets_received: 0
     }
 
     {:ok, state}
@@ -335,6 +346,13 @@ defmodule ExICE.ICEAgent do
     stats = %{
       bytes_sent: state.bytes_sent,
       bytes_received: state.bytes_received,
+      packets_sent: state.packets_sent,
+      packets_received: state.packets_received,
+      state: state.state,
+      role: state.role,
+      local_ufrag: state.local_ufrag,
+      local_candidates: state.local_cands,
+      remote_candidates: state.remote_cands,
       candidate_pairs: Map.values(state.checklist)
     }
 
@@ -470,7 +488,15 @@ defmodule ExICE.ICEAgent do
 
     dst = {pair.remote_cand.address, pair.remote_cand.port}
     bytes_sent = do_send(pair.local_cand.socket, dst, data)
-    {:noreply, %{state | bytes_sent: state.bytes_sent + bytes_sent}}
+    # if we didn't manage to send any bytes, don't increment packets_sent
+    packets_sent = if bytes_sent == 0, do: 0, else: 1
+
+    {:noreply,
+     %{
+       state
+       | bytes_sent: state.bytes_sent + bytes_sent,
+         packets_sent: state.packets_sent + packets_sent
+     }}
   end
 
   @impl true
@@ -617,7 +643,13 @@ defmodule ExICE.ICEAgent do
       end
     else
       notify(state.on_data, {:data, packet})
-      {:noreply, %{state | bytes_received: state.bytes_received + byte_size(packet)}}
+
+      {:noreply,
+       %{
+         state
+         | bytes_received: state.bytes_received + byte_size(packet),
+           packets_received: state.packets_received + 1
+       }}
     end
   end
 
