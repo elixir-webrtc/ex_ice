@@ -1119,6 +1119,8 @@ defmodule ExICE.ICEAgent do
         Not adding srflx candidate as we already have a candidate with the same address.
         Candidate: #{inspect(cand)}
         """)
+
+        state
     end
     |> update_in([:gathering_transactions, t.t_id], fn t -> %{t | state: :complete} end)
   end
