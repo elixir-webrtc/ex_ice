@@ -17,10 +17,10 @@ defmodule ExICE.Gatherer do
     with {:ok, ints} <- :inet.getifaddrs() do
       ips =
         ints
-        |> Stream.reject(&is_loopback_if(&1))
+        |> Stream.reject(&loopback_if?(&1))
         |> Stream.flat_map(&get_addrs(&1))
         |> Stream.filter(&ip_filter.(&1))
-        |> Stream.reject(&is_unsupported_ipv6(&1))
+        |> Stream.reject(&unsupported_ipv6?(&1))
         |> Enum.to_list()
 
       ips
@@ -67,13 +67,13 @@ defmodule ExICE.Gatherer do
     end
   end
 
-  defp is_loopback_if({_int_name, int}) do
+  defp loopback_if?({_int_name, int}) do
     :loopback in int[:flags]
   end
 
-  defp is_unsupported_ipv6({_a, _b, _c, _d}), do: false
+  defp unsupported_ipv6?({_a, _b, _c, _d}), do: false
 
-  defp is_unsupported_ipv6({a, _b, _c, _d, _e, _f, _g, _h} = ip) do
+  defp unsupported_ipv6?({a, _b, _c, _d, _e, _f, _g, _h} = ip) do
     # ipv4-compatible ipv6
     # ipv6 site-local unicast
     res = match?({0, 0, 0, 0, 0, 0, _g, _h}, ip) or a >>> 2 == 0b1111111011

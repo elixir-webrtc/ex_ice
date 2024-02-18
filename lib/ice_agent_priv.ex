@@ -115,26 +115,32 @@ defmodule ExICE.ICEAgentPriv do
     }
   end
 
+  @spec on_gathering_state_change(t(), pid() | nil) :: t()
   def on_gathering_state_change(ice_agent, send_to) do
     %__MODULE__{ice_agent | on_gathering_state_change: send_to}
   end
 
+  @spec on_connection_state_change(t(), pid() | nil) :: t()
   def on_connection_state_change(ice_agent, send_to) do
     %__MODULE__{ice_agent | on_connection_state_change: send_to}
   end
 
+  @spec on_data(t(), pid() | nil) :: t()
   def on_data(ice_agent, send_to) do
     %__MODULE__{ice_agent | on_data: send_to}
   end
 
+  @spec on_new_candidate(t(), pid() | nil) :: t()
   def on_new_candidate(ice_agent, send_to) do
     %__MODULE__{ice_agent | on_new_candidate: send_to}
   end
 
+  @spec get_local_credentials(t()) :: {binary(), binary()}
   def get_local_credentials(ice_agent) do
     {ice_agent.local_ufrag, ice_agent.local_pwd}
   end
 
+  @spec get_stats(t()) :: map()
   def get_stats(ice_agent) do
     %{
       bytes_sent: ice_agent.bytes_sent,
@@ -150,6 +156,7 @@ defmodule ExICE.ICEAgentPriv do
     }
   end
 
+  @spec set_remote_credentials(t(), binary(), binary()) :: t()
   def set_remote_credentials(
         %__MODULE__{remote_ufrag: nil, remote_pwd: nil} = ice_agent,
         ufrag,
@@ -174,6 +181,7 @@ defmodule ExICE.ICEAgentPriv do
     %__MODULE__{ice_agent | remote_ufrag: ufrag, remote_pwd: pwd}
   end
 
+  @spec gather_candidates(t()) :: t()
   def gather_candidates(%__MODULE__{gathering_state: :gathering} = ice_agent) do
     Logger.warning("Can't gather candidates. Gathering already in progress. Ignoring.")
     ice_agent
@@ -218,6 +226,7 @@ defmodule ExICE.ICEAgentPriv do
     |> update_ta_timer()
   end
 
+  @spec add_remote_candidate(t(), Candidate.t()) :: t()
   def add_remote_candidate(%__MODULE__{eoc: true} = ice_agent, remote_cand) do
     Logger.warning(
       "Received remote candidate after end-of-candidates. Ignoring. Candidate: #{inspect(remote_cand)}"
@@ -226,7 +235,7 @@ defmodule ExICE.ICEAgentPriv do
     ice_agent
   end
 
-  def add_remote_candidate(%__MODULE__{} = ice_agent, remote_cand) do
+  def add_remote_candidate(ice_agent, remote_cand) do
     Logger.debug("New remote candidate: #{inspect(remote_cand)}")
 
     case Candidate.unmarshal(remote_cand) do
@@ -244,6 +253,7 @@ defmodule ExICE.ICEAgentPriv do
     end
   end
 
+  @spec end_of_candidates(t()) :: t()
   def end_of_candidates(%__MODULE__{role: :controlled} = ice_agent) do
     ice_agent = %{ice_agent | eoc: true}
     # we might need to move to the completed state
@@ -256,6 +266,7 @@ defmodule ExICE.ICEAgentPriv do
     maybe_nominate(ice_agent)
   end
 
+  @spec send_data(t(), binary()) :: t()
   def send_data(%__MODULE__{state: state} = ice_agent, data)
       when state in [:connected, :completed] do
     %CandidatePair{} =
@@ -286,11 +297,13 @@ defmodule ExICE.ICEAgentPriv do
     ice_agent
   end
 
+  @spec restart(t()) :: t()
   def restart(ice_agent) do
     Logger.debug("Restarting ICE")
     do_restart(ice_agent)
   end
 
+  @spec handle_timeout(t()) :: t()
   def handle_timeout(%__MODULE__{remote_ufrag: nil, remote_pwd: nil} = ice_agent) do
     # TODO we can do this better i.e.
     # allow for executing gathering transactions
@@ -313,7 +326,7 @@ defmodule ExICE.ICEAgentPriv do
     |> update_ta_timer()
   end
 
-  def handle_timeout(%__MODULE__{} = ice_agent) do
+  def handle_timeout(ice_agent) do
     ice_agent =
       ice_agent
       |> timeout_pending_transactions()
@@ -360,6 +373,7 @@ defmodule ExICE.ICEAgentPriv do
     end
   end
 
+  @spec handle_keepalive(t(), integer()) :: t()
   def handle_keepalive(%__MODULE__{selected_pair: s_pair} = ice_agent, id)
       when not is_nil(s_pair) and s_pair.id == id do
     # if pair was selected, send keepalives only on that pair
@@ -376,7 +390,7 @@ defmodule ExICE.ICEAgentPriv do
     ice_agent
   end
 
-  def handle_keepalive(%__MODULE__{} = ice_agent, id) do
+  def handle_keepalive(ice_agent, id) do
     # TODO: keepalives should be send only if no data has been send for @tr_timeout
     # atm, we send keepalives anyways, also it might be better to pace them with ta_timer
     # TODO: candidates not in a valid pair also should be kept alive (RFC 8445, sect 5.1.1.4)
@@ -393,7 +407,14 @@ defmodule ExICE.ICEAgentPriv do
     end
   end
 
-  def handle_udp(%__MODULE__{} = ice_agent, socket, src_ip, src_port, packet) do
+  @spec handle_udp(
+          t(),
+          :gen_udp.socket(),
+          :inet.ip_address(),
+          :inet.port_number(),
+          binary()
+        ) :: t()
+  def handle_udp(ice_agent, socket, src_ip, src_port, packet) do
     if ExSTUN.is_stun(packet) do
       case ExSTUN.Message.decode(packet) do
         {:ok, msg} ->
@@ -752,7 +773,7 @@ defmodule ExICE.ICEAgentPriv do
 
     # check that the source and destination transport
     # adresses are symmetric - see sec. 7.2.5.2.1
-    if is_symmetric(socket, {src_ip, src_port}, conn_check_pair) do
+    if symmetric?(socket, {src_ip, src_port}, conn_check_pair) do
       case msg.type.class do
         :success_response -> handle_conn_check_success_response(ice_agent, conn_check_pair, msg)
         :error_response -> handle_conn_check_error_response(ice_agent, conn_check_pair, msg)
@@ -1139,7 +1160,7 @@ defmodule ExICE.ICEAgentPriv do
     Enum.filter(candidates, &(Candidate.family(&1) == Candidate.family(cand)))
   end
 
-  defp is_symmetric(socket, response_src, conn_check_pair) do
+  defp symmetric?(socket, response_src, conn_check_pair) do
     request_dst = {conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port}
     response_src == request_dst and socket == conn_check_pair.local_cand.socket
   end
@@ -1443,7 +1464,7 @@ defmodule ExICE.ICEAgentPriv do
   end
 
   defp update_ta_timer(ice_agent) do
-    if is_work_to_do(ice_agent) do
+    if work_to_do?(ice_agent) do
       if ice_agent.ta_timer != nil do
         # do nothing, timer already works
         ice_agent
@@ -1462,9 +1483,9 @@ defmodule ExICE.ICEAgentPriv do
     end
   end
 
-  defp is_work_to_do(ice_agent) when ice_agent.state in [:completed, :failed], do: false
+  defp work_to_do?(ice_agent) when ice_agent.state in [:completed, :failed], do: false
 
-  defp is_work_to_do(ice_agent) do
+  defp work_to_do?(ice_agent) do
     gath_trans_in_progress? =
       Enum.any?(ice_agent.gathering_transactions, fn {_id, %{state: t_state}} ->
         t_state in [:waiting, :in_progress]
