@@ -5,18 +5,19 @@ defmodule ExICE.ControlledHandler do
 
   require Logger
 
-  alias ExICE.{CandidatePair, Checklist, ICEAgent}
+  alias ExICE.{CandidatePair, Checklist, ICEAgentPriv}
   alias ExICE.Attribute.UseCandidate
 
   @impl true
   def handle_conn_check_request(state, pair, msg, nil, key) do
-    ICEAgent.send_binding_success_response(pair, msg, key)
+    ICEAgentPriv.send_binding_success_response(pair, msg, key)
 
     # TODO use triggered check queue
     case Checklist.find_pair(state.checklist, pair) do
       nil ->
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
-        put_in(state, [:checklist, pair.id], pair)
+        checklist = Map.put(state.checklist, pair.id, pair)
+        %ICEAgentPriv{state | checklist: checklist}
 
       %CandidatePair{} = pair
       when state.selected_pair != nil and pair.discovered_pair_id == state.selected_pair.id ->
@@ -32,7 +33,7 @@ defmodule ExICE.ControlledHandler do
 
   @impl true
   def handle_conn_check_request(state, pair, msg, %UseCandidate{}, key) do
-    ICEAgent.send_binding_success_response(pair, msg, key)
+    ICEAgentPriv.send_binding_success_response(pair, msg, key)
 
     # TODO use triggered check queue
     case Checklist.find_pair(state.checklist, pair) do
@@ -43,7 +44,8 @@ defmodule ExICE.ControlledHandler do
         """)
 
         pair = %CandidatePair{pair | nominate?: true}
-        put_in(state, [:checklist, pair.id], pair)
+        checklist = Map.put(state.checklist, pair.id, pair)
+        %ICEAgentPriv{state | checklist: checklist}
 
       %CandidatePair{} = pair
       when state.selected_pair != nil and pair.discovered_pair_id == state.selected_pair.id ->
@@ -63,7 +65,8 @@ defmodule ExICE.ControlledHandler do
           """)
 
           pair = %CandidatePair{pair | nominate?: true}
-          put_in(state, [:checklist, pair.id], pair)
+          checklist = Map.put(state.checklist, pair.id, pair)
+          %ICEAgentPriv{state | checklist: checklist}
         end
     end
   end
@@ -78,7 +81,8 @@ defmodule ExICE.ControlledHandler do
     pair = Map.fetch!(state.checklist, pair_id)
     pair = %CandidatePair{pair | nominate?: false, nominated?: true}
 
-    state = put_in(state, [:checklist, pair.id], pair)
+    checklist = Map.put(state.checklist, pair.id, pair)
+    state = %ICEAgentPriv{state | checklist: checklist}
 
     cond do
       state.selected_pair == nil ->
