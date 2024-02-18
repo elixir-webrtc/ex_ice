@@ -20,7 +20,8 @@ defmodule ExICE.ControlledHandler do
         %ICEAgentPriv{ice_agent | checklist: checklist}
 
       %CandidatePair{} = pair
-      when ice_agent.selected_pair != nil and pair.discovered_pair_id == ice_agent.selected_pair.id ->
+      when ice_agent.selected_pair != nil and
+             pair.discovered_pair_id == ice_agent.selected_pair.id ->
         # to be honest this might also be a retransmission
         Logger.debug("Keepalive on selected pair: #{pair.discovered_pair_id}")
         ice_agent
@@ -48,7 +49,8 @@ defmodule ExICE.ControlledHandler do
         %ICEAgentPriv{ice_agent | checklist: checklist}
 
       %CandidatePair{} = pair
-      when ice_agent.selected_pair != nil and pair.discovered_pair_id == ice_agent.selected_pair.id ->
+      when ice_agent.selected_pair != nil and
+             pair.discovered_pair_id == ice_agent.selected_pair.id ->
         Logger.debug("Keepalive on selected pair: #{pair.id}")
         ice_agent
 

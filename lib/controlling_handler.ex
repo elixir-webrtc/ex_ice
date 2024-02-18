@@ -31,7 +31,8 @@ defmodule ExICE.ControllingHandler do
         %ICEAgentPriv{ice_agent | checklist: checklist}
 
       %CandidatePair{} = pair
-      when ice_agent.selected_pair != nil and pair.discovered_pair_id == ice_agent.selected_pair.id ->
+      when ice_agent.selected_pair != nil and
+             pair.discovered_pair_id == ice_agent.selected_pair.id ->
         # to be honest this might also be a retransmission
         Logger.debug("Keepalive on selected pair: #{pair.discovered_pair_id}")
         ice_agent
@@ -48,7 +49,7 @@ defmodule ExICE.ControllingHandler do
   @impl true
   def update_nominated_flag(%ICEAgentPriv{eoc: true} = ice_agent, pair_id, true) do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
-    ice_agent = ICEAgentPriv.change_connection_state(:completed, ice_agent)
+    ice_agent = ICEAgentPriv.change_connection_state(ice_agent, :completed)
 
     pair = Map.fetch!(ice_agent.checklist, pair_id)
     pair = %CandidatePair{pair | nominate?: false, nominated?: true}

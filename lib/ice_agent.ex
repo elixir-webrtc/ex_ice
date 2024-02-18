@@ -8,7 +8,7 @@ defmodule ExICE.ICEAgent do
 
   require Logger
 
-  alias ExICE.ICEAgentPriv
+  alias ExICE.{ICEAgentPriv, Candidate, CandidatePair}
 
   @typedoc """
   ICE agent role.
