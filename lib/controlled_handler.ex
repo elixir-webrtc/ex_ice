@@ -9,34 +9,34 @@ defmodule ExICE.ControlledHandler do
   alias ExICE.Attribute.UseCandidate
 
   @impl true
-  def handle_conn_check_request(state, pair, msg, nil, key) do
+  def handle_conn_check_request(ice_agent, pair, msg, nil, key) do
     ICEAgentPriv.send_binding_success_response(pair, msg, key)
 
     # TODO use triggered check queue
-    case Checklist.find_pair(state.checklist, pair) do
+    case Checklist.find_pair(ice_agent.checklist, pair) do
       nil ->
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
-        checklist = Map.put(state.checklist, pair.id, pair)
-        %ICEAgentPriv{state | checklist: checklist}
+        checklist = Map.put(ice_agent.checklist, pair.id, pair)
+        %ICEAgentPriv{ice_agent | checklist: checklist}
 
       %CandidatePair{} = pair
-      when state.selected_pair != nil and pair.discovered_pair_id == state.selected_pair.id ->
+      when ice_agent.selected_pair != nil and pair.discovered_pair_id == ice_agent.selected_pair.id ->
         # to be honest this might also be a retransmission
         Logger.debug("Keepalive on selected pair: #{pair.discovered_pair_id}")
-        state
+        ice_agent
 
       %CandidatePair{} ->
         # keepalive/retransmission?
-        state
+        ice_agent
     end
   end
 
   @impl true
-  def handle_conn_check_request(state, pair, msg, %UseCandidate{}, key) do
+  def handle_conn_check_request(ice_agent, pair, msg, %UseCandidate{}, key) do
     ICEAgentPriv.send_binding_success_response(pair, msg, key)
 
     # TODO use triggered check queue
-    case Checklist.find_pair(state.checklist, pair) do
+    case Checklist.find_pair(ice_agent.checklist, pair) do
       nil ->
         Logger.debug("""
         Adding new candidate pair that will be nominated after \
@@ -44,18 +44,18 @@ defmodule ExICE.ControlledHandler do
         """)
 
         pair = %CandidatePair{pair | nominate?: true}
-        checklist = Map.put(state.checklist, pair.id, pair)
-        %ICEAgentPriv{state | checklist: checklist}
+        checklist = Map.put(ice_agent.checklist, pair.id, pair)
+        %ICEAgentPriv{ice_agent | checklist: checklist}
 
       %CandidatePair{} = pair
-      when state.selected_pair != nil and pair.discovered_pair_id == state.selected_pair.id ->
+      when ice_agent.selected_pair != nil and pair.discovered_pair_id == ice_agent.selected_pair.id ->
         Logger.debug("Keepalive on selected pair: #{pair.id}")
-        state
+        ice_agent
 
       %CandidatePair{} = pair ->
         if pair.state == :succeeded do
           Logger.debug("Nomination request on pair: #{pair.id}.")
-          update_nominated_flag(state, pair.discovered_pair_id, true)
+          update_nominated_flag(ice_agent, pair.discovered_pair_id, true)
         else
           # TODO should we check if this pair is not in failed?
           Logger.debug("""
@@ -65,41 +65,41 @@ defmodule ExICE.ControlledHandler do
           """)
 
           pair = %CandidatePair{pair | nominate?: true}
-          checklist = Map.put(state.checklist, pair.id, pair)
-          %ICEAgentPriv{state | checklist: checklist}
+          checklist = Map.put(ice_agent.checklist, pair.id, pair)
+          %ICEAgentPriv{ice_agent | checklist: checklist}
         end
     end
   end
 
   @impl true
-  def update_nominated_flag(state, _pair_id, false), do: state
+  def update_nominated_flag(ice_agent, _pair_id, false), do: ice_agent
 
   @impl true
-  def update_nominated_flag(state, pair_id, true) do
+  def update_nominated_flag(ice_agent, pair_id, true) do
     Logger.debug("Nomination succeeded, pair: #{pair_id}")
 
-    pair = Map.fetch!(state.checklist, pair_id)
+    pair = Map.fetch!(ice_agent.checklist, pair_id)
     pair = %CandidatePair{pair | nominate?: false, nominated?: true}
 
-    checklist = Map.put(state.checklist, pair.id, pair)
-    state = %ICEAgentPriv{state | checklist: checklist}
+    checklist = Map.put(ice_agent.checklist, pair.id, pair)
+    ice_agent = %ICEAgentPriv{ice_agent | checklist: checklist}
 
     cond do
-      state.selected_pair == nil ->
+      ice_agent.selected_pair == nil ->
         Logger.debug("Selecting pair: #{pair_id}")
-        %{state | selected_pair: pair}
+        %ICEAgentPriv{ice_agent | selected_pair: pair}
 
-      state.selected_pair != nil and pair.priority >= state.selected_pair.priority ->
+      ice_agent.selected_pair != nil and pair.priority >= ice_agent.selected_pair.priority ->
         Logger.debug("""
         Selecting new pair with higher priority. \
-        New pair: #{pair_id}, old pair: #{state.selected_pair.id}.\
+        New pair: #{pair_id}, old pair: #{ice_agent.selected_pair.id}.\
         """)
 
-        %{state | selected_pair: pair}
+        %ICEAgentPriv{ice_agent | selected_pair: pair}
 
       true ->
         Logger.debug("Not selecting a new pair as it has lower priority")
-        state
+        ice_agent
     end
   end
 end
