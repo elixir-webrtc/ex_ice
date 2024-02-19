@@ -15,13 +15,13 @@ defmodule ExICE.ConnCheckHandler.Controlling do
     Pair: #{pair.id}.
     """)
 
-    ICEAgent.Impl.send_bad_request_error_response(pair, msg)
+    ICEAgent.Impl.send_bad_request_error_response(ice_agent.transport_module, pair, msg)
     ice_agent
   end
 
   @impl true
   def handle_conn_check_request(ice_agent, pair, msg, nil, key) do
-    ICEAgent.Impl.send_binding_success_response(pair, msg, key)
+    ICEAgent.Impl.send_binding_success_response(ice_agent.transport_module, pair, msg, key)
 
     # TODO use triggered check queue
     case Checklist.find_pair(ice_agent.checklist, pair) do
