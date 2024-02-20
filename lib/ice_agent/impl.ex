@@ -1,17 +1,9 @@
-defmodule ExICE.ICEAgentPriv do
+defmodule ExICE.ICEAgent.Impl do
   @moduledoc false
 
   require Logger
 
-  alias ExICE.{
-    Candidate,
-    CandidatePair,
-    Checklist,
-    ControlledHandler,
-    ControllingHandler,
-    Gatherer
-  }
-
+  alias ExICE.{Candidate, CandidatePair, Checklist, ConnCheckHandler, Gatherer}
   alias ExICE.Attribute.{ICEControlling, ICEControlled, Priority, UseCandidate}
 
   alias ExSTUN.Message
@@ -25,7 +17,10 @@ defmodule ExICE.ICEAgentPriv do
   # see appendix B.1
   @hto 500
 
-  @conn_check_handler %{controlling: ControllingHandler, controlled: ControlledHandler}
+  @conn_check_handler %{
+    controlling: ConnCheckHandler.Controlling,
+    controlled: ConnCheckHandler.Controlled
+  }
 
   defguardp are_pairs_equal(p1, p2)
             when p1.local_cand.base_address == p2.local_cand.base_address and

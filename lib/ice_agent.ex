@@ -8,7 +8,7 @@ defmodule ExICE.ICEAgent do
 
   require Logger
 
-  alias ExICE.{ICEAgentPriv, Candidate, CandidatePair}
+  alias ExICE.{ICEAgent, Candidate, CandidatePair}
 
   @typedoc """
   ICE agent role.
@@ -222,97 +222,97 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def init(opts) do
-    ice_agent = ICEAgentPriv.new(opts)
+    ice_agent = ICEAgent.Impl.new(opts)
     {:ok, %{ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_call({:on_gathering_state_change, send_to}, _from, state) do
-    ice_agent = ICEAgentPriv.on_gathering_state_change(state.ice_agent, send_to)
+    ice_agent = ICEAgent.Impl.on_gathering_state_change(state.ice_agent, send_to)
     {:reply, :ok, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_call({:on_connection_state_change, send_to}, _from, state) do
-    ice_agent = ICEAgentPriv.on_connection_state_change(state.ice_agent, send_to)
+    ice_agent = ICEAgent.Impl.on_connection_state_change(state.ice_agent, send_to)
     {:reply, :ok, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_call({:on_data, send_to}, _from, state) do
-    ice_agent = ICEAgentPriv.on_data(state.ice_agent, send_to)
+    ice_agent = ICEAgent.Impl.on_data(state.ice_agent, send_to)
     {:reply, :ok, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_call({:on_new_candidate, send_to}, _from, state) do
-    ice_agent = ICEAgentPriv.on_new_candidate(state.ice_agent, send_to)
+    ice_agent = ICEAgent.Impl.on_new_candidate(state.ice_agent, send_to)
     {:reply, :ok, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_call(:get_local_credentials, _from, state) do
-    {local_ufrag, local_pwd} = ICEAgentPriv.get_local_credentials(state.ice_agent)
+    {local_ufrag, local_pwd} = ICEAgent.Impl.get_local_credentials(state.ice_agent)
     {:reply, {:ok, local_ufrag, local_pwd}, state}
   end
 
   @impl true
   def handle_call(:get_stats, _from, state) do
-    stats = ICEAgentPriv.get_stats(state.ice_agent)
+    stats = ICEAgent.Impl.get_stats(state.ice_agent)
     {:reply, stats, state}
   end
 
   @impl true
   def handle_cast({:set_remote_credentials, ufrag, pwd}, state) do
-    ice_agent = ICEAgentPriv.set_remote_credentials(state.ice_agent, ufrag, pwd)
+    ice_agent = ICEAgent.Impl.set_remote_credentials(state.ice_agent, ufrag, pwd)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_cast(:gather_candidates, state) do
-    ice_agent = ICEAgentPriv.gather_candidates(state.ice_agent)
+    ice_agent = ICEAgent.Impl.gather_candidates(state.ice_agent)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
-    ice_agent = ICEAgentPriv.add_remote_candidate(state.ice_agent, remote_cand)
+    ice_agent = ICEAgent.Impl.add_remote_candidate(state.ice_agent, remote_cand)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_cast(:end_of_candidates, state) do
-    ice_agent = ICEAgentPriv.end_of_candidates(state.ice_agent)
+    ice_agent = ICEAgent.Impl.end_of_candidates(state.ice_agent)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_cast({:send_data, data}, state) do
-    ice_agent = ICEAgentPriv.send_data(state.ice_agent, data)
+    ice_agent = ICEAgent.Impl.send_data(state.ice_agent, data)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_cast(:restart, state) do
-    ice_agent = ICEAgentPriv.restart(state.ice_agent)
+    ice_agent = ICEAgent.Impl.restart(state.ice_agent)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_info(:ta_timeout, state) do
-    ice_agent = ICEAgentPriv.handle_timeout(state.ice_agent)
+    ice_agent = ICEAgent.Impl.handle_timeout(state.ice_agent)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_info({:keepalive, id}, state) do
-    ice_agent = ICEAgentPriv.handle_keepalive(state.ice_agent, id)
+    ice_agent = ICEAgent.Impl.handle_keepalive(state.ice_agent, id)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
   def handle_info({:udp, socket, src_ip, src_port, packet}, state) do
-    ice_agent = ICEAgentPriv.handle_udp(state.ice_agent, socket, src_ip, src_port, packet)
+    ice_agent = ICEAgent.Impl.handle_udp(state.ice_agent, socket, src_ip, src_port, packet)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 

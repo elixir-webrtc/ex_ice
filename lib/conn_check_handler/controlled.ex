@@ -1,23 +1,23 @@
 # credo:disable-for-this-file Credo.Check.Refactor.CyclomaticComplexity
-defmodule ExICE.ControlledHandler do
+defmodule ExICE.ConnCheckHandler.Controlled do
   @moduledoc false
   @behaviour ExICE.ConnCheckHandler
 
   require Logger
 
-  alias ExICE.{CandidatePair, Checklist, ICEAgentPriv}
+  alias ExICE.{CandidatePair, Checklist, ICEAgent}
   alias ExICE.Attribute.UseCandidate
 
   @impl true
   def handle_conn_check_request(ice_agent, pair, msg, nil, key) do
-    ICEAgentPriv.send_binding_success_response(pair, msg, key)
+    ICEAgent.Impl.send_binding_success_response(pair, msg, key)
 
     # TODO use triggered check queue
     case Checklist.find_pair(ice_agent.checklist, pair) do
       nil ->
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
         checklist = Map.put(ice_agent.checklist, pair.id, pair)
-        %ICEAgentPriv{ice_agent | checklist: checklist}
+        %ICEAgent.Impl{ice_agent | checklist: checklist}
 
       %CandidatePair{} = pair
       when ice_agent.selected_pair != nil and
@@ -34,7 +34,7 @@ defmodule ExICE.ControlledHandler do
 
   @impl true
   def handle_conn_check_request(ice_agent, pair, msg, %UseCandidate{}, key) do
-    ICEAgentPriv.send_binding_success_response(pair, msg, key)
+    ICEAgent.Impl.send_binding_success_response(pair, msg, key)
 
     # TODO use triggered check queue
     case Checklist.find_pair(ice_agent.checklist, pair) do
@@ -46,7 +46,7 @@ defmodule ExICE.ControlledHandler do
 
         pair = %CandidatePair{pair | nominate?: true}
         checklist = Map.put(ice_agent.checklist, pair.id, pair)
-        %ICEAgentPriv{ice_agent | checklist: checklist}
+        %ICEAgent.Impl{ice_agent | checklist: checklist}
 
       %CandidatePair{} = pair
       when ice_agent.selected_pair != nil and
@@ -68,7 +68,7 @@ defmodule ExICE.ControlledHandler do
 
           pair = %CandidatePair{pair | nominate?: true}
           checklist = Map.put(ice_agent.checklist, pair.id, pair)
-          %ICEAgentPriv{ice_agent | checklist: checklist}
+          %ICEAgent.Impl{ice_agent | checklist: checklist}
         end
     end
   end
@@ -84,12 +84,12 @@ defmodule ExICE.ControlledHandler do
     pair = %CandidatePair{pair | nominate?: false, nominated?: true}
 
     checklist = Map.put(ice_agent.checklist, pair.id, pair)
-    ice_agent = %ICEAgentPriv{ice_agent | checklist: checklist}
+    ice_agent = %ICEAgent.Impl{ice_agent | checklist: checklist}
 
     cond do
       ice_agent.selected_pair == nil ->
         Logger.debug("Selecting pair: #{pair_id}")
-        %ICEAgentPriv{ice_agent | selected_pair: pair}
+        %ICEAgent.Impl{ice_agent | selected_pair: pair}
 
       ice_agent.selected_pair != nil and pair.priority >= ice_agent.selected_pair.priority ->
         Logger.debug("""
@@ -97,7 +97,7 @@ defmodule ExICE.ControlledHandler do
         New pair: #{pair_id}, old pair: #{ice_agent.selected_pair.id}.\
         """)
 
-        %ICEAgentPriv{ice_agent | selected_pair: pair}
+        %ICEAgent.Impl{ice_agent | selected_pair: pair}
 
       true ->
         Logger.debug("Not selecting a new pair as it has lower priority")
