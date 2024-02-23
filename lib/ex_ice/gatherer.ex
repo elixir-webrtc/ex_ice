@@ -12,10 +12,11 @@ defmodule ExICE.Gatherer do
   @type t() :: %__MODULE__{
           if_discovery_module: module(),
           transport_module: module(),
-          ip_filter: fun()
+          ip_filter: (:inet.ip_address() -> boolean)
         }
 
-  defstruct [:if_discovery_module, :transport_module, :ip_filter]
+  @enforce_keys [:if_discovery_module, :transport_module, :ip_filter]
+  defstruct @enforce_keys
 
   @spec new(module(), module(), fun()) :: t()
   def new(if_discovery_module, transport_module, ip_filter) do
