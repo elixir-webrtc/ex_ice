@@ -3,7 +3,8 @@ defmodule ExICE.ICEAgent.Impl do
 
   require Logger
 
-  alias ExICE.{Candidate, CandidatePair, Checklist, ConnCheckHandler, Gatherer}
+  alias ExICE.IfDiscovery
+  alias ExICE.{Candidate, CandidatePair, Checklist, ConnCheckHandler, Gatherer, Transport}
   alias ExICE.Attribute.{ICEControlling, ICEControlled, Priority, UseCandidate}
 
   alias ExSTUN.Message
@@ -40,8 +41,10 @@ defmodule ExICE.ICEAgent.Impl do
     :on_gathering_state_change,
     :on_data,
     :on_new_candidate,
+    :if_discovery_module,
+    :transport_module,
+    :gatherer,
     :ta_timer,
-    :ip_filter,
     :role,
     :tiebreaker,
     :selected_pair,
@@ -70,30 +73,17 @@ defmodule ExICE.ICEAgent.Impl do
     packets_received: 0
   ]
 
-  @spec new(ExICE.ICEAgent.opts()) :: t()
+  @spec new(Keyword.t()) :: t()
   def new(opts) do
-    stun_servers =
-      opts
-      |> Keyword.get(:stun_servers, [])
-      |> Enum.map(fn stun_server ->
-        case ExICE.URI.parse(stun_server) do
-          {:ok, stun_server} ->
-            stun_server
-
-          :error ->
-            Logger.warning("""
-            Couldn't parse STUN server URI: #{inspect(stun_server)}. \
-            Ignoring.\
-            """)
-
-            nil
-        end
-      end)
-      |> Enum.reject(&(&1 == nil))
+    stun_servers = parse_stun_servers(opts[:stun_servers] || [])
 
     {local_ufrag, local_pwd} = generate_credentials()
 
     controlling_process = Keyword.fetch!(opts, :controlling_process)
+
+    if_discovery_module = opts[:if_discovery_module] || IfDiscovery.Inet
+    transport_module = opts[:transport_module] || Transport.UDP
+    ip_filter = opts[:ip_filter] || fn _ -> true end
 
     %__MODULE__{
       controlling_process: controlling_process,
@@ -101,7 +91,9 @@ defmodule ExICE.ICEAgent.Impl do
       on_gathering_state_change: opts[:on_gathering_state_change] || controlling_process,
       on_data: opts[:on_data] || controlling_process,
       on_new_candidate: opts[:on_new_candidate] || controlling_process,
-      ip_filter: opts[:ip_filter],
+      if_discovery_module: if_discovery_module,
+      transport_module: transport_module,
+      gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter),
       role: Keyword.fetch!(opts, :role),
       tiebreaker: generate_tiebreaker(),
       local_ufrag: local_ufrag,
@@ -192,7 +184,7 @@ defmodule ExICE.ICEAgent.Impl do
     notify(ice_agent.on_gathering_state_change, {:gathering_state_change, :gathering})
     ice_agent = %{ice_agent | gathering_state: :gathering}
 
-    {:ok, host_candidates} = Gatherer.gather_host_candidates(ip_filter: ice_agent.ip_filter)
+    {:ok, host_candidates} = Gatherer.gather_host_candidates(ice_agent.gatherer)
 
     for cand <- host_candidates do
       notify(ice_agent.on_new_candidate, {:new_candidate, Candidate.marshal(cand)})
@@ -272,7 +264,7 @@ defmodule ExICE.ICEAgent.Impl do
         List.first(ice_agent.prev_valid_pairs)
 
     dst = {pair.remote_cand.address, pair.remote_cand.port}
-    bytes_sent = do_send(pair.local_cand.socket, dst, data)
+    bytes_sent = do_send(ice_agent.transport_module, pair.local_cand.socket, dst, data)
     # if we didn't manage to send any bytes, don't increment packets_sent
     packets_sent = if bytes_sent == 0, do: 0, else: 1
 
@@ -373,7 +365,7 @@ defmodule ExICE.ICEAgent.Impl do
       when not is_nil(s_pair) and s_pair.id == id do
     # if pair was selected, send keepalives only on that pair
     pair = CandidatePair.schedule_keepalive(s_pair)
-    send_keepalive(ice_agent.checklist[id])
+    send_keepalive(ice_agent, ice_agent.checklist[id])
     %__MODULE__{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
   end
 
@@ -393,7 +385,7 @@ defmodule ExICE.ICEAgent.Impl do
       {:ok, pair} ->
         pair = CandidatePair.schedule_keepalive(pair)
         ice_agent = %__MODULE__{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
-        send_keepalive(pair)
+        send_keepalive(ice_agent, pair)
         ice_agent
 
       :error ->
@@ -404,7 +396,7 @@ defmodule ExICE.ICEAgent.Impl do
 
   @spec handle_udp(
           t(),
-          :gen_udp.socket(),
+          ExICE.Transport.socket(),
           :inet.ip_address(),
           :inet.port_number(),
           binary()
@@ -480,7 +472,7 @@ defmodule ExICE.ICEAgent.Impl do
     stun_server: #{inspect(stun_server)}
     """)
 
-    case Gatherer.gather_srflx_candidate(t_id, host_cand, stun_server) do
+    case Gatherer.gather_srflx_candidate(ice_agent.gatherer, t_id, host_cand, stun_server) do
       :ok ->
         now = System.monotonic_time(:millisecond)
         t = %{t | state: :in_progress, send_time: now}
@@ -550,7 +542,7 @@ defmodule ExICE.ICEAgent.Impl do
   defp handle_stun_msg(ice_agent, socket, src_ip, src_port, %Message{} = msg) do
     # TODO revisit 7.3.1.4
 
-    {:ok, socket_addr} = :inet.sockname(socket)
+    {:ok, socket_addr} = ice_agent.transport_module.sockname(socket)
 
     case msg.type do
       %Type{class: :request, method: :binding} ->
@@ -611,7 +603,16 @@ defmodule ExICE.ICEAgent.Impl do
           # keepalive on pair selected before ice restart
           # TODO can we reach this? Won't we use incorrect local_pwd for auth?
           Logger.debug("Keepalive on pair from previous ICE session")
-          send_binding_success_response(socket, src_ip, src_port, msg, key)
+
+          send_binding_success_response(
+            ice_agent.transport_module,
+            socket,
+            src_ip,
+            src_port,
+            msg,
+            key
+          )
+
           ice_agent
 
         %Candidate{} = local_cand ->
@@ -645,7 +646,7 @@ defmodule ExICE.ICEAgent.Impl do
         Sending bad request error response\
         """)
 
-        send_bad_request_error_response(socket, src_ip, src_port, msg)
+        send_bad_request_error_response(ice_agent.transport_module, socket, src_ip, src_port, msg)
         ice_agent
 
       {:error, reason} when reason in [:missing_username, :invalid_username] ->
@@ -654,7 +655,14 @@ defmodule ExICE.ICEAgent.Impl do
         Sending unauthenticated error response\
         """)
 
-        send_unauthenticated_error_response(socket, src_ip, src_port, msg)
+        send_unauthenticated_error_response(
+          ice_agent.transport_module,
+          socket,
+          src_ip,
+          src_port,
+          msg
+        )
+
         ice_agent
 
       {:error, reason} ->
@@ -668,7 +676,15 @@ defmodule ExICE.ICEAgent.Impl do
         Peer's tiebreaker: #{tiebreaker}\
         """)
 
-        send_role_conflict_error_response(socket, src_ip, src_port, msg, key)
+        send_role_conflict_error_response(
+          ice_agent.transport_module,
+          socket,
+          src_ip,
+          src_port,
+          msg,
+          key
+        )
+
         ice_agent
     end
   end
@@ -774,7 +790,7 @@ defmodule ExICE.ICEAgent.Impl do
         :error_response -> handle_conn_check_error_response(ice_agent, conn_check_pair, msg)
       end
     else
-      {:ok, {socket_ip, socket_port}} = :inet.sockname(socket)
+      {:ok, {socket_ip, socket_port}} = ice_agent.transport_module.sockname(socket)
 
       Logger.warning("""
       Ignoring conn check response, non-symmetric src and dst addresses.
@@ -1088,14 +1104,22 @@ defmodule ExICE.ICEAgent.Impl do
   end
 
   @doc false
-  @spec send_binding_success_response(CandidatePair.t(), Message.t(), binary()) :: :ok
-  def send_binding_success_response(pair, msg, key) do
+  @spec send_binding_success_response(module(), CandidatePair.t(), Message.t(), binary()) :: :ok
+  def send_binding_success_response(transport_module, pair, msg, key) do
     src_ip = pair.remote_cand.address
     src_port = pair.remote_cand.port
-    send_binding_success_response(pair.local_cand.socket, src_ip, src_port, msg, key)
+
+    send_binding_success_response(
+      transport_module,
+      pair.local_cand.socket,
+      src_ip,
+      src_port,
+      msg,
+      key
+    )
   end
 
-  defp send_binding_success_response(socket, src_ip, src_port, req, key) do
+  defp send_binding_success_response(transport_module, socket, src_ip, src_port, req, key) do
     type = %Type{class: :success_response, method: :binding}
 
     resp =
@@ -1104,41 +1128,48 @@ defmodule ExICE.ICEAgent.Impl do
       |> Message.with_fingerprint()
       |> Message.encode()
 
-    do_send(socket, {src_ip, src_port}, resp)
+    do_send(transport_module, socket, {src_ip, src_port}, resp)
     :ok
   end
 
   @doc false
-  @spec send_bad_request_error_response(CandidatePair.t(), Message.t()) :: :ok
-  def send_bad_request_error_response(pair, msg) do
+  @spec send_bad_request_error_response(module(), CandidatePair.t(), Message.t()) :: :ok
+  def send_bad_request_error_response(transport_module, pair, msg) do
     src_ip = pair.remote_cand.address
     src_port = pair.remote_cand.port
-    send_bad_request_error_response(pair.local_cand.socket, src_ip, src_port, msg)
+
+    send_bad_request_error_response(
+      transport_module,
+      pair.local_cand.socket,
+      src_ip,
+      src_port,
+      msg
+    )
   end
 
-  defp send_bad_request_error_response(socket, src_ip, src_port, req) do
+  defp send_bad_request_error_response(transport_module, socket, src_ip, src_port, req) do
     type = %Type{class: :error_response, method: :binding}
 
     response =
       Message.new(req.transaction_id, type, [%ErrorCode{code: 400}])
       |> Message.encode()
 
-    do_send(socket, {src_ip, src_port}, response)
+    do_send(transport_module, socket, {src_ip, src_port}, response)
     :ok
   end
 
-  defp send_unauthenticated_error_response(socket, src_ip, src_port, req) do
+  defp send_unauthenticated_error_response(transport_module, socket, src_ip, src_port, req) do
     type = %Type{class: :error_response, method: :binding}
 
     response =
       Message.new(req.transaction_id, type, [%ErrorCode{code: 401}])
       |> Message.encode()
 
-    do_send(socket, {src_ip, src_port}, response)
+    do_send(transport_module, socket, {src_ip, src_port}, response)
     :ok
   end
 
-  defp send_role_conflict_error_response(socket, src_ip, src_port, req, key) do
+  defp send_role_conflict_error_response(transport_module, socket, src_ip, src_port, req, key) do
     type = %Type{class: :error_response, method: :binding}
 
     response =
@@ -1147,7 +1178,7 @@ defmodule ExICE.ICEAgent.Impl do
       |> Message.with_fingerprint()
       |> Message.encode()
 
-    do_send(socket, {src_ip, src_port}, response)
+    do_send(transport_module, socket, {src_ip, src_port}, response)
     :ok
   end
 
@@ -1295,7 +1326,7 @@ defmodule ExICE.ICEAgent.Impl do
           "Closing local candidate's socket: #{inspect(c.base_address)}:#{c.base_port}"
         )
 
-        :ok = :gen_udp.close(c.socket)
+        :ok = ice_agent.transport_module.close(c.socket)
       end
     end)
 
@@ -1347,6 +1378,25 @@ defmodule ExICE.ICEAgent.Impl do
   defp find_host_cand(cands, socket) do
     # this function returns only host candidates
     Enum.find(cands, fn cand -> cand.socket == socket and cand.type == :host end)
+  end
+
+  defp parse_stun_servers(stun_servers) do
+    stun_servers
+    |> Enum.map(fn stun_server ->
+      case ExICE.URI.parse(stun_server) do
+        {:ok, stun_server} ->
+          stun_server
+
+        :error ->
+          Logger.warning("""
+          Couldn't parse STUN server URI: #{inspect(stun_server)}. \
+          Ignoring.\
+          """)
+
+          nil
+      end
+    end)
+    |> Enum.reject(&(&1 == nil))
   end
 
   defp generate_tiebreaker() do
@@ -1507,7 +1557,7 @@ defmodule ExICE.ICEAgent.Impl do
     %{ice_agent | ta_timer: nil}
   end
 
-  defp send_keepalive(pair) do
+  defp send_keepalive(ice_agent, pair) do
     type = %Type{class: :indication, method: :binding}
 
     req =
@@ -1516,7 +1566,7 @@ defmodule ExICE.ICEAgent.Impl do
       |> Message.with_fingerprint()
 
     dst = {pair.remote_cand.address, pair.remote_cand.port}
-    do_send(pair.local_cand.socket, dst, Message.encode(req))
+    do_send(ice_agent.transport_module, pair.local_cand.socket, dst, Message.encode(req))
   end
 
   @doc false
@@ -1558,7 +1608,7 @@ defmodule ExICE.ICEAgent.Impl do
 
     dst = {pair.remote_cand.address, pair.remote_cand.port}
 
-    do_send(pair.local_cand.socket, dst, Message.encode(req))
+    do_send(ice_agent.transport_module, pair.local_cand.socket, dst, Message.encode(req))
 
     pair = %CandidatePair{pair | state: :in_progress}
 
@@ -1573,17 +1623,17 @@ defmodule ExICE.ICEAgent.Impl do
     {pair, ice_agent}
   end
 
-  defp do_send(socket, dst, data) do
+  defp do_send(transport_module, socket, dst, data) do
     # FIXME that's a workaround for EPERM
     # retrying after getting EPERM seems to help
-    case :gen_udp.send(socket, dst, data) do
+    case transport_module.send(socket, dst, data) do
       :ok ->
         byte_size(data)
 
       err ->
         Logger.error("UDP send error: #{inspect(err)}. Retrying...")
 
-        case :gen_udp.send(socket, dst, data) do
+        case transport_module.send(socket, dst, data) do
           :ok ->
             Logger.debug("Successful retry")
             byte_size(data)
