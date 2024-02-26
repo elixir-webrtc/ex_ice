@@ -213,7 +213,7 @@ defmodule ExICE.ICEAgent.Impl do
     |> update_ta_timer()
   end
 
-  @spec add_remote_candidate(t(), Candidate.t()) :: t()
+  @spec add_remote_candidate(t(), String.t()) :: t()
   def add_remote_candidate(%__MODULE__{eoc: true} = ice_agent, remote_cand) do
     Logger.warning(
       "Received remote candidate after end-of-candidates. Ignoring. Candidate: #{inspect(remote_cand)}"
@@ -868,7 +868,7 @@ defmodule ExICE.ICEAgent.Impl do
         )
 
         conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
-        checklist = put_in(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
+        checklist = Map.put(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
         %__MODULE__{ice_agent | checklist: checklist}
     end
   end
