@@ -72,12 +72,11 @@ defmodule ExICE.ICEAgent.ImplTest do
       assert {:ok, _key} = ExSTUN.Message.authenticate_st(msg, ice_agent.local_pwd)
     end
 
-    test "with incorrect username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+    test "without username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [local_cand] = ice_agent.local_cands
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
-          %Username{value: "#{ice_agent.local_ufrag <> "1"}:someufrag"},
           %Priority{priority: 1234},
           %ICEControlled{tiebreaker: 1234}
         ])
@@ -95,14 +94,82 @@ defmodule ExICE.ICEAgent.ImplTest do
           raw_request
         )
 
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
-      assert {:ok, msg} = ExSTUN.Message.decode(packet)
-      assert msg.type == %ExSTUN.Message.Type{class: :error_response, method: :binding}
-      assert msg.transaction_id == request.transaction_id
-      assert length(msg.attributes) == 1
+      assert_bad_request_error_response(local_cand.socket, request)
+    end
 
-      assert {:ok, %ErrorCode{code: 401, reason: ""}} =
-               ExSTUN.Message.get_attribute(msg, ErrorCode)
+    test "without message-integrity", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234},
+          %ICEControlled{tiebreaker: 1234}
+        ])
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      _ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      assert_bad_request_error_response(local_cand.socket, request)
+    end
+
+    test "without fingerprint", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234},
+          %ICEControlled{tiebreaker: 1234}
+        ])
+        |> Message.with_integrity(ice_agent.local_pwd)
+
+      raw_request = Message.encode(request)
+
+      _ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      assert_silently_discarded(local_cand.socket)
+    end
+
+    test "without role", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234}
+        ])
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      _ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      assert_bad_request_error_response(local_cand.socket, request)
     end
 
     test "without priority", %{ice_agent: ice_agent, remote_cand: remote_cand} do
@@ -127,17 +194,36 @@ defmodule ExICE.ICEAgent.ImplTest do
           raw_request
         )
 
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
-      assert {:ok, msg} = ExSTUN.Message.decode(packet)
-      assert msg.type == %ExSTUN.Message.Type{class: :error_response, method: :binding}
-      assert msg.transaction_id == request.transaction_id
-      assert length(msg.attributes) == 1
-
-      assert {:ok, %ErrorCode{code: 400, reason: ""}} =
-               ExSTUN.Message.get_attribute(msg, ErrorCode)
+      assert_bad_request_error_response(local_cand.socket, request)
     end
 
-    test "with incorrect fingerprint", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+    test "with non-matching username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag <> "1"}:someufrag"},
+          %Priority{priority: 1234},
+          %ICEControlled{tiebreaker: 1234}
+        ])
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      _ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      assert_unauthenticated_error_response(local_cand.socket, request)
+    end
+
+    test "with non-matching fingerprint", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [local_cand] = ice_agent.local_cands
 
       request =
@@ -163,11 +249,10 @@ defmodule ExICE.ICEAgent.ImplTest do
           request
         )
 
-      # binding requests with incorrect fingerprint should be silently discarded
-      assert [{_socket, nil}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert_silently_discarded(local_cand.socket)
     end
 
-    test "with incorrect message integrity", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+    test "with non-matching message integrity", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [local_cand] = ice_agent.local_cands
 
       request =
@@ -190,8 +275,39 @@ defmodule ExICE.ICEAgent.ImplTest do
           raw_request
         )
 
-      # binding requests with incorrect message integrity should be silently discarded
-      assert [{_socket, nil}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert_unauthenticated_error_response(local_cand.socket, request)
+    end
+
+    defp assert_bad_request_error_response(socket, request) do
+      assert [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
+      assert is_binary(packet)
+      assert {:ok, msg} = ExSTUN.Message.decode(packet)
+      assert msg.type == %ExSTUN.Message.Type{class: :error_response, method: :binding}
+      assert msg.transaction_id == request.transaction_id
+      assert length(msg.attributes) == 2
+
+      assert {:ok, %ErrorCode{code: 400, reason: ""}} =
+               ExSTUN.Message.get_attribute(msg, ErrorCode)
+
+      assert :ok == ExSTUN.Message.check_fingerprint(msg)
+    end
+
+    defp assert_unauthenticated_error_response(socket, request) do
+      assert [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
+      assert is_binary(packet)
+      assert {:ok, msg} = ExSTUN.Message.decode(packet)
+      assert msg.type == %ExSTUN.Message.Type{class: :error_response, method: :binding}
+      assert msg.transaction_id == request.transaction_id
+      assert length(msg.attributes) == 2
+
+      assert {:ok, %ErrorCode{code: 401, reason: ""}} =
+               ExSTUN.Message.get_attribute(msg, ErrorCode)
+
+      assert :ok == ExSTUN.Message.check_fingerprint(msg)
+    end
+
+    defp assert_silently_discarded(socket) do
+      assert [{_socket, nil}] = :ets.lookup(:transport_mock, socket)
     end
   end
 

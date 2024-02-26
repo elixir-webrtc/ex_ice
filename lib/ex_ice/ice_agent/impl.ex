@@ -595,8 +595,7 @@ defmodule ExICE.ICEAgent.Impl do
          {:ok, key} <- authenticate_msg(msg, ice_agent.local_pwd),
          {:ok, prio_attr} <- get_prio_attribute(msg),
          {:ok, role_attr} <- get_role_attribute(msg),
-         use_cand_attr when use_cand_attr in [nil, %UseCandidate{}] <-
-           get_use_cand_attribute(msg),
+         {:ok, use_cand_attr} <- get_use_cand_attribute(msg),
          {{:ok, ice_agent}, _} <- {check_req_role_conflict(ice_agent, role_attr), key} do
       case find_host_cand(ice_agent.local_cands, socket) do
         nil ->
@@ -632,15 +631,16 @@ defmodule ExICE.ICEAgent.Impl do
     else
       {:error, reason}
       when reason in [
-             :invalid_priority_attribute,
-             :no_priority_attribute,
-             :invalid_use_candidate_attribute
+             :invalid_username,
+             :no_username,
+             :invalid_message_integrity,
+             :no_message_integrity,
+             :invalid_priority,
+             :no_priority,
+             :invalid_role,
+             :no_role,
+             :invalid_use_candidate
            ] ->
-        # TODO should we reply with 400 bad request when
-        # attributes are invalid (they are present but invalid)
-        # TODO should we authenticate?
-        # chrome does not authenticate but section 6.3.1.1 suggests
-        # we should add message-integrity
         Logger.debug("""
         Invalid binding request, reason: #{reason}. \
         Sending bad request error response\
@@ -649,7 +649,7 @@ defmodule ExICE.ICEAgent.Impl do
         send_bad_request_error_response(ice_agent.transport_module, socket, src_ip, src_port, msg)
         ice_agent
 
-      {:error, reason} when reason in [:missing_username, :invalid_username] ->
+      {:error, reason} when reason in [:no_matching_username, :no_matching_message_integrity] ->
         Logger.debug("""
         Invalid binding request, reason: #{reason}. \
         Sending unauthenticated error response\
@@ -663,10 +663,6 @@ defmodule ExICE.ICEAgent.Impl do
           msg
         )
 
-        ice_agent
-
-      {:error, reason} ->
-        Logger.debug("Ignoring binding request, reason: #{reason}")
         ice_agent
 
       {{:error, :role_conflict, tiebreaker}, key} ->
@@ -686,14 +682,18 @@ defmodule ExICE.ICEAgent.Impl do
         )
 
         ice_agent
+
+      {:error, reason} ->
+        Logger.debug("Ignoring binding request, reason: #{reason}")
+        ice_agent
     end
   end
 
   defp get_prio_attribute(msg) do
     case Message.get_attribute(msg, Priority) do
       {:ok, _} = attr -> attr
-      {:error, _} -> {:error, :invalid_priority_attribute}
-      nil -> {:error, :no_priority_attribute}
+      {:error, :invalid_priority} = err -> err
+      nil -> {:error, :no_priority}
     end
   end
 
@@ -702,18 +702,23 @@ defmodule ExICE.ICEAgent.Impl do
       Message.get_attribute(msg, ICEControlling) || Message.get_attribute(msg, ICEControlled)
 
     case role_attr do
-      {:ok, _} -> role_attr
-      {:error, _} -> {:error, :invalid_role_attribute}
-      nil -> {:error, :no_role_attribute}
+      {:ok, _} ->
+        role_attr
+
+      {:error, reason} when reason in [:invalid_ice_controlling, :invalid_ice_controlled] ->
+        {:error, :invalid_role}
+
+      nil ->
+        {:error, :no_role}
     end
   end
 
   defp get_use_cand_attribute(msg) do
     # this function breaks the convention...
     case Message.get_attribute(msg, UseCandidate) do
-      {:ok, attr} -> attr
-      {:error, _} -> {:error, :invalid_use_candidate_attribute}
-      nil -> nil
+      {:ok, attr} -> {:ok, attr}
+      {:error, :invalid_use_candidate} = err -> err
+      nil -> {:ok, nil}
     end
   end
 
@@ -768,10 +773,13 @@ defmodule ExICE.ICEAgent.Impl do
       {:ok, %Username{value: username}} ->
         if String.starts_with?(username, local_ufrag <> ":"),
           do: :ok,
-          else: {:error, :invalid_username}
+          else: {:error, :no_matching_username}
+
+      {:error, :invalid_username} = err ->
+        err
 
       nil ->
-        {:error, :missing_username}
+        {:error, :no_username}
     end
   end
 
@@ -834,15 +842,9 @@ defmodule ExICE.ICEAgent.Impl do
       ice_agent = %__MODULE__{ice_agent | checklist: checklist}
       @conn_check_handler[ice_agent.role].update_nominated_flag(ice_agent, pair_id, nominate?)
     else
-      {:error, reason} when reason == :invalid_auth_attributes ->
-        Logger.debug("Ignoring conn check response, reason: #{reason}")
-        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
-        checklist = Map.put(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
-        %__MODULE__{ice_agent | checklist: checklist}
-
-      _other ->
+      {:error, reason} ->
         Logger.debug("""
-        Invalid or no XORMappedAddress. Ignoring conn check response.
+        Ignoring conn check response, reason: #{reason}.
         Conn check tid: #{inspect(msg.transaction_id)},
         Conn check pair: #{inspect(conn_check_pair.id)}.
         """)
@@ -852,12 +854,28 @@ defmodule ExICE.ICEAgent.Impl do
   end
 
   defp handle_conn_check_error_response(ice_agent, conn_check_pair, msg) do
-    # TODO should we authenticate?
-    # chrome seems not to add message integrity for 400 bad request errors
-    # libnice seems to add message integrity for role conflict
-    # RFC says we SHOULD add message integrity when possible
+    # We only authenticate role conflict as it changes our state.
+    # We don't add message-integrity to bad request and unauthenticated errors
+    # so we also don't expect to receive it.
+    # In the worst case scenario, we won't allow for the connection.
     case Message.get_attribute(msg, ErrorCode) do
       {:ok, %ErrorCode{code: 487}} ->
+        handle_role_confilct_error_response(ice_agent, conn_check_pair, msg)
+
+      other ->
+        Logger.debug(
+          "Conn check failed due to error resposne from the peer, error: #{inspect(other)}"
+        )
+
+        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+        checklist = put_in(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
+        %__MODULE__{ice_agent | checklist: checklist}
+    end
+  end
+
+  defp handle_role_confilct_error_response(ice_agent, conn_check_pair, msg) do
+    case authenticate_msg(msg, ice_agent.remote_pwd) do
+      {:ok, _key} ->
         new_role = if ice_agent.role == :controlling, do: :controlled, else: :controlling
 
         Logger.debug("""
@@ -870,14 +888,12 @@ defmodule ExICE.ICEAgent.Impl do
         tiebreaker = generate_tiebreaker()
         %__MODULE__{ice_agent | role: new_role, checklist: checklist, tiebreaker: tiebreaker}
 
-      other ->
+      {:error, reason} ->
         Logger.debug(
-          "Conn check failed due to error resposne from the peer, error: #{inspect(other)}"
+          "Couldn't authenticate conn check error response, reason: #{reason}. Ignoring."
         )
 
-        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
-        checklist = put_in(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
-        %__MODULE__{ice_agent | checklist: checklist}
+        ice_agent
     end
   end
 
@@ -1152,6 +1168,7 @@ defmodule ExICE.ICEAgent.Impl do
 
     response =
       Message.new(req.transaction_id, type, [%ErrorCode{code: 400}])
+      |> Message.with_fingerprint()
       |> Message.encode()
 
     do_send(transport_module, socket, {src_ip, src_port}, response)
@@ -1163,6 +1180,7 @@ defmodule ExICE.ICEAgent.Impl do
 
     response =
       Message.new(req.transaction_id, type, [%ErrorCode{code: 401}])
+      |> Message.with_fingerprint()
       |> Message.encode()
 
     do_send(transport_module, socket, {src_ip, src_port}, response)
@@ -1416,7 +1434,7 @@ defmodule ExICE.ICEAgent.Impl do
          :ok <- Message.check_fingerprint(msg) do
       {:ok, key}
     else
-      {:error, _reason} -> {:error, :invalid_auth_attributes}
+      {:error, _reason} = err -> err
     end
   end
 
