@@ -1,8 +1,8 @@
 defmodule ExICE.ICEAgent.ImplTest do
   use ExUnit.Case, async: true
 
-  alias ExICE.{Candidate, IfDiscovery, ICEAgent}
-  alias ExICE.Attribute.{ICEControlled, Priority}
+  alias ExICE.{Candidate, CandidatePair, IfDiscovery, ICEAgent}
+  alias ExICE.Attribute.{ICEControlled, ICEControlling, Priority}
   alias ExICE.Support.Transport
 
   alias ExSTUN.Message
@@ -19,7 +19,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
   end
 
-  describe "binding request" do
+  describe "incoming binding request" do
     setup do
       ice_agent =
         ICEAgent.Impl.new(
@@ -31,7 +31,7 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.gather_candidates(ice_agent)
 
-      remote_cand = Candidate.new(:host, {192, 168, 0, 1}, 8445, nil, nil, nil)
+      remote_cand = Candidate.new(:host, {192, 168, 0, 2}, 8445, nil, nil, nil)
 
       %{ice_agent: ice_agent, remote_cand: remote_cand}
     end
@@ -65,7 +65,7 @@ defmodule ExICE.ICEAgent.ImplTest do
       assert msg.transaction_id == request.transaction_id
       assert length(msg.attributes) == 3
 
-      assert {:ok, %XORMappedAddress{address: {192, 168, 0, 1}, port: 8445}} =
+      assert {:ok, %XORMappedAddress{address: {192, 168, 0, 2}, port: 8445}} =
                ExSTUN.Message.get_attribute(msg, XORMappedAddress)
 
       assert :ok == ExSTUN.Message.check_fingerprint(msg)
@@ -308,6 +308,197 @@ defmodule ExICE.ICEAgent.ImplTest do
 
     defp assert_silently_discarded(socket) do
       assert [{_socket, nil}] = :ets.lookup(:transport_mock, socket)
+    end
+  end
+
+  describe "connectivity check" do
+    setup do
+      remote_cand = Candidate.new(:host, {192, 168, 0, 2}, 8445, nil, nil, nil)
+
+      ice_agent =
+        ICEAgent.Impl.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.Impl.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.Impl.gather_candidates()
+        |> ICEAgent.Impl.add_remote_candidate(Candidate.marshal(remote_cand))
+
+      %{ice_agent: ice_agent, remote_cand: remote_cand}
+    end
+
+    test "request", %{ice_agent: ice_agent} do
+      [local_cand] = ice_agent.local_cands
+
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+
+      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert is_binary(packet)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert :ok = ExSTUN.Message.check_fingerprint(req)
+      assert {:ok, _key} = ExSTUN.Message.authenticate_st(req, ice_agent.remote_pwd)
+
+      assert length(req.attributes) == 5
+
+      assert {:ok, %Username{value: "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"}} ==
+               ExSTUN.Message.get_attribute(req, Username)
+
+      assert {:ok, %ICEControlling{}} = ExSTUN.Message.get_attribute(req, ICEControlling)
+      assert {:ok, %Priority{}} = ExSTUN.Message.get_attribute(req, Priority)
+
+      assert [%CandidatePair{state: :in_progress}] = Map.values(ice_agent.checklist)
+    end
+
+    test "success response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+
+      {key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: local_cand.address, port: local_cand.port}
+        ])
+        |> Message.with_integrity(key)
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          resp
+        )
+
+      assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
+    end
+
+    test "success response with non-matching message integrity", %{
+      ice_agent: ice_agent,
+      remote_cand: remote_cand
+    } do
+      [local_cand] = ice_agent.local_cands
+
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+
+      {key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+
+      <<first_byte, rest::binary>> = key
+      invalid_key = <<first_byte + 1, rest::binary>>
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: local_cand.address, port: local_cand.port}
+        ])
+        |> Message.with_integrity(invalid_key)
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          resp
+        )
+
+      # Unauthenticated response is ignored as it was never received.
+      # Hence, no impact on pair's state.
+      assert [%CandidatePair{state: :in_progress}] = Map.values(ice_agent.checklist)
+    end
+
+    test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+
+      {_key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
+          %ErrorCode{code: 400}
+        ])
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          resp
+        )
+
+      assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+    end
+
+    test "unauthenticated error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+
+      {_key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
+          %ErrorCode{code: 401}
+        ])
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          remote_cand.address,
+          remote_cand.port,
+          resp
+        )
+
+      assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+    end
+
+    test "response from non-symmetric address", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [local_cand] = ice_agent.local_cands
+
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+
+      {key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: local_cand.address, port: local_cand.port}
+        ])
+        |> Message.with_integrity(key)
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      {a, b, c, d} = remote_cand.address
+
+      ice_agent =
+        ICEAgent.Impl.handle_udp(
+          ice_agent,
+          local_cand.socket,
+          {a, b, c, d + 1},
+          remote_cand.port + 1,
+          resp
+        )
+
+      assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+    end
+
+    defp read_binding_request(socket, remote_pwd) do
+      [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
+      {:ok, req} = ExSTUN.Message.decode(packet)
+      {:ok, key} = ExSTUN.Message.authenticate_st(req, remote_pwd)
+      {key, req}
     end
   end
 
