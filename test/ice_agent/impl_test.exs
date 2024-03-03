@@ -502,42 +502,74 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
   end
 
-  test "gather srflx candidates" do
-    ice_agent =
-      ICEAgent.Impl.new(
-        controlling_process: self(),
-        role: :controlling,
-        transport_module: Transport.Mock,
-        if_discovery_module: IfDiscovery.Mock,
-        stun_servers: ["stun:192.168.0.3:19302"]
-      )
+  describe "gather srflx candidates" do
+    setup do
+      ice_agent =
+        ICEAgent.Impl.new(
+          controlling_process: self(),
+          role: :controlling,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.Mock,
+          stun_servers: ["stun:192.168.0.3:19302"]
+        )
+        |> ICEAgent.Impl.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.Impl.gather_candidates()
 
-    ice_agent = ICEAgent.Impl.set_remote_credentials(ice_agent, "someufrag", "somepwd")
-    ice_agent = ICEAgent.Impl.gather_candidates(ice_agent)
-    [local_cand] = ice_agent.local_cands
+      [local_cand] = ice_agent.local_cands
 
-    # assert no transactions are started until handle_timeout is called
-    assert [{_socket, nil}] = :ets.lookup(:transport_mock, local_cand.socket)
+      # assert no transactions are started until handle_timeout is called
+      assert [{_socket, nil}] = :ets.lookup(:transport_mock, local_cand.socket)
 
-    ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+      %{ice_agent: ice_agent}
+    end
 
-    assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
-    assert {:ok, req} = ExSTUN.Message.decode(packet)
+    test "success response", %{ice_agent: ice_agent} do
+      [local_cand] = ice_agent.local_cands
 
-    resp =
-      Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
-        %XORMappedAddress{address: {192, 168, 0, 2}, port: local_cand.port + 1}
-      ])
-      |> Message.encode()
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-    ice_agent =
-      ICEAgent.Impl.handle_udp(ice_agent, local_cand.socket, {192, 168, 0, 3}, 19_302, resp)
+      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
 
-    assert [srflx_cand | _cands] = ice_agent.local_cands
-    assert srflx_cand.type == :srflx
-    assert srflx_cand.address == {192, 168, 0, 2}
-    assert srflx_cand.port == local_cand.port + 1
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: {192, 168, 0, 2}, port: local_cand.port + 1}
+        ])
+        |> Message.encode()
 
-    assert ice_agent.gathering_transactions[req.transaction_id].state == :complete
+      ice_agent =
+        ICEAgent.Impl.handle_udp(ice_agent, local_cand.socket, {192, 168, 0, 3}, 19_302, resp)
+
+      # assert there is a new, srflx candidate
+      assert [srflx_cand | _cands] = ice_agent.local_cands
+      assert srflx_cand.type == :srflx
+      assert srflx_cand.address == {192, 168, 0, 2}
+      assert srflx_cand.port == local_cand.port + 1
+      # assert gathering transaction succeeded
+      assert ice_agent.gathering_transactions[req.transaction_id].state == :complete
+    end
+
+    test "error response", %{ice_agent: ice_agent} do
+      [local_cand] = ice_agent.local_cands
+
+      ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
+
+      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
+          %ErrorCode{code: 400}
+        ])
+        |> Message.encode()
+
+      ice_agent =
+        ICEAgent.Impl.handle_udp(ice_agent, local_cand.socket, {192, 168, 0, 3}, 19_302, resp)
+
+      # assert there are no new candidates
+      assert [local_cand] == ice_agent.local_cands
+      # assert gathering transaction failed
+      assert ice_agent.gathering_transactions[req.transaction_id].state == :failed
+    end
   end
 end
