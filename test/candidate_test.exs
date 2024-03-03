@@ -3,7 +3,7 @@ defmodule ExICE.CandidateTest do
 
   alias ExICE.Candidate
 
-  test "candidate's foundation is calculated correctly" do
+  test "candidate's foundation" do
     # FIXME socket shouldn't be nil
     ip = {192, 168, 1, 1}
     port = 12_345
@@ -18,7 +18,7 @@ defmodule ExICE.CandidateTest do
     assert f1 != f2
   end
 
-  test "marshal returns correct candidate string representation" do
+  test "marshal/1" do
     ip = {192, 168, 1, 1}
     port = 12_345
     expected_m_c = "936255739 1 UDP 1234 192.168.1.1 12345 typ host"
@@ -29,7 +29,7 @@ defmodule ExICE.CandidateTest do
     assert m_c == expected_m_c
   end
 
-  test "unmarshal returns correct candidate from its string representation" do
+  test "unmarshal/1" do
     ip = {192, 168, 1, 1}
     port = 12_345
     m_c = "936255739 1 UDP 1234 192.168.1.1 12345 typ host"

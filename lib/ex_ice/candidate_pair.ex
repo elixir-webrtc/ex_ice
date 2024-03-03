@@ -52,6 +52,7 @@ defmodule ExICE.CandidatePair do
     }
   end
 
+  @doc false
   @spec schedule_keepalive(t(), Process.dest()) :: t()
   def schedule_keepalive(pair, dest \\ self())
 
@@ -65,6 +66,7 @@ defmodule ExICE.CandidatePair do
     %{pair | keepalive_timer: ref}
   end
 
+  @doc false
   @spec recompute_priority(t(), ICEAgent.role()) :: t()
   def recompute_priority(pair, role) do
     %__MODULE__{pair | priority: priority(role, pair.local_cand, pair.remote_cand)}

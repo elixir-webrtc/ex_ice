@@ -19,6 +19,42 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
   end
 
+  describe "add_remote_candidate/2" do
+    setup do
+      ice_agent =
+        ICEAgent.Impl.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "with correct remote candidate", %{ice_agent: ice_agent} do
+      remote_cand = Candidate.new(:host, {192, 168, 0, 2}, 8445, nil, nil, nil)
+      ice_agent = ICEAgent.Impl.add_remote_candidate(ice_agent, Candidate.marshal(remote_cand))
+
+      assert [%Candidate{} = r_cand] = ice_agent.remote_cands
+      # override id for the purpose of comparision
+      r_cand = %Candidate{r_cand | id: remote_cand.id}
+      assert r_cand == remote_cand
+    end
+
+    test "with invalid remote candidate", %{ice_agent: ice_agent} do
+      ice_agent = ICEAgent.Impl.add_remote_candidate(ice_agent, "some invalid candidate string")
+      assert [] == ice_agent.remote_cands
+    end
+
+    test "after setting end-of-candidates", %{ice_agent: ice_agent} do
+      remote_cand = Candidate.new(:host, {192, 168, 0, 2}, 8445, nil, nil, nil)
+      ice_agent = ICEAgent.Impl.end_of_candidates(ice_agent)
+      ice_agent = ICEAgent.Impl.add_remote_candidate(ice_agent, Candidate.marshal(remote_cand))
+      assert [] == ice_agent.remote_cands
+    end
+  end
+
   describe "incoming binding request" do
     setup do
       ice_agent =

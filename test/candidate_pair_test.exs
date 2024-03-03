@@ -3,7 +3,7 @@ defmodule ExICE.CandidatePairTest do
 
   alias ExICE.{Candidate, CandidatePair}
 
-  test "CandidatePair.new/3" do
+  test "new/3" do
     addr1 = {192, 168, 1, 1}
     port1 = 12_345
     c1 = Candidate.new(:host, addr1, port1, addr1, port1, nil)
