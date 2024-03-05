@@ -127,6 +127,16 @@ defmodule ExICE.ICEAgent.Impl do
     {ice_agent.local_ufrag, ice_agent.local_pwd}
   end
 
+  @spec get_local_candidates(t()) :: [binary()]
+  def get_local_candidates(ice_agent) do
+    Enum.map(ice_agent.local_cands, &Candidate.marshal/1)
+  end
+
+  @spec get_remote_candidates(t()) :: [binary()]
+  def get_remote_candidates(ice_agent) do
+    Enum.map(ice_agent.remote_cands, &Candidate.marshal/1)
+  end
+
   @spec get_stats(t()) :: map()
   def get_stats(ice_agent) do
     %{

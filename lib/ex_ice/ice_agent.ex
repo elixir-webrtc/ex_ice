@@ -120,6 +120,22 @@ defmodule ExICE.ICEAgent do
   end
 
   @doc """
+  Gets local candidates that have been already gathered.
+  """
+  @spec get_local_candidates(pid()) :: [binary()]
+  def get_local_candidates(ice_agent) do
+    GenServer.call(ice_agent, :get_local_candidates)
+  end
+
+  @doc """
+  Gets remote candidates that have been supplied by `add_remote_candidate/2`.
+  """
+  @spec get_remote_candidates(pid()) :: [binary()]
+  def get_remote_candidates(ice_agent) do
+    GenServer.call(ice_agent, :get_remote_candidates)
+  end
+
+  @doc """
   Sets remote credentials.
 
   Call to this function is mandatory to start connectivity checks.
@@ -254,6 +270,18 @@ defmodule ExICE.ICEAgent do
   def handle_call(:get_local_credentials, _from, state) do
     {local_ufrag, local_pwd} = ICEAgent.Impl.get_local_credentials(state.ice_agent)
     {:reply, {:ok, local_ufrag, local_pwd}, state}
+  end
+
+  @impl true
+  def handle_call(:get_local_candidates, _from, state) do
+    candidates = ICEAgent.Impl.get_local_candidates(state.ice_agent)
+    {:reply, candidates, state}
+  end
+
+  @impl true
+  def handle_call(:get_remote_candidates, _from, state) do
+    candidates = ICEAgent.Impl.get_remote_candidates(state.ice_agent)
+    {:reply, candidates, state}
   end
 
   @impl true
