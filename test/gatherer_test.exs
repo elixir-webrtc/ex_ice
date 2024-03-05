@@ -1,5 +1,5 @@
 defmodule ExICE.GathererTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
 
   alias ExICE.{Candidate, Gatherer}
 

@@ -4,7 +4,7 @@ defmodule ExICE.URITest do
   alias ExICE.URI
 
   describe "URI.parse/1" do
-    test "parses valid URI correctly" do
+    test "with valid URI" do
       for {uri_string, expected_uri} <- [
             {
               "stun:stun.l.google.com:19302",
@@ -27,7 +27,7 @@ defmodule ExICE.URITest do
       end
     end
 
-    test "returns an error for invalid URI" do
+    test "with invalid URI" do
       for invalid_uri_string <- [
             "",
             "some random string",
