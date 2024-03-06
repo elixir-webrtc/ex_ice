@@ -40,7 +40,7 @@ defmodule ExICE.ICEAgent do
            gathering_state_change()
            | connection_state_change()
            | {:data, binary()}
-           | {:new_candidate, binary()}}
+           | {:new_candidate, String.t()}}
 
   @typedoc """
   ICE Agent configuration options.
@@ -120,17 +120,20 @@ defmodule ExICE.ICEAgent do
   end
 
   @doc """
-  Gets local candidates that have been already gathered.
+  Gets all local candidates that have already been gathered.
   """
-  @spec get_local_candidates(pid()) :: [binary()]
+  @spec get_local_candidates(pid()) :: [String.t()]
   def get_local_candidates(ice_agent) do
     GenServer.call(ice_agent, :get_local_candidates)
   end
 
   @doc """
-  Gets remote candidates that have been supplied by `add_remote_candidate/2`.
+  Gets all remote candidates.
+
+  This includes candidates supplied by `add_remote_candidate/2` and candidates
+  discovered during ICE connection establishment process (so called `prflx` candidates).
   """
-  @spec get_remote_candidates(pid()) :: [binary()]
+  @spec get_remote_candidates(pid()) :: [String.t()]
   def get_remote_candidates(ice_agent) do
     GenServer.call(ice_agent, :get_remote_candidates)
   end
