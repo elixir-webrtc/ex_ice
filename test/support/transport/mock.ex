@@ -6,17 +6,43 @@ defmodule ExICE.Support.Transport.Mock do
 
   @behaviour ExICE.Transport
 
-  @impl true
-  def open(port, opts) do
+  @doc """
+  Initializes mock transport.
+
+  This function creates an ets table under the hood so
+  it has to be re-called after the calling process terminates
+  or it has to be called in a long running process.
+  """
+  @spec init() :: :ok
+  def init() do
     # Use ets to store last sent packet.
     # Create ets only if it doesn't exist.
     try do
-      :ets.new(:transport_mock, [:named_table])
+      # public - any process can read or write to the table
+      :ets.new(:transport_mock, [:named_table, :public])
+      :ok
     rescue
       _ -> :ok
     end
+  end
 
-    ip = Keyword.fetch!(opts, :ip)
+  @spec recv(ExICE.Transport.socket()) :: binary() | nil
+  def recv(socket) do
+    [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
+    packet
+  end
+
+  @impl true
+  def open(port, opts) do
+    unless :transport_mock in :ets.all() do
+      raise """
+      #{__MODULE__} has not been initialized.
+      Call #{__MODULE__}.init/0 at system startup,
+      in a long running process.
+      """
+    end
+
+    ip = Keyword.get(opts, :ip, {0, 0, 0, 0})
 
     case port do
       0 ->

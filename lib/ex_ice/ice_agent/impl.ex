@@ -235,17 +235,39 @@ defmodule ExICE.ICEAgent.Impl do
   def add_remote_candidate(ice_agent, remote_cand) do
     Logger.debug("New remote candidate: #{inspect(remote_cand)}")
 
-    case Candidate.unmarshal(remote_cand) do
-      {:ok, remote_cand} ->
-        ice_agent = do_add_remote_candidate(ice_agent, remote_cand)
-        Logger.debug("Successfully added remote candidate.")
+    resolve_address = fn
+      remote_cand when is_binary(remote_cand.address) ->
+        Logger.debug("Trying to resolve addr: #{remote_cand.address}")
 
-        ice_agent
-        |> update_connection_state()
-        |> update_ta_timer()
+        case ExICE.MDNS.Resolver.gethostbyname(remote_cand.address) do
+          {:ok, addr} ->
+            Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
+            remote_cand = %Candidate{remote_cand | address: addr}
+            {:ok, remote_cand}
 
-      {:error, reason} ->
-        Logger.warning("Invalid remote candidate, reason: #{inspect(reason)}. Ignoring.")
+          {:error, reason} = err ->
+            Logger.debug("Couldn't resolve #{remote_cand.address}, reason: #{reason}")
+            err
+        end
+
+      remote_cand ->
+        {:ok, remote_cand}
+    end
+
+    with {_, {:ok, remote_cand}} <- {:unmarshal, Candidate.unmarshal(remote_cand)},
+         {_, {:ok, remote_cand}} <- {:resolve_address, resolve_address.(remote_cand)} do
+      ice_agent = do_add_remote_candidate(ice_agent, remote_cand)
+      Logger.debug("Successfully added remote candidate.")
+
+      ice_agent
+      |> update_connection_state()
+      |> update_ta_timer()
+    else
+      {operation, {:error, reason}} ->
+        Logger.warning("""
+        Invalid remote candidate. Couldn't #{operation}, reason: #{inspect(reason)}. Ignoring.
+        """)
+
         ice_agent
     end
   end

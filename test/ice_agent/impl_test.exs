@@ -95,7 +95,7 @@ defmodule ExICE.ICEAgent.ImplTest do
           raw_request
         )
 
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert packet = Transport.Mock.recv(local_cand.socket)
       assert {:ok, msg} = ExSTUN.Message.decode(packet)
       assert msg.type == %ExSTUN.Message.Type{class: :success_response, method: :binding}
       assert msg.transaction_id == request.transaction_id
@@ -315,7 +315,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     defp assert_bad_request_error_response(socket, request) do
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
+      assert packet = Transport.Mock.recv(socket)
       assert is_binary(packet)
       assert {:ok, msg} = ExSTUN.Message.decode(packet)
       assert msg.type == %ExSTUN.Message.Type{class: :error_response, method: :binding}
@@ -329,7 +329,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     defp assert_unauthenticated_error_response(socket, request) do
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
+      assert packet = Transport.Mock.recv(socket)
       assert is_binary(packet)
       assert {:ok, msg} = ExSTUN.Message.decode(packet)
       assert msg.type == %ExSTUN.Message.Type{class: :error_response, method: :binding}
@@ -343,7 +343,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     defp assert_silently_discarded(socket) do
-      assert [{_socket, nil}] = :ets.lookup(:transport_mock, socket)
+      assert nil == Transport.Mock.recv(socket)
     end
   end
 
@@ -370,7 +370,7 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert packet = Transport.Mock.recv(local_cand.socket)
       assert is_binary(packet)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
       assert :ok = ExSTUN.Message.check_fingerprint(req)
@@ -531,7 +531,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     defp read_binding_request(socket, remote_pwd) do
-      [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
+      packet = Transport.Mock.recv(socket)
       {:ok, req} = ExSTUN.Message.decode(packet)
       {:ok, key} = ExSTUN.Message.authenticate_st(req, remote_pwd)
       {key, req}
@@ -554,7 +554,7 @@ defmodule ExICE.ICEAgent.ImplTest do
       [local_cand] = ice_agent.local_cands
 
       # assert no transactions are started until handle_timeout is called
-      assert [{_socket, nil}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert nil == Transport.Mock.recv(local_cand.socket)
 
       %{ice_agent: ice_agent}
     end
@@ -564,7 +564,7 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert packet = Transport.Mock.recv(local_cand.socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
 
       resp =
@@ -590,7 +590,7 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      assert [{_socket, packet}] = :ets.lookup(:transport_mock, local_cand.socket)
+      assert packet = Transport.Mock.recv(local_cand.socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
 
       resp =
