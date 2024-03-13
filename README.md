@@ -10,6 +10,7 @@ Trickle ICE implementation.
 Implements:
 * [RFC 8445](https://datatracker.ietf.org/doc/html/rfc8445)
 * [RFC 8838](https://datatracker.ietf.org/doc/html/rfc8838)
+* [ICE mDNS](https://datatracker.ietf.org/doc/html/draft-ietf-rtcweb-mdns-ice-candidates) (client side)
 
 ## Features
 * compatible both with aggressive and regular nomination
@@ -17,6 +18,7 @@ Implements:
 * supports host, prflx, srflx and remote relay candidates (support for local relay candidates is planned)
 * transaction pacing
 * keepalives on valid and selected pairs
+* mDNS client
 
 ## Limitations
 * there is always only one stream and one component -
