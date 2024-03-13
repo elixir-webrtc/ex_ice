@@ -9,7 +9,7 @@ defmodule ExICE.Candidate do
 
   @type t() :: %__MODULE__{
           id: integer(),
-          address: :inet.ip_address(),
+          address: :inet.ip_address() | String.t(),
           base_address: :inet.ip_address() | nil,
           base_port: :inet.port_number() | nil,
           foundation: integer(),
@@ -36,7 +36,7 @@ defmodule ExICE.Candidate do
 
   @spec new(
           type(),
-          :inet.ip_address(),
+          :inet.ip_address() | String.t(),
           :inet.port_number(),
           :inet.ip_address() | nil,
           :inet.port_number() | nil,
@@ -90,7 +90,7 @@ defmodule ExICE.Candidate do
          {_component_id, ""} <- Integer.parse(c_str),
          {:ok, transport} <- parse_transport(String.downcase(tr_str)),
          {priority, ""} <- Integer.parse(pr_str),
-         {:ok, address} <- :inet.parse_address(String.to_charlist(a_str)),
+         {:ok, address} <- parse_address(a_str),
          {port, ""} <- Integer.parse(po_str),
          {:ok, type} <- parse_type(ty_str) do
       {:ok,
@@ -133,6 +133,14 @@ defmodule ExICE.Candidate do
 
   defp parse_transport("udp"), do: {:ok, :udp}
   defp parse_transport(_other), do: {:error, :invalid_transport}
+
+  defp parse_address(address) do
+    if String.ends_with?(address, ".local") do
+      {:ok, address}
+    else
+      :inet.parse_address(String.to_charlist(address))
+    end
+  end
 
   defp parse_type("host" <> _rest), do: {:ok, :host}
   defp parse_type("srflx" <> _rest), do: {:ok, :srflx}
