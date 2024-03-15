@@ -43,7 +43,7 @@ defmodule ExICE.GathererTest do
   end
 
   test "gather_srflx_candidate/4" do
-    {:ok, stun_server} = ExICE.URI.parse("stun:192.168.0.3:19302")
+    {:ok, stun_server} = ExSTUN.URI.parse("stun:192.168.0.3:19302")
 
     gatherer =
       Gatherer.new(IfDiscovery.Mock, Transport.Mock, fn

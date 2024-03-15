@@ -45,7 +45,7 @@ defmodule ExICE.Gatherer do
     end
   end
 
-  @spec gather_srflx_candidate(t(), integer(), Candidate.t(), ExICE.URI.t()) ::
+  @spec gather_srflx_candidate(t(), integer(), Candidate.t(), ExSTUN.URI.t()) ::
           :ok | {:error, term()}
   def gather_srflx_candidate(gatherer, t_id, host_candidate, stun_server) do
     binding_request =

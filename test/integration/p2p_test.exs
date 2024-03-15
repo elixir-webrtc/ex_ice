@@ -32,6 +32,9 @@ defmodule ExICE.Integration.P2PTest do
     :ok = ICEAgent.gather_candidates(agent1)
     :ok = ICEAgent.gather_candidates(agent2)
 
+    assert_receive {:ex_ice, ^agent1, {:gathering_state_change, :gathering}}
+    assert_receive {:ex_ice, ^agent2, {:gathering_state_change, :gathering}}
+
     a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
     a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
 
@@ -55,11 +58,18 @@ defmodule ExICE.Integration.P2PTest do
     a1_status = %{fd: a1_fd, completed: false, data_recv: false}
     a2_status = %{fd: a2_fd, completed: false, data_recv: false}
 
+    flush_ice_mailbox()
+
     :ok = ICEAgent.restart(agent1)
     {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
     :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
     {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
     :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    assert_receive {:ex_ice, ^agent1, {:gathering_state_change, :new}}
+    assert_receive {:ex_ice, ^agent1, {:connection_state_change, :checking}}
+    assert_receive {:ex_ice, ^agent2, {:gathering_state_change, :new}}
+    assert_receive {:ex_ice, ^agent2, {:connection_state_change, :checking}}
 
     :ok = ICEAgent.gather_candidates(agent1)
     :ok = ICEAgent.gather_candidates(agent2)
@@ -190,6 +200,14 @@ defmodule ExICE.Integration.P2PTest do
         p2p(agent1, agent2, a1_status, a2_status)
     after
       10_000 -> false
+    end
+  end
+
+  defp flush_ice_mailbox() do
+    receive do
+      {:ex_ice, _, _} -> flush_ice_mailbox()
+    after
+      0 -> :ok
     end
   end
 end

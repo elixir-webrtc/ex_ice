@@ -105,7 +105,7 @@ defmodule ExICE.ICEAgent.ImplTest do
                ExSTUN.Message.get_attribute(msg, XORMappedAddress)
 
       assert :ok == ExSTUN.Message.check_fingerprint(msg)
-      assert {:ok, _key} = ExSTUN.Message.authenticate_st(msg, ice_agent.local_pwd)
+      assert :ok == ExSTUN.Message.authenticate(msg, ice_agent.local_pwd)
     end
 
     test "without username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
@@ -373,8 +373,8 @@ defmodule ExICE.ICEAgent.ImplTest do
       assert packet = Transport.Mock.recv(local_cand.socket)
       assert is_binary(packet)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
-      assert :ok = ExSTUN.Message.check_fingerprint(req)
-      assert {:ok, _key} = ExSTUN.Message.authenticate_st(req, ice_agent.remote_pwd)
+      assert :ok == ExSTUN.Message.check_fingerprint(req)
+      assert :ok == ExSTUN.Message.authenticate(req, ice_agent.remote_pwd)
 
       assert length(req.attributes) == 5
 
@@ -392,13 +392,13 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      {key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+      req = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
 
       resp =
         Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
           %XORMappedAddress{address: local_cand.address, port: local_cand.port}
         ])
-        |> Message.with_integrity(key)
+        |> Message.with_integrity(ice_agent.remote_pwd)
         |> Message.with_fingerprint()
         |> Message.encode()
 
@@ -422,9 +422,9 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      {key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+      req = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
 
-      <<first_byte, rest::binary>> = key
+      <<first_byte, rest::binary>> = ice_agent.remote_pwd
       invalid_key = <<first_byte + 1, rest::binary>>
 
       resp =
@@ -454,7 +454,7 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      {_key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+      req = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
 
       resp =
         Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
@@ -480,7 +480,7 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      {_key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+      req = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
 
       resp =
         Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
@@ -506,13 +506,13 @@ defmodule ExICE.ICEAgent.ImplTest do
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
-      {key, req} = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
+      req = read_binding_request(local_cand.socket, ice_agent.remote_pwd)
 
       resp =
         Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
           %XORMappedAddress{address: local_cand.address, port: local_cand.port}
         ])
-        |> Message.with_integrity(key)
+        |> Message.with_integrity(ice_agent.remote_pwd)
         |> Message.with_fingerprint()
         |> Message.encode()
 
@@ -533,8 +533,8 @@ defmodule ExICE.ICEAgent.ImplTest do
     defp read_binding_request(socket, remote_pwd) do
       packet = Transport.Mock.recv(socket)
       {:ok, req} = ExSTUN.Message.decode(packet)
-      {:ok, key} = ExSTUN.Message.authenticate_st(req, remote_pwd)
-      {key, req}
+      :ok = ExSTUN.Message.authenticate(req, remote_pwd)
+      req
     end
   end
 

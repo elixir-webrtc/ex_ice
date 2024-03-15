@@ -8,7 +8,7 @@ defmodule ExICE.ConnCheckHandler.Controlling do
   alias ExICE.Attribute.UseCandidate
 
   @impl true
-  def handle_conn_check_request(ice_agent, pair, msg, %UseCandidate{}, _key) do
+  def handle_conn_check_request(ice_agent, pair, msg, %UseCandidate{}) do
     Logger.debug("""
     Received conn check request with use candidate attribute but
     we are the controlling side. Sending 400 bad request error response.
@@ -20,8 +20,13 @@ defmodule ExICE.ConnCheckHandler.Controlling do
   end
 
   @impl true
-  def handle_conn_check_request(ice_agent, pair, msg, nil, key) do
-    ICEAgent.Impl.send_binding_success_response(ice_agent.transport_module, pair, msg, key)
+  def handle_conn_check_request(ice_agent, pair, msg, nil) do
+    ICEAgent.Impl.send_binding_success_response(
+      ice_agent.transport_module,
+      pair,
+      msg,
+      ice_agent.local_pwd
+    )
 
     # TODO use triggered check queue
     case Checklist.find_pair(ice_agent.checklist, pair) do

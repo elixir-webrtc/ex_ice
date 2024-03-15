@@ -48,7 +48,6 @@ defmodule ExICE.ICEAgent.Impl do
     :role,
     :tiebreaker,
     :selected_pair,
-    :prev_selected_pair,
     :local_ufrag,
     :local_pwd,
     :remote_ufrag,
@@ -56,7 +55,6 @@ defmodule ExICE.ICEAgent.Impl do
     state: :new,
     gathering_transactions: %{},
     checklist: %{},
-    prev_valid_pairs: [],
     conn_checks: %{},
     gathering_state: :new,
     eoc: false,
@@ -289,11 +287,7 @@ defmodule ExICE.ICEAgent.Impl do
   def send_data(%__MODULE__{state: state} = ice_agent, data)
       when state in [:connected, :completed] do
     %CandidatePair{} =
-      pair =
-      ice_agent.selected_pair ||
-        Checklist.get_valid_pair(ice_agent.checklist) ||
-        ice_agent.prev_selected_pair ||
-        List.first(ice_agent.prev_valid_pairs)
+      pair = ice_agent.selected_pair || Checklist.get_valid_pair(ice_agent.checklist)
 
     dst = {pair.remote_cand.address, pair.remote_cand.port}
     bytes_sent = do_send(ice_agent.transport_module, pair.local_cand.socket, dst, data)
@@ -434,7 +428,7 @@ defmodule ExICE.ICEAgent.Impl do
           binary()
         ) :: t()
   def handle_udp(ice_agent, socket, src_ip, src_port, packet) do
-    if ExSTUN.is_stun(packet) do
+    if ExSTUN.stun?(packet) do
       case ExSTUN.Message.decode(packet) do
         {:ok, msg} ->
           handle_stun_msg(ice_agent, socket, src_ip, src_port, msg)
@@ -624,42 +618,24 @@ defmodule ExICE.ICEAgent.Impl do
   ## BINDING REQUEST HANDLING ##
   defp handle_binding_request(ice_agent, socket, src_ip, src_port, msg) do
     with :ok <- check_username(msg, ice_agent.local_ufrag),
-         {:ok, key} <- authenticate_msg(msg, ice_agent.local_pwd),
+         :ok <- authenticate_msg(msg, ice_agent.local_pwd),
          {:ok, prio_attr} <- get_prio_attribute(msg),
          {:ok, role_attr} <- get_role_attribute(msg),
          {:ok, use_cand_attr} <- get_use_cand_attribute(msg),
-         {{:ok, ice_agent}, _} <- {check_req_role_conflict(ice_agent, role_attr), key} do
-      case find_host_cand(ice_agent.local_cands, socket) do
-        nil ->
-          # keepalive on pair selected before ice restart
-          # TODO can we reach this? Won't we use incorrect local_pwd for auth?
-          Logger.debug("Keepalive on pair from previous ICE session")
+         {:ok, ice_agent} <- check_req_role_conflict(ice_agent, role_attr) do
+      %Candidate{} = local_cand = find_host_cand(ice_agent.local_cands, socket)
 
-          send_binding_success_response(
-            ice_agent.transport_module,
-            socket,
-            src_ip,
-            src_port,
-            msg,
-            key
-          )
+      {remote_cand, ice_agent} =
+        get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr)
 
-          ice_agent
+      pair = CandidatePair.new(local_cand, remote_cand, ice_agent.role, :waiting)
 
-        %Candidate{} = local_cand ->
-          {remote_cand, ice_agent} =
-            get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr)
-
-          pair = CandidatePair.new(local_cand, remote_cand, ice_agent.role, :waiting)
-
-          @conn_check_handler[ice_agent.role].handle_conn_check_request(
-            ice_agent,
-            pair,
-            msg,
-            use_cand_attr,
-            key
-          )
-      end
+      @conn_check_handler[ice_agent.role].handle_conn_check_request(
+        ice_agent,
+        pair,
+        msg,
+        use_cand_attr
+      )
     else
       {:error, reason}
       when reason in [
@@ -697,7 +673,7 @@ defmodule ExICE.ICEAgent.Impl do
 
         ice_agent
 
-      {{:error, :role_conflict, tiebreaker}, key} ->
+      {:error, :role_conflict, tiebreaker} ->
         Logger.debug("""
         Role conflict. We retain our role which is: #{ice_agent.role}. Sending error response.
         Our tiebreaker: #{ice_agent.tiebreaker}
@@ -710,7 +686,7 @@ defmodule ExICE.ICEAgent.Impl do
           src_ip,
           src_port,
           msg,
-          key
+          ice_agent.local_pwd
         )
 
         ice_agent
@@ -848,7 +824,7 @@ defmodule ExICE.ICEAgent.Impl do
   end
 
   defp handle_conn_check_success_response(ice_agent, conn_check_pair, msg) do
-    with {:ok, _key} <- authenticate_msg(msg, ice_agent.remote_pwd),
+    with :ok <- authenticate_msg(msg, ice_agent.remote_pwd),
          {:ok, xor_addr} <- Message.get_attribute(msg, XORMappedAddress) do
       {local_cand, ice_agent} = get_or_create_local_cand(ice_agent, xor_addr, conn_check_pair)
       remote_cand = conn_check_pair.remote_cand
@@ -907,7 +883,7 @@ defmodule ExICE.ICEAgent.Impl do
 
   defp handle_role_confilct_error_response(ice_agent, conn_check_pair, msg) do
     case authenticate_msg(msg, ice_agent.remote_pwd) do
-      {:ok, _key} ->
+      :ok ->
         new_role = if ice_agent.role == :controlling, do: :controlled, else: :controlling
 
         Logger.debug("""
@@ -1265,7 +1241,9 @@ defmodule ExICE.ICEAgent.Impl do
         )
 
       Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
+
       ice_agent = %__MODULE__{ice_agent | local_cands: [cand | ice_agent.local_cands]}
+
       {cand, ice_agent}
     end
   end
@@ -1357,41 +1335,20 @@ defmodule ExICE.ICEAgent.Impl do
   end
 
   defp do_restart(ice_agent) do
-    valid_pairs = ice_agent.checklist |> Map.values() |> Enum.filter(fn pair -> pair.valid? end)
-    valid_sockets = Enum.map(valid_pairs, fn p -> p.local_cand.socket end)
-
-    {prev_selected_pair, prev_valid_pairs} =
-      if valid_pairs == [] do
-        {ice_agent.prev_selected_pair, ice_agent.prev_valid_pairs}
-      else
-        # TODO cleanup prev pairs
-        {ice_agent.selected_pair, valid_pairs}
-      end
-
     ice_agent.local_cands
     |> Enum.uniq_by(fn c -> c.socket end)
     |> Enum.each(fn c ->
-      if c.socket not in valid_sockets do
-        Logger.debug(
-          "Closing local candidate's socket: #{inspect(c.base_address)}:#{c.base_port}"
-        )
-
-        :ok = ice_agent.transport_module.close(c.socket)
-      end
+      Logger.debug("Closing local candidate's socket: #{inspect(c.base_address)}:#{c.base_port}")
+      :ok = ice_agent.transport_module.close(c.socket)
     end)
 
     {ufrag, pwd} = generate_credentials()
 
-    new_ice_state =
-      cond do
-        ice_agent.state in [:disconnected, :failed] -> :checking
-        ice_agent.state == :completed -> :connected
-        true -> ice_agent.state
-      end
+    new_ice_state = :checking
 
     ice_agent =
       if new_ice_state != ice_agent.state do
-        change_connection_state(ice_agent, new_ice_state)
+        change_connection_state(ice_agent, :checking)
       else
         ice_agent
       end
@@ -1405,8 +1362,6 @@ defmodule ExICE.ICEAgent.Impl do
         gathering_state: :new,
         gathering_transactions: %{},
         selected_pair: nil,
-        prev_selected_pair: prev_selected_pair,
-        prev_valid_pairs: prev_valid_pairs,
         conn_checks: %{},
         checklist: %{},
         local_cands: [],
@@ -1433,7 +1388,7 @@ defmodule ExICE.ICEAgent.Impl do
   defp parse_stun_servers(stun_servers) do
     stun_servers
     |> Enum.map(fn stun_server ->
-      case ExICE.URI.parse(stun_server) do
+      case ExSTUN.URI.parse(stun_server) do
         {:ok, stun_server} ->
           stun_server
 
@@ -1462,9 +1417,9 @@ defmodule ExICE.ICEAgent.Impl do
   end
 
   defp authenticate_msg(msg, local_pwd) do
-    with {:ok, key} <- Message.authenticate_st(msg, local_pwd),
+    with :ok <- Message.authenticate(msg, local_pwd),
          :ok <- Message.check_fingerprint(msg) do
-      {:ok, key}
+      :ok
     else
       {:error, _reason} = err -> err
     end

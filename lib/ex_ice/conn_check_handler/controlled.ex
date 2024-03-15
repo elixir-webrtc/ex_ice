@@ -9,8 +9,13 @@ defmodule ExICE.ConnCheckHandler.Controlled do
   alias ExICE.Attribute.UseCandidate
 
   @impl true
-  def handle_conn_check_request(ice_agent, pair, msg, nil, key) do
-    ICEAgent.Impl.send_binding_success_response(ice_agent.transport_module, pair, msg, key)
+  def handle_conn_check_request(ice_agent, pair, msg, nil) do
+    ICEAgent.Impl.send_binding_success_response(
+      ice_agent.transport_module,
+      pair,
+      msg,
+      ice_agent.local_pwd
+    )
 
     # TODO use triggered check queue
     case Checklist.find_pair(ice_agent.checklist, pair) do
@@ -33,8 +38,13 @@ defmodule ExICE.ConnCheckHandler.Controlled do
   end
 
   @impl true
-  def handle_conn_check_request(ice_agent, pair, msg, %UseCandidate{}, key) do
-    ICEAgent.Impl.send_binding_success_response(ice_agent.transport_module, pair, msg, key)
+  def handle_conn_check_request(ice_agent, pair, msg, %UseCandidate{}) do
+    ICEAgent.Impl.send_binding_success_response(
+      ice_agent.transport_module,
+      pair,
+      msg,
+      ice_agent.local_pwd
+    )
 
     # TODO use triggered check queue
     case Checklist.find_pair(ice_agent.checklist, pair) do
