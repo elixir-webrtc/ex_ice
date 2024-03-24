@@ -239,7 +239,7 @@ defmodule ExICE.ICEAgent.Impl do
         case ExICE.MDNS.Resolver.gethostbyname(remote_cand.address) do
           {:ok, addr} ->
             Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
-            remote_cand = %Candidate{remote_cand | address: addr}
+            remote_cand = %{remote_cand | address: addr}
             {:ok, remote_cand}
 
           {:error, reason} = err ->
@@ -449,6 +449,9 @@ defmodule ExICE.ICEAgent.Impl do
         Candidate: #{inspect(local_cand)}.
         Closing candidate.
         """)
+
+        local_cands = Map.put(ice_agent.local_cands, local_cand.id, local_cand)
+        ice_agent = %{ice_agent | local_cands: local_cands}
 
         close_candidate(ice_agent, local_cand)
     end
