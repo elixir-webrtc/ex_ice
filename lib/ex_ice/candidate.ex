@@ -131,6 +131,12 @@ defmodule ExICE.Candidate do
     2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
   end
 
+  @spec receive_data(t(), :inet.ip_address(), :inet.port_number(), binary()) ::
+          {:ok, t()} | {:ok, binary(), t()} | {:error, term(), t()}
+  def receive_data(cand, _src_ip, _src_port, data) do
+    {:ok, data, cand}
+  end
+
   defp parse_transport("udp"), do: {:ok, :udp}
   defp parse_transport(_other), do: {:error, :invalid_transport}
 

@@ -89,6 +89,13 @@ defmodule ExICE.Checklist do
     Map.new(waiting ++ in_flight_or_done)
   end
 
+  @spec prune(t(), Candidate.t()) :: t()
+  def prune(checklist, local_cand) do
+    checklist
+    |> Enum.reject(fn {_pair_id, pair} -> pair.local_cand.id == local_cand.id end)
+    |> Map.new()
+  end
+
   @spec timeout_pairs(t(), [integer()]) :: t()
   def timeout_pairs(checklist, ids) do
     for {_id, pair} <- checklist, into: %{} do

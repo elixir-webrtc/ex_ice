@@ -73,7 +73,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "with correct attributes", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -109,7 +109,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "without username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -134,7 +134,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "without message-integrity", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -159,7 +159,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "without fingerprint", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -184,7 +184,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "without role", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -209,7 +209,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "without priority", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -234,7 +234,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "with non-matching username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -260,7 +260,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "with non-matching fingerprint", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -289,7 +289,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "with non-matching message integrity", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -366,7 +366,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "request", %{ice_agent: ice_agent} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -388,7 +388,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "success response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -418,7 +418,7 @@ defmodule ExICE.ICEAgent.ImplTest do
       ice_agent: ice_agent,
       remote_cand: remote_cand
     } do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -450,7 +450,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -476,7 +476,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "unauthenticated error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -502,7 +502,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "response from non-symmetric address", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -551,7 +551,7 @@ defmodule ExICE.ICEAgent.ImplTest do
         |> ICEAgent.Impl.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.Impl.gather_candidates()
 
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       # assert no transactions are started until handle_timeout is called
       assert nil == Transport.Mock.recv(local_cand.socket)
@@ -560,7 +560,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "success response", %{ice_agent: ice_agent} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -577,8 +577,12 @@ defmodule ExICE.ICEAgent.ImplTest do
         ICEAgent.Impl.handle_udp(ice_agent, local_cand.socket, {192, 168, 0, 3}, 19_302, resp)
 
       # assert there is a new, srflx candidate
-      assert [srflx_cand | _cands] = ice_agent.local_cands
-      assert srflx_cand.type == :srflx
+      assert %Candidate{} =
+               srflx_cand =
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.type == :srflx))
+
       assert srflx_cand.address == {192, 168, 0, 2}
       assert srflx_cand.port == local_cand.port + 1
       # assert gathering transaction succeeded
@@ -586,7 +590,7 @@ defmodule ExICE.ICEAgent.ImplTest do
     end
 
     test "error response", %{ice_agent: ice_agent} do
-      [local_cand] = ice_agent.local_cands
+      [local_cand] = Map.values(ice_agent.local_cands)
 
       ice_agent = ICEAgent.Impl.handle_timeout(ice_agent)
 
@@ -603,7 +607,7 @@ defmodule ExICE.ICEAgent.ImplTest do
         ICEAgent.Impl.handle_udp(ice_agent, local_cand.socket, {192, 168, 0, 3}, 19_302, resp)
 
       # assert there are no new candidates
-      assert [local_cand] == ice_agent.local_cands
+      assert [local_cand] == Map.values(ice_agent.local_cands)
       # assert gathering transaction failed
       assert ice_agent.gathering_transactions[req.transaction_id].state == :failed
     end
