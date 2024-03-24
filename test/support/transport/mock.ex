@@ -4,7 +4,7 @@ defmodule ExICE.Support.Transport.Mock do
   # Simple ExICE.Transport mock that saves last sent packet
   # in `:transport_mock` ets table under `socket` key.
 
-  @behaviour ExICE.Transport
+  @behaviour ExICE.Priv.Transport
 
   @doc """
   Initializes mock transport.
