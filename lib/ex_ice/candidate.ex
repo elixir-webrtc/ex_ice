@@ -3,65 +3,30 @@ defmodule ExICE.Candidate do
   ICE candidate representation.
   """
 
-  alias ExICE.Utils
-
   @type type() :: :host | :srflx | :prflx | :relay
 
   @type t() :: %__MODULE__{
           id: integer(),
+          type: type(),
           address: :inet.ip_address() | String.t(),
           base_address: :inet.ip_address() | nil,
           base_port: :inet.port_number() | nil,
           foundation: integer(),
           port: :inet.port_number(),
           priority: integer(),
-          transport: :udp,
-          socket: :inet.socket() | nil,
-          type: type()
+          transport: :udp | :tcp
         }
 
-  @derive {Inspect, except: [:socket]}
-  defstruct [
+  @enforce_keys [
     :id,
+    :type,
     :address,
-    :base_address,
-    :base_port,
-    :foundation,
     :port,
+    :foundation,
     :priority,
-    :transport,
-    :socket,
-    :type
+    :transport
   ]
-
-  @spec new(
-          type(),
-          :inet.ip_address() | String.t(),
-          :inet.port_number(),
-          :inet.ip_address() | nil,
-          :inet.port_number() | nil,
-          :inet.socket() | nil,
-          priority: integer()
-        ) :: t()
-  def new(type, address, port, base_address, base_port, socket, opts \\ [])
-      when type in [:host, :srflx, :prflx, :relay] do
-    transport = :udp
-
-    priority = opts[:priority] || priority(type)
-
-    %__MODULE__{
-      id: Utils.id(),
-      address: address,
-      base_address: base_address,
-      base_port: base_port,
-      foundation: foundation(type, address, nil, transport),
-      port: port,
-      priority: priority,
-      transport: transport,
-      socket: socket,
-      type: type
-    }
-  end
+  defstruct @enforce_keys ++ [:base_address, :base_port]
 
   @spec marshal(t()) :: String.t()
   def marshal(cand) do
@@ -94,15 +59,14 @@ defmodule ExICE.Candidate do
          {port, ""} <- Integer.parse(po_str),
          {:ok, type} <- parse_type(ty_str) do
       {:ok,
-       %__MODULE__{
-         id: Utils.id(),
+       new(
+         type,
          address: address,
-         foundation: foundation,
          port: port,
          priority: priority,
-         transport: transport,
-         type: type
-       }}
+         foundation: foundation,
+         transport: transport
+       )}
     else
       err when is_list(err) -> {:error, :invalid_candidate}
       err -> err
@@ -113,23 +77,29 @@ defmodule ExICE.Candidate do
   def family(%__MODULE__{address: {_, _, _, _}}), do: :ipv4
   def family(%__MODULE__{address: {_, _, _, _, _, _, _, _}}), do: :ipv6
 
-  @spec priority(type()) :: integer()
-  def priority(type) do
-    type_preference =
-      case type do
-        :host -> 126
-        :prflx -> 110
-        :srflx -> 100
-        :relay -> 0
-      end
+  @doc false
+  @spec new(type(), Keyword.t()) :: t()
+  def new(type, config) when type in [:host, :srflx, :prflx, :relay] do
+    transport = Keyword.get(config, :transport, :udp)
 
-    # That's not fully correct as according to RFC 8445 sec. 5.1.2.1 we should:
-    # * use value of 65535 when there is only one IP address
-    # * use different values when there are multiple IP addresses
-    local_preference = 65_535
+    priority = config[:priority] || ExICE.Priv.Candidate.priority(type)
+    address = Keyword.fetch!(config, :address)
 
-    2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
+    %__MODULE__{
+      id: ExICE.Priv.Utils.id(),
+      address: address,
+      base_address: config[:base_address],
+      base_port: config[:base_port],
+      foundation: ExICE.Priv.Candidate.foundation(type, address, nil, transport),
+      port: Keyword.fetch!(config, :port),
+      priority: priority,
+      transport: transport,
+      type: type
+    }
   end
+
+  defp address_to_string(address), do: :inet.ntoa(address)
+  defp transport_to_string(:udp), do: "UDP"
 
   defp parse_transport("udp"), do: {:ok, :udp}
   defp parse_transport(_other), do: {:error, :invalid_transport}
@@ -147,13 +117,4 @@ defmodule ExICE.Candidate do
   defp parse_type("prflx" <> _rest), do: {:ok, :prflx}
   defp parse_type("relay" <> _rest), do: {:ok, :relay}
   defp parse_type(_other), do: {:error, :invalid_type}
-
-  defp foundation(type, ip, stun_turn_ip, transport) do
-    {type, ip, stun_turn_ip, transport}
-    |> then(&inspect(&1))
-    |> then(&:erlang.crc32(&1))
-  end
-
-  defp address_to_string(address), do: :inet.ntoa(address)
-  defp transport_to_string(:udp), do: "UDP"
 end
