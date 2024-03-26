@@ -11,8 +11,7 @@ defmodule ExICE.ConnCheckHandler do
               ice_agent :: ICEAgent.Impl.t(),
               pair :: CandidatePair.t(),
               request :: ExSTUN.Message.t(),
-              use_cand_attr :: UseCandidate.t(),
-              key :: binary()
+              use_cand_attr :: UseCandidate.t()
             ) :: ICEAgent.Impl.t()
 
   @doc """

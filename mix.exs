@@ -50,7 +50,8 @@ defmodule ExICE.MixProject do
 
   defp deps do
     [
-      {:ex_stun, "~> 0.1.0"},
+      # {:ex_stun, "~> 0.1.0"},
+      {:ex_stun, github: "elixir-webrtc/ex_stun"},
       {:excoveralls, "~> 0.15", only: :test, runtime: false},
       {:ex_doc, "~> 0.27", only: :dev, runtime: false},
       {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
