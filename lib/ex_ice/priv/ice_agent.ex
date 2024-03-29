@@ -1518,6 +1518,13 @@ defmodule ExICE.Priv.ICEAgent do
 
         change_connection_state(ice_agent, :failed)
 
+      ice_agent.gathering_state == :complete and ice_agent.local_cands == %{} ->
+        Logger.debug("""
+        There are no local candidates and there won't be any new ones. Changning connection state to failed.
+        """)
+
+        change_connection_state(ice_agent, :failed)
+
       true ->
         ice_agent
     end
@@ -1565,21 +1572,17 @@ defmodule ExICE.Priv.ICEAgent do
 
         change_connection_state(ice_agent, :failed)
 
-      Checklist.get_valid_pair(ice_agent.checklist) == nil and ice_agent.local_cands == %{} ->
+      Checklist.get_valid_pair(ice_agent.checklist) == nil and ice_agent.local_cands == %{} and
+          ice_agent.gathering_state == :complete ->
         Logger.debug("""
-        No valid pairs in state connected and no local candidates.
-        Looks like we lost local candidate.
+        No valid pairs in state connected, no local candidates and gathering state is complete.
         Changing connection state to failed.
         """)
 
-      # TODO
+        change_connection_state(ice_agent, :failed)
 
       Checklist.get_valid_pair(ice_agent.checklist) == nil ->
-        Logger.debug("""
-        No valid pairs in state connected. Looks like we lost a valid pair.
-        Changing connection state to checking.
-        """)
-
+        Logger.debug("No valid pairs in state connected. Changing connection state to checking.")
         change_connection_state(ice_agent, :checking)
 
       true ->

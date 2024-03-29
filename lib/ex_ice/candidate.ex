@@ -98,6 +98,7 @@ defmodule ExICE.Candidate do
     }
   end
 
+  defp address_to_string(address) when is_binary(address), do: address
   defp address_to_string(address), do: :inet.ntoa(address)
   defp transport_to_string(:udp), do: "UDP"
 
