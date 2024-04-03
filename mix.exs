@@ -34,7 +34,7 @@ defmodule ExICE.MixProject do
   def application do
     [
       extra_applications: [:logger],
-      mod: {ExICE.App, []}
+      mod: {ExICE.Priv.App, []}
     ]
   end
 
