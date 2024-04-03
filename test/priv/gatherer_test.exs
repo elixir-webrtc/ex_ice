@@ -34,8 +34,10 @@ defmodule ExICE.Priv.GathererTest do
         _ -> true
       end)
 
+    assert {:ok, sockets} = Gatherer.open_sockets(gatherer)
+
     # there should only be one candidate
-    assert {:ok, [%Candidate.Host{} = c]} = Gatherer.gather_host_candidates(gatherer)
+    assert [%Candidate.Host{} = c] = Gatherer.gather_host_candidates(gatherer, sockets)
     assert c.base.address == {192, 168, 0, 1}
     assert c.base.base_address == {192, 168, 0, 1}
     assert c.base.port == c.base.base_port
@@ -51,9 +53,11 @@ defmodule ExICE.Priv.GathererTest do
         _ -> true
       end)
 
-    {:ok, [%Candidate.Host{} = c]} = Gatherer.gather_host_candidates(gatherer)
+    {:ok, sockets} = Gatherer.open_sockets(gatherer)
 
-    assert :ok = Gatherer.gather_srflx_candidate(gatherer, 1234, c, stun_server)
+    [%Candidate.Host{} = c] = Gatherer.gather_host_candidates(gatherer, sockets)
+
+    assert :ok = Gatherer.gather_srflx_candidate(gatherer, 1234, c.base.socket, stun_server)
     assert [{_socket, packet}] = :ets.lookup(:transport_mock, c.base.socket)
     assert {:ok, req} = ExSTUN.Message.decode(packet)
     assert req.attributes == []

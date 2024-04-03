@@ -100,7 +100,7 @@ defmodule Peer do
           {_, _, _, _} -> true
           {_, _, _, _, _, _, _, _} -> false
         end,
-        stun_servers: ["stun:stun.l.google.com:19302"]
+        ice_servers: [%ICEServer{url: "stun:stun.l.google.com:19302"}]
       )
 
     {:ok, ufrag, passwd} = ICEAgent.get_local_credentials(pid)

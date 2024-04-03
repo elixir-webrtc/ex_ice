@@ -11,11 +11,11 @@ defmodule ExICE.Priv.CandidatePair do
 
   @type t() :: %__MODULE__{
           id: integer(),
-          local_cand: Candidate.t(),
+          local_cand_id: Candidate.id(),
           nominate?: boolean(),
           nominated?: boolean(),
           priority: non_neg_integer(),
-          remote_cand: Candidate.t(),
+          remote_cand_id: Candidate.id(),
           state: state(),
           valid?: boolean,
           succeeded_pair_id: integer() | nil,
@@ -23,7 +23,7 @@ defmodule ExICE.Priv.CandidatePair do
           keepalive_timer: reference() | nil
         }
 
-  @enforce_keys [:id, :local_cand, :remote_cand, :priority]
+  @enforce_keys [:id, :local_cand_id, :remote_cand_id, :priority]
   defstruct @enforce_keys ++
               [
                 nominate?: false,
@@ -39,12 +39,12 @@ defmodule ExICE.Priv.CandidatePair do
   @spec new(Candidate.t(), Candidate.t(), ExICE.ICEAgent.role(), state(), valid?: boolean()) ::
           t()
   def new(local_cand, remote_cand, agent_role, state, opts \\ []) do
-    priority = priority(agent_role, local_cand, remote_cand)
+    priority = priority(agent_role, local_cand.base.priority, remote_cand.priority)
 
     %__MODULE__{
       id: Utils.id(),
-      local_cand: local_cand,
-      remote_cand: remote_cand,
+      local_cand_id: local_cand.base.id,
+      remote_cand_id: remote_cand.id,
       priority: priority,
       state: state,
       valid?: opts[:valid?] || false
@@ -66,19 +66,19 @@ defmodule ExICE.Priv.CandidatePair do
   end
 
   @doc false
-  @spec recompute_priority(t(), ExICE.ICEAgent.role()) :: t()
-  def recompute_priority(pair, role) do
-    %__MODULE__{pair | priority: priority(role, pair.local_cand, pair.remote_cand)}
+  @spec recompute_priority(t(), integer(), integer(), ExICE.ICEAgent.role()) :: t()
+  def recompute_priority(pair, local_cand_prio, remote_cand_prio, role) do
+    %__MODULE__{pair | priority: priority(role, local_cand_prio, remote_cand_prio)}
   end
 
   @doc false
-  @spec priority(ExICE.ICEAgent.role(), Candidate.t(), ExICE.Candidate.t()) :: non_neg_integer()
-  def priority(:controlling, local_cand, remote_cand) do
-    do_priority(local_cand.base.priority, remote_cand.priority)
+  @spec priority(ExICE.ICEAgent.role(), integer(), integer()) :: non_neg_integer()
+  def priority(:controlling, local_cand_prio, remote_cand_prio) do
+    do_priority(local_cand_prio, remote_cand_prio)
   end
 
-  def priority(:controlled, local_cand, remote_cand) do
-    do_priority(remote_cand.priority, local_cand.base.priority)
+  def priority(:controlled, local_cand_prio, remote_cand_prio) do
+    do_priority(remote_cand_prio, local_cand_prio)
   end
 
   defp do_priority(g, d) do
@@ -89,15 +89,12 @@ defmodule ExICE.Priv.CandidatePair do
   @doc false
   @spec to_candidate_pair(t()) :: ExICE.CandidatePair.t()
   def to_candidate_pair(pair) do
-    %cand_mod{} = cand = pair.local_cand
-    local_cand = cand_mod.to_candidate(cand)
-
     %ExICE.CandidatePair{
       id: pair.id,
-      local_cand: local_cand,
+      local_cand_id: pair.local_cand_id,
       nominated?: pair.nominated?,
       priority: pair.priority,
-      remote_cand: pair.remote_cand,
+      remote_cand_id: pair.remote_cand_id,
       state: pair.state,
       valid?: pair.valid?
     }

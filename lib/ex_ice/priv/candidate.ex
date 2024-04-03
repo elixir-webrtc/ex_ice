@@ -27,9 +27,6 @@ defmodule ExICE.Priv.Candidate do
   @callback send_data(t(), :inet.ip_address(), :inet.port_number(), binary()) ::
               {:ok, t()} | {:error, term(), t()}
 
-  @callback receive_data(t(), :inet.ip_address(), :inet.port_number(), binary()) ::
-              {:ok, t()} | {:ok, binary(), t()} | {:error, term(), t()}
-
   @spec priority(type()) :: integer()
   def priority(type) do
     type_preference =
