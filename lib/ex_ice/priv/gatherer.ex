@@ -1,7 +1,7 @@
 defmodule ExICE.Priv.Gatherer do
   @moduledoc false
 
-  alias ExICE.Priv.{Candidate, Utils}
+  alias ExICE.Priv.{Candidate, Transport, Utils}
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
 
@@ -27,8 +27,8 @@ defmodule ExICE.Priv.Gatherer do
     }
   end
 
-  @spec gather_host_candidates(t()) :: {:ok, [Candidate.t()]} | {:error, term()}
-  def gather_host_candidates(gatherer) do
+  @spec open_sockets(t()) :: {:ok, [term()]}
+  def open_sockets(gatherer) do
     with {:ok, ints} <- gatherer.if_discovery_module.getifaddrs() do
       ips =
         ints
@@ -39,15 +39,44 @@ defmodule ExICE.Priv.Gatherer do
         |> Enum.to_list()
 
       ips
-      |> Enum.map(&create_new_host_candidate(gatherer, &1))
+      |> Enum.map(&open_socket(gatherer, &1))
       |> Enum.reject(&(&1 == nil))
       |> then(&{:ok, &1})
     end
   end
 
-  @spec gather_srflx_candidate(t(), integer(), Candidate.t(), ExSTUN.URI.t()) ::
+  defp open_socket(gatherer, ip) do
+    inet =
+      case ip do
+        {_, _, _, _} -> :inet
+        {_, _, _, _, _, _, _, _} -> :inet6
+      end
+
+    case gatherer.transport_module.open(0, [
+           {:inet_backend, :socket},
+           {:ip, ip},
+           {:active, true},
+           :binary,
+           inet
+         ]) do
+      {:ok, socket} ->
+        socket
+
+      {:error, reason} ->
+        Logger.debug("Couldn't open socket for ip: #{inspect(ip)}. Reason: #{inspect(reason)}.")
+
+        nil
+    end
+  end
+
+  @spec gather_host_candidates(t(), [Transport.socket()]) :: [Candidate.t()]
+  def gather_host_candidates(gatherer, sockets) do
+    Enum.map(sockets, &create_new_host_candidate(gatherer, &1))
+  end
+
+  @spec gather_srflx_candidate(t(), integer(), Transport.socket(), ExSTUN.URI.t()) ::
           :ok | {:error, term()}
-  def gather_srflx_candidate(gatherer, t_id, host_candidate, stun_server) do
+  def gather_srflx_candidate(gatherer, t_id, socket, stun_server) do
     binding_request =
       Message.new(t_id, %Type{class: :request, method: :binding}, [])
       |> Message.encode()
@@ -62,17 +91,19 @@ defmodule ExICE.Priv.Gatherer do
         ip = List.first(ips)
         port = stun_server.port
 
-        cand_family = Utils.family(host_candidate.base.base_address)
+        {:ok, {sock_ip, _sock_port}} = gatherer.transport_module.sockname(socket)
+
+        cand_family = Utils.family(sock_ip)
         stun_family = Utils.family(ip)
 
         if cand_family == stun_family do
-          gatherer.transport_module.send(host_candidate.base.socket, {ip, port}, binding_request)
+          gatherer.transport_module.send(socket, {ip, port}, binding_request)
         else
           Logger.debug("""
           Not gathering srflx candidate becasue of incompatible ip address families.
-          Candidate family: #{inspect(cand_family)}
+          Socket family: #{inspect(cand_family)}
           STUN server family: #{inspect(stun_family)}
-          Candidate: #{inspect(host_candidate)}
+          Socket: #{inspect(sock_ip)}
           STUN server: #{inspect(stun_server)}
           """)
         end
@@ -107,42 +138,21 @@ defmodule ExICE.Priv.Gatherer do
     Keyword.get_values(int, :addr)
   end
 
-  defp create_new_host_candidate(gatherer, ip) do
-    inet =
-      case ip do
-        {_, _, _, _} -> :inet
-        {_, _, _, _, _, _, _, _} -> :inet6
-      end
+  defp create_new_host_candidate(gatherer, socket) do
+    {:ok, {sock_ip, sock_port}} = gatherer.transport_module.sockname(socket)
 
-    with {:ok, socket} <-
-           gatherer.transport_module.open(0, [
-             {:inet_backend, :socket},
-             {:ip, ip},
-             {:active, true},
-             :binary,
-             inet
-           ]),
-         {:ok, {_ip, port}} <- gatherer.transport_module.sockname(socket) do
-      c =
-        Candidate.Host.new(
-          address: ip,
-          port: port,
-          base_address: ip,
-          base_port: port,
-          transport_module: gatherer.transport_module,
-          socket: socket
-        )
+    cand =
+      Candidate.Host.new(
+        address: sock_ip,
+        port: sock_port,
+        base_address: sock_ip,
+        base_port: sock_port,
+        transport_module: gatherer.transport_module,
+        socket: socket
+      )
 
-      Logger.debug("New candidate: #{inspect(c)}")
+    Logger.debug("New candidate: #{inspect(cand)}")
 
-      c
-    else
-      {:error, reason} ->
-        Logger.debug(
-          "Couldn't create candidate for ip: #{inspect(ip)}. Reason: #{inspect(reason)}."
-        )
-
-        nil
-    end
+    cand
   end
 end

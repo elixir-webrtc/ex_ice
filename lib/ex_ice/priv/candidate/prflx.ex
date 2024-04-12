@@ -30,9 +30,4 @@ defmodule ExICE.Priv.Candidate.Prflx do
       {:error, reason} -> {:error, reason, cand}
     end
   end
-
-  @impl true
-  def receive_data(cand, _src_ip, _src_port, data) do
-    {:ok, data, cand}
-  end
 end

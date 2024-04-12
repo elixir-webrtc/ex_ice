@@ -48,7 +48,10 @@ defmodule ExICE.ICEAgent do
   This behavior can be overwritten using the following options.
 
   * `ip_filter` - filter applied when gathering local candidates
-  * `stun_servers` - list of STUN servers
+  * `ice_servers` - list of STUN/TURN servers
+  * `ice_transport_policy` - candidate types to be used.
+    * `all` - all ICE candidates will be considered (default).
+    * `relay` - only relay candidates will be considered.
   * `on_gathering_state_change` - where to send gathering state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_connection_state_change` - where to send connection state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.
@@ -59,7 +62,14 @@ defmodule ExICE.ICEAgent do
   """
   @type opts() :: [
           ip_filter: (:inet.ip_address() -> boolean),
-          stun_servers: [String.t()],
+          ice_servers: [
+            %{
+              :url => String.t(),
+              optional(:username) => String.t(),
+              optional(:credential) => String.t()
+            }
+          ],
+          ice_transport_policy: :all | :relay,
           on_gathering_state_change: pid() | nil,
           on_connection_state_change: pid() | nil,
           on_data: pid() | nil,
@@ -344,6 +354,12 @@ defmodule ExICE.ICEAgent do
   @impl true
   def handle_info({:udp, socket, src_ip, src_port, packet}, state) do
     ice_agent = ExICE.Priv.ICEAgent.handle_udp(state.ice_agent, socket, src_ip, src_port, packet)
+    {:noreply, %{state | ice_agent: ice_agent}}
+  end
+
+  @impl true
+  def handle_info({:ex_turn, ref, msg}, state) do
+    ice_agent = ExICE.Priv.ICEAgent.handle_ex_turn_msg(state.ice_agent, ref, msg)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 

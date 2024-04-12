@@ -31,20 +31,14 @@ defmodule ExICE.Priv.Checklist do
 
   @spec find_pair(t(), CandidatePair.t()) :: CandidatePair.t() | nil
   def find_pair(checklist, pair) do
-    find_pair(checklist, pair.local_cand, pair.remote_cand)
+    find_pair(checklist, pair.local_cand_id, pair.remote_cand_id)
   end
 
-  @spec find_pair(t(), Candidate.t(), Candidate.t()) :: CandidatePair.t() | nil
-  def find_pair(checklist, local_cand, remote_cand) do
-    # TODO which pairs are actually the same?
+  @spec find_pair(t(), integer(), integer()) :: CandidatePair.t() | nil
+  def find_pair(checklist, local_cand_id, remote_cand_id) do
     checklist
     |> Enum.find({nil, nil}, fn {_id, p} ->
-      p.local_cand.base.base_address == local_cand.base.base_address and
-        p.local_cand.base.base_port == local_cand.base.base_port and
-        p.local_cand.base.address == local_cand.base.address and
-        p.local_cand.base.port == local_cand.base.port and
-        p.remote_cand.address == remote_cand.address and
-        p.remote_cand.port == remote_cand.port
+      p.local_cand_id == local_cand_id and p.remote_cand_id == remote_cand_id
     end)
     |> elem(1)
   end
@@ -64,13 +58,6 @@ defmodule ExICE.Priv.Checklist do
     not (waiting?(checklist) or in_progress?(checklist))
   end
 
-  @spec get_foundations(t()) :: [{integer(), integer()}]
-  def get_foundations(checklist) do
-    for {_id, pair} <- checklist do
-      {pair.local_cand.base.foundation, pair.remote_cand.foundation}
-    end
-  end
-
   @spec prune(t()) :: t()
   def prune(checklist) do
     # This is done according to RFC 8838 sec. 10
@@ -80,9 +67,12 @@ defmodule ExICE.Priv.Checklist do
     waiting =
       waiting
       |> Enum.sort_by(fn {_id, p} -> p.priority end, :desc)
-      |> Enum.uniq_by(fn {_id, p} ->
-        {p.local_cand.base.base_address, p.local_cand.base.base_port, p.remote_cand}
-      end)
+      # RFC 8445, sec. 6.1.2.4. states that two candidate pairs
+      # are redundant if their local candidates have the same base
+      # and their remote candidates are identical.
+      # But, because we replace reflexive candidates with their bases,
+      # checking againts local_cand_id should work fine.
+      |> Enum.uniq_by(fn {_id, p} -> {p.local_cand_id, p.remote_cand_id} end)
 
     Map.new(waiting ++ in_flight_or_done)
   end
@@ -90,7 +80,7 @@ defmodule ExICE.Priv.Checklist do
   @spec prune(t(), Candidate.t()) :: t()
   def prune(checklist, local_cand) do
     checklist
-    |> Enum.reject(fn {_pair_id, pair} -> pair.local_cand.base.id == local_cand.base.id end)
+    |> Enum.reject(fn {_pair_id, pair} -> pair.local_cand_id == local_cand.base.id end)
     |> Map.new()
   end
 
@@ -103,12 +93,5 @@ defmodule ExICE.Priv.Checklist do
         {pair.id, pair}
       end
     end
-  end
-
-  @spec recompute_pair_prios(t(), ExICE.ICEAgent.role()) :: t()
-  def recompute_pair_prios(checklist, role) do
-    Map.new(checklist, fn {pair_id, pair} ->
-      {pair_id, CandidatePair.recompute_priority(pair, role)}
-    end)
   end
 end

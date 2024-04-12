@@ -3,21 +3,19 @@ defmodule ExICE.CandidatePair do
   ICE candidate pair representation.
   """
 
-  alias ExICE.Candidate
-
   @type state() :: :waiting | :in_progress | :succeeded | :failed | :frozen
 
   @type t() :: %__MODULE__{
           id: integer(),
-          local_cand: Candidate.t(),
+          local_cand_id: integer(),
           nominated?: boolean(),
           priority: non_neg_integer(),
-          remote_cand: Candidate.t(),
+          remote_cand_id: integer(),
           state: state(),
           valid?: boolean()
         }
 
-  @enforce_keys [:id, :local_cand, :remote_cand, :priority]
+  @enforce_keys [:id, :local_cand_id, :remote_cand_id, :priority]
   defstruct @enforce_keys ++
               [
                 nominated?: false,

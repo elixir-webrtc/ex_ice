@@ -48,11 +48,6 @@ defmodule ExICE.Priv.ICEAgentTest do
     def send_data(cand, _dst_ip, _dst_port, _data) do
       {:error, :invalid_data, cand}
     end
-
-    @impl true
-    def receive_data(cand, _src_ip, _src_port, _data) do
-      {:error, :invalid_data, cand}
-    end
   end
 
   describe "add_remote_candidate/2" do
@@ -72,7 +67,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, ExICE.Candidate.marshal(remote_cand))
 
-      assert [%ExICE.Candidate{} = r_cand] = ice_agent.remote_cands
+      assert [%ExICE.Candidate{} = r_cand] = Map.values(ice_agent.remote_cands)
       # override id for the purpose of comparision
       r_cand = %ExICE.Candidate{r_cand | id: remote_cand.id}
       assert r_cand == remote_cand
@@ -80,7 +75,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     test "with invalid remote candidate", %{ice_agent: ice_agent} do
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, "some invalid candidate string")
-      assert [] == ice_agent.remote_cands
+      assert %{} == ice_agent.remote_cands
     end
 
     test "with invalid mdns remote candidate", %{ice_agent: ice_agent} do
@@ -88,14 +83,14 @@ defmodule ExICE.Priv.ICEAgentTest do
         ExICE.Candidate.new(:host, address: "somehopefullyinvalidmdnscandidate.local", port: 8445)
 
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, ExICE.Candidate.marshal(remote_cand))
-      assert [] == ice_agent.remote_cands
+      assert %{} == ice_agent.remote_cands
     end
 
     test "after setting end-of-candidates", %{ice_agent: ice_agent} do
       remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
       ice_agent = ICEAgent.end_of_candidates(ice_agent)
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, ExICE.Candidate.marshal(remote_cand))
-      assert [] == ice_agent.remote_cands
+      assert %{} == ice_agent.remote_cands
     end
   end
 
@@ -569,7 +564,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           role: :controlling,
           transport_module: Transport.Mock,
           if_discovery_module: IfDiscovery.Mock,
-          stun_servers: ["stun:192.168.0.3:19302"]
+          ice_servers: [%{url: "stun:192.168.0.3:19302"}]
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
@@ -636,91 +631,56 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
-  describe "unstable candidate" do
+  test "candidate fails to send data when ice is connected" do
     # 1. make ice agent connected
-    # 2. replace candidate with the mock one that always fails to send and receive data
-    # 3. assert that after unsuccessful data sending/receiving, ice_agent moves to the failed state
+    # 2. replace candidate with the mock one that always fails to send  data
+    # 3. assert that after unsuccessful data sending, ice_agent moves to the failed state
     # as there are no other pairs
-    setup do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
 
-      ice_agent =
-        ICEAgent.new(
-          controlling_process: self(),
-          role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
-          transport_module: Transport.Mock
-        )
-        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
-        |> ICEAgent.gather_candidates()
-        |> ICEAgent.add_remote_candidate(ExICE.Candidate.marshal(remote_cand))
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.Mock,
+        transport_module: Transport.Mock
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(ExICE.Candidate.marshal(remote_cand))
 
-      [local_cand] = Map.values(ice_agent.local_cands)
+    [local_cand] = Map.values(ice_agent.local_cands)
 
-      assert ice_agent.gathering_state == :complete
+    assert ice_agent.gathering_state == :complete
 
-      # make ice_agent connected
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
-      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
-      resp = binding_response(req.transaction_id, local_cand, ice_agent.remote_pwd)
+    # make ice_agent connected
+    ice_agent = ICEAgent.handle_timeout(ice_agent)
+    req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
+    resp = binding_response(req.transaction_id, local_cand, ice_agent.remote_pwd)
 
-      ice_agent =
-        ICEAgent.handle_udp(
-          ice_agent,
-          local_cand.base.socket,
-          remote_cand.address,
-          remote_cand.port,
-          resp
-        )
+    ice_agent =
+      ICEAgent.handle_udp(
+        ice_agent,
+        local_cand.base.socket,
+        remote_cand.address,
+        remote_cand.port,
+        resp
+      )
 
-      assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
-      assert ice_agent.state == :connected
+    assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
+    assert ice_agent.state == :connected
 
-      # replace candidate with the mock one
-      mock_cand = %Candidate.Mock{base: local_cand.base}
-      [pair] = Map.values(ice_agent.checklist)
-      pair = %{pair | local_cand: mock_cand}
-      checklist = %{pair.id => pair}
+    # replace candidate with the mock one
+    mock_cand = %Candidate.Mock{base: local_cand.base}
+    ice_agent = %{ice_agent | local_cands: %{mock_cand.base.id => mock_cand}}
 
-      ice_agent = %{
-        ice_agent
-        | local_cands: %{mock_cand.base.id => mock_cand},
-          checklist: checklist
-      }
+    # try to send some data
+    ice_agent = ICEAgent.send_data(ice_agent, "somedata")
 
-      %{ice_agent: ice_agent, mock_cand: mock_cand, remote_cand: remote_cand}
-    end
-
-    test "fails to receive data when ice is connected ", %{
-      ice_agent: ice_agent,
-      mock_cand: mock_cand,
-      remote_cand: remote_cand
-    } do
-      # try to receive some data
-      ice_agent =
-        ICEAgent.handle_udp(
-          ice_agent,
-          mock_cand.base.socket,
-          remote_cand.address,
-          remote_cand.port,
-          "somedata"
-        )
-
-      # assert that ice_agent removed failed candidate and moved to the failed state
-      assert ice_agent.local_cands == %{}
-      assert ice_agent.state == :failed
-      assert ice_agent.checklist == %{}
-    end
-
-    test "fails to send data when ice is connected", %{ice_agent: ice_agent} do
-      # try to send some data
-      ice_agent = ICEAgent.send_data(ice_agent, "somedata")
-
-      # assert that ice_agent removed failed candidate and moved to the failed state
-      assert ice_agent.local_cands == %{}
-      assert ice_agent.state == :failed
-      assert ice_agent.checklist == %{}
-    end
+    # assert that ice_agent removed failed candidate and moved to the failed state
+    assert ice_agent.local_cands == %{}
+    assert ice_agent.state == :failed
+    assert ice_agent.checklist == %{}
   end
 
   defp binding_response(t_id, local_cand, remote_pwd) do
