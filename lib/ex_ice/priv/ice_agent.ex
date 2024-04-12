@@ -3,8 +3,17 @@ defmodule ExICE.Priv.ICEAgent do
 
   require Logger
 
-  alias ExICE.Priv.IfDiscovery
-  alias ExICE.Priv.{Candidate, CandidatePair, Checklist, ConnCheckHandler, Gatherer, Transport}
+  alias ExICE.Priv.{
+    Candidate,
+    CandidatePair,
+    Checklist,
+    ConnCheckHandler,
+    Gatherer,
+    IfDiscovery,
+    Transport,
+    Utils
+  }
+
   alias ExICE.Priv.Attribute.{ICEControlling, ICEControlled, Priority, UseCandidate}
 
   alias ExSTUN.Message
@@ -24,12 +33,7 @@ defmodule ExICE.Priv.ICEAgent do
   }
 
   defguardp are_pairs_equal(p1, p2)
-            when p1.local_cand.base.base_address == p2.local_cand.base.base_address and
-                   p1.local_cand.base.base_port == p2.local_cand.base.base_port and
-                   p1.local_cand.base.address == p2.local_cand.base.address and
-                   p1.local_cand.base.port == p2.local_cand.base.port and
-                   p1.remote_cand.address == p2.remote_cand.address and
-                   p1.remote_cand.port == p2.remote_cand.port
+            when p1.local_cand_id == p2.local_cand_id and p1.remote_cand_id == p2.remote_cand_id
 
   defguardp is_response(class) when class in [:success_response, :error_response]
 
@@ -44,6 +48,7 @@ defmodule ExICE.Priv.ICEAgent do
     :if_discovery_module,
     :transport_module,
     :gatherer,
+    :ice_transport_policy,
     :ta_timer,
     :role,
     :tiebreaker,
@@ -60,10 +65,12 @@ defmodule ExICE.Priv.ICEAgent do
     eoc: false,
     # {did we nominate pair, pair id}
     nominating?: {false, nil},
+    sockets: MapSet.new(),
     local_cands: %{},
-    remote_cands: [],
+    remote_cands: %{},
     stun_servers: [],
     turn_servers: [],
+    resolved_turn_servers: [],
     # stats
     bytes_sent: 0,
     bytes_received: 0,
@@ -73,7 +80,7 @@ defmodule ExICE.Priv.ICEAgent do
 
   @spec new(Keyword.t()) :: t()
   def new(opts) do
-    stun_servers = parse_stun_servers(opts[:stun_servers] || [])
+    {stun_servers, turn_servers} = parse_ice_servers(opts[:ice_servers] || [])
 
     {local_ufrag, local_pwd} = generate_credentials()
 
@@ -92,11 +99,13 @@ defmodule ExICE.Priv.ICEAgent do
       if_discovery_module: if_discovery_module,
       transport_module: transport_module,
       gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter),
+      ice_transport_policy: opts[:ice_transport_policy] || :all,
       role: Keyword.fetch!(opts, :role),
       tiebreaker: generate_tiebreaker(),
       local_ufrag: local_ufrag,
       local_pwd: local_pwd,
-      stun_servers: stun_servers
+      stun_servers: stun_servers,
+      turn_servers: turn_servers
     }
   end
 
@@ -127,14 +136,14 @@ defmodule ExICE.Priv.ICEAgent do
 
   @spec get_local_candidates(t()) :: [binary()]
   def get_local_candidates(ice_agent) do
-    Enum.map(ice_agent.local_cands, fn {_, %cand_mod{} = cand} ->
+    Enum.map(ice_agent.local_cands, fn {_id, %cand_mod{} = cand} ->
       cand_mod.marshal(cand)
     end)
   end
 
   @spec get_remote_candidates(t()) :: [binary()]
   def get_remote_candidates(ice_agent) do
-    Enum.map(ice_agent.remote_cands, &ExICE.Candidate.marshal/1)
+    Enum.map(ice_agent.remote_cands, fn {_id, cand} -> ExICE.Candidate.marshal(cand) end)
   end
 
   @spec get_stats(t()) :: map()
@@ -143,6 +152,8 @@ defmodule ExICE.Priv.ICEAgent do
       ice_agent.local_cands
       |> Map.values()
       |> Enum.map(fn %cand_mod{} = cand -> cand_mod.to_candidate(cand) end)
+
+    remote_cands = Map.values(ice_agent.remote_cands)
 
     candidate_pairs =
       ice_agent.checklist
@@ -158,7 +169,7 @@ defmodule ExICE.Priv.ICEAgent do
       role: ice_agent.role,
       local_ufrag: ice_agent.local_ufrag,
       local_candidates: local_cands,
-      remote_candidates: ice_agent.remote_cands,
+      remote_candidates: remote_cands,
       candidate_pairs: candidate_pairs
     }
   end
@@ -199,35 +210,55 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent
   end
 
-  def gather_candidates(%__MODULE__{gathering_state: :new} = ice_agent) do
+  def gather_candidates(
+        %__MODULE__{gathering_state: :new, ice_transport_policy: :all} = ice_agent
+      ) do
     Logger.debug("Gathering state change: #{ice_agent.gathering_state} -> gathering")
     notify(ice_agent.on_gathering_state_change, {:gathering_state_change, :gathering})
     ice_agent = %{ice_agent | gathering_state: :gathering}
 
-    {:ok, host_candidates} = Gatherer.gather_host_candidates(ice_agent.gatherer)
+    {:ok, sockets} = Gatherer.open_sockets(ice_agent.gatherer)
+    host_cands = Gatherer.gather_host_candidates(ice_agent.gatherer, sockets)
 
-    for %cand_mod{} = cand <- host_candidates do
+    for %cand_mod{} = cand <- host_cands do
       notify(ice_agent.on_new_candidate, {:new_candidate, cand_mod.marshal(cand)})
     end
 
-    gathering_transactions =
-      for stun_server <- ice_agent.stun_servers, host_cand <- host_candidates, into: %{} do
-        <<t_id::12*8>> = :crypto.strong_rand_bytes(12)
+    srflx_gathering_transactions =
+      create_srflx_gathering_transactions(ice_agent.stun_servers, sockets)
 
-        t = %{
-          t_id: t_id,
-          host_cand: host_cand,
-          stun_server: stun_server,
-          send_time: nil,
-          state: :waiting
-        }
+    relay_gathering_transactions =
+      create_relay_gathering_transactions(ice_agent, ice_agent.turn_servers, sockets)
 
-        {t_id, t}
-      end
+    gathering_transactions = Map.merge(srflx_gathering_transactions, relay_gathering_transactions)
 
-    local_cands = Map.new(host_candidates, fn cand -> {cand.base.id, cand} end)
+    local_cands = Map.new(host_cands, fn cand -> {cand.base.id, cand} end)
 
-    %{ice_agent | gathering_transactions: gathering_transactions, local_cands: local_cands}
+    %{
+      ice_agent
+      | sockets: sockets,
+        local_cands: local_cands,
+        gathering_transactions: gathering_transactions
+    }
+    |> update_gathering_state()
+    |> update_ta_timer()
+  end
+
+  def gather_candidates(
+        %__MODULE__{gathering_state: :new, ice_transport_policy: :relay} = ice_agent
+      ) do
+    change_gathering_state(ice_agent, :gathering)
+
+    {:ok, sockets} = Gatherer.open_sockets(ice_agent.gatherer)
+
+    relay_gathering_transactions =
+      create_relay_gathering_transactions(ice_agent, ice_agent.turn_servers, sockets)
+
+    %{
+      ice_agent
+      | sockets: sockets,
+        gathering_transactions: relay_gathering_transactions
+    }
     |> update_gathering_state()
     |> update_ta_timer()
   end
@@ -311,9 +342,12 @@ defmodule ExICE.Priv.ICEAgent do
     %CandidatePair{} =
       pair = ice_agent.selected_pair || Checklist.get_valid_pair(ice_agent.checklist)
 
-    dst = {pair.remote_cand.address, pair.remote_cand.port}
+    local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
-    case do_send(ice_agent, pair.local_cand, dst, data) do
+    dst = {remote_cand.address, remote_cand.port}
+
+    case do_send(ice_agent, local_cand, dst, data) do
       {:ok, ice_agent} ->
         %{
           ice_agent
@@ -375,9 +409,9 @@ defmodule ExICE.Priv.ICEAgent do
 
           nil ->
             # credo:disable-for-lines:3 Credo.Check.Refactor.Nesting
-            case get_next_gathering_transaction(ice_agent.gathering_transactions) do
+            case get_next_gathering_transaction(ice_agent) do
               {_t_id, transaction} ->
-                case handle_gathering_transaction(ice_agent, transaction) do
+                case execute_gathering_transaction(ice_agent, transaction) do
                   {:ok, ice_agent} -> {true, ice_agent}
                   {:error, ice_agent} -> {false, ice_agent}
                 end
@@ -441,101 +475,120 @@ defmodule ExICE.Priv.ICEAgent do
           binary()
         ) :: t()
   def handle_udp(ice_agent, socket, src_ip, src_port, packet) do
-    local_cands = Map.values(ice_agent.local_cands)
+    turn_tr_id = {socket, {src_ip, src_port}}
+    turn_tr = Map.get(ice_agent.gathering_transactions, turn_tr_id)
 
-    case find_host_cand(local_cands, socket) do
-      nil ->
-        Logger.debug(
-          "No local candidate corresponding to message received from #{inspect(src_ip)}:#{src_port}. Ignoring."
-        )
+    cond do
+      # if we are still in a process of creating a relay candidate
+      # and we received a message from a turn server
+      turn_tr != nil and turn_tr.state == :in_progress ->
+        handle_turn_gathering_transaction_response(ice_agent, turn_tr_id, turn_tr, packet)
 
+      from_turn?(ice_agent, src_ip, src_port) ->
+        handle_turn_message(ice_agent, socket, src_ip, src_port, packet)
+
+      ExSTUN.stun?(packet) ->
+        handle_stun_message(ice_agent, socket, src_ip, src_port, packet)
+
+      true ->
+        handle_data_message(ice_agent, packet)
+    end
+  end
+
+  @spec handle_ex_turn_msg(t(), reference(), ExTURN.Client.notification_message()) :: t()
+  def handle_ex_turn_msg(ice_agent, client_ref, msg) do
+    tr_id_tr = find_gathering_transaction(ice_agent.gathering_transactions, client_ref)
+
+    cand = find_relay_cand_by_client(Map.values(ice_agent.local_cands), client_ref)
+
+    case {tr_id_tr, cand} do
+      {nil, nil} ->
         ice_agent
 
-      %cand_mod{} = local_cand ->
-        case cand_mod.receive_data(local_cand, src_ip, src_port, packet) do
-          {:ok, local_cand} ->
-            %{
-              ice_agent
-              | local_cands: Map.put(ice_agent.local_cands, local_cand.base.id, local_cand)
-            }
+      {{tr_id, tr}, nil} ->
+        case ExTURN.Client.handle_message(tr.client, msg) do
+          {:ok, client} ->
+            tr = %{tr | client: client}
+            put_in(ice_agent.gathering_transactions[tr_id], tr)
 
-          {:ok, packet, local_cand} ->
-            local_cands = Map.put(ice_agent.local_cands, local_cand.base.id, local_cand)
-            ice_agent = %{ice_agent | local_cands: local_cands}
+          {:send, dst, data, client} ->
+            tr = %{tr | client: client}
+            :ok = ice_agent.transport_module.send(tr.socket, dst, data)
+            put_in(ice_agent.gathering_transactions[tr_id], tr)
 
-            do_handle_udp(ice_agent, local_cand, src_ip, src_port, packet)
+          {:error, _reason, client} ->
+            tr = %{tr | client: client, state: :failed}
 
-          {:error, reason, local_cand} ->
-            Logger.warning("""
-            Error receiving data on candidate, reason: #{reason}.
-            Candidate: #{inspect(local_cand)}.
-            Closing candidate.
-            """)
+            put_in(ice_agent.gathering_transactions[tr_id], tr)
+            |> update_gathering_state()
+        end
 
-            close_candidate(ice_agent, local_cand)
+      {nil, cand} ->
+        case ExTURN.Client.handle_message(cand.client, msg) do
+          {:ok, client} ->
+            cand = %{cand | client: client}
+            put_in(ice_agent.local_cands[cand.base.id], cand)
+
+          {:send, dst, data, client} ->
+            cand = %{cand | client: client}
+            ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
+            do_send(ice_agent, cand, dst, data)
+
+          {:error, _reason, client} ->
+            cand = %{cand | client: client}
+            ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
+
+            close_candidate(ice_agent, cand)
         end
     end
   end
 
-  defp do_handle_udp(ice_agent, local_cand, src_ip, src_port, packet) do
-    if ExSTUN.stun?(packet) do
-      case ExSTUN.Message.decode(packet) do
-        {:ok, msg} ->
-          handle_stun_msg(ice_agent, local_cand, src_ip, src_port, msg)
+  ## PRIV API
 
-        {:error, reason} ->
-          Logger.warning("Couldn't decode stun message: #{inspect(reason)}")
-          ice_agent
-      end
-    else
-      notify(ice_agent.on_data, {:data, packet})
+  defp create_srflx_gathering_transactions(stun_servers, sockets) do
+    for stun_server <- stun_servers, socket <- sockets, into: %{} do
+      <<t_id::12*8>> = :crypto.strong_rand_bytes(12)
 
-      %{
-        ice_agent
-        | bytes_received: ice_agent.bytes_received + byte_size(packet),
-          packets_received: ice_agent.packets_received + 1
+      t = %{
+        t_id: t_id,
+        socket: socket,
+        stun_server: stun_server,
+        send_time: nil,
+        state: :waiting
       }
+
+      {t_id, t}
     end
   end
 
-  defp close_candidate(ice_agent, local_cand) do
-    local_cands = Map.delete(ice_agent.local_cands, local_cand.base.id)
+  defp create_relay_gathering_transactions(ice_agent, turn_servers, sockets) do
+    # TODO revisit this
+    for turn_server <- turn_servers, socket <- sockets do
+      with {:ok, client} <-
+             ExTURN.Client.new(turn_server.url, turn_server.username, turn_server.credential),
+           {:ok, {sock_ip, _sock_port}} <- ice_agent.transport_module.sockname(socket),
+           true <- Utils.family(client.turn_ip) == Utils.family(sock_ip) do
+        t_id = {socket, {client.turn_ip, client.turn_port}}
 
-    selected_pair =
-      if ice_agent.selected_pair != nil and
-           ice_agent.selected_pair.local_cand.base.id == local_cand.base.id,
-         do: nil,
-         else: ice_agent.selected_pair
+        t = %{
+          t_id: t_id,
+          socket: socket,
+          client: client,
+          send_time: nil,
+          state: :waiting
+        }
 
-    nominating? =
-      case ice_agent.nominating? do
-        {true, pair_id} ->
-          pair = Map.fetch!(ice_agent.checklist, pair_id)
-
-          if pair.local_cand.base.id == local_cand.base.id do
-            {false, nil}
-          else
-            ice_agent.nominating?
-          end
-
-        other ->
-          other
+        {t_id, t}
       end
-
-    %{
-      ice_agent
-      | local_cands: local_cands,
-        selected_pair: selected_pair,
-        checklist: Checklist.prune(ice_agent.checklist, local_cand),
-        nominating?: nominating?
-    }
-    |> update_connection_state()
+    end
+    |> Enum.reject(fn {tr_id, tr} -> tr_id == nil and tr == nil end)
+    |> Map.new()
   end
 
   defp do_add_remote_candidate(ice_agent, remote_cand) do
     local_cands = get_matching_candidates_remote(Map.values(ice_agent.local_cands), remote_cand)
 
-    checklist_foundations = Checklist.get_foundations(ice_agent.checklist)
+    checklist_foundations = get_foundations(ice_agent)
 
     new_pairs =
       for local_cand <- local_cands, into: %{} do
@@ -565,29 +618,28 @@ defmodule ExICE.Priv.ICEAgent do
     %__MODULE__{
       ice_agent
       | checklist: checklist,
-        remote_cands: [remote_cand | ice_agent.remote_cands]
+        remote_cands: Map.put(ice_agent.remote_cands, remote_cand.id, remote_cand)
     }
   end
 
-  defp get_next_gathering_transaction(gathering_transactions) do
-    Enum.find(gathering_transactions, fn {_t_id, t} -> t.state == :waiting end)
+  defp get_next_gathering_transaction(ice_agent) do
+    Enum.find(ice_agent.gathering_transactions, fn {_t_id, t} -> t.state == :waiting end)
   end
 
-  defp handle_gathering_transaction(
-         ice_agent,
-         %{t_id: t_id, host_cand: host_cand, stun_server: stun_server} = t
-       ) do
+  defp execute_gathering_transaction(ice_agent, %{stun_server: stun_server} = tr) do
+    {:ok, {sock_ip, sock_port}} = ice_agent.transport_module.sockname(tr.socket)
+
     Logger.debug("""
     Sending binding request to gather srflx candidate for:
-    host_cand: #{inspect(host_cand)},
+    socket: #{inspect(sock_ip)}:#{sock_port},
     stun_server: #{inspect(stun_server)}
     """)
 
-    case Gatherer.gather_srflx_candidate(ice_agent.gatherer, t_id, host_cand, stun_server) do
+    case Gatherer.gather_srflx_candidate(ice_agent.gatherer, tr.t_id, tr.socket, stun_server.url) do
       :ok ->
         now = System.monotonic_time(:millisecond)
-        t = %{t | state: :in_progress, send_time: now}
-        gathering_transactions = Map.put(ice_agent.gathering_transactions, t_id, t)
+        tr = %{tr | state: :in_progress, send_time: now}
+        gathering_transactions = Map.put(ice_agent.gathering_transactions, tr.t_id, tr)
         ice_agent = %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
         {:ok, ice_agent}
 
@@ -595,11 +647,39 @@ defmodule ExICE.Priv.ICEAgent do
         Logger.debug("Couldn't send binding request, reason: #{reason}")
 
         gathering_transactions =
-          put_in(ice_agent.gathering_transactions, [t.t_id, :state], :failed)
+          put_in(ice_agent.gathering_transactions, [tr.t_id, :state], :failed)
 
         ice_agent = %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
         ice_agent = update_gathering_state(ice_agent)
 
+        {:error, ice_agent}
+    end
+  end
+
+  defp execute_gathering_transaction(ice_agent, %{client: client} = tr) do
+    {:ok, {sock_ip, sock_port}} = ice_agent.transport_module.sockname(tr.socket)
+
+    Logger.debug("""
+    Starting the process of gathering relay candidate for:
+    socket: #{inspect(sock_ip)}:#{sock_port},
+    turn_server: #{inspect(client.turn_ip)}:#{client.turn_port}
+    """)
+
+    {:send, turn_addr, data, client} = ExTURN.Client.allocate(client)
+    tr = Map.put(tr, :client, client)
+
+    case ice_agent.transport_module.send(tr.socket, turn_addr, data) do
+      :ok ->
+        now = System.monotonic_time(:millisecond)
+        tr = %{tr | state: :in_progress, send_time: now}
+        ice_agent = put_in(ice_agent.gathering_transactions[tr.t_id], tr)
+        ice_agent = update_gathering_state(ice_agent)
+        {:ok, ice_agent}
+
+      {:error, reason} ->
+        Logger.debug("Couldn't send allocate request, reason: #{reason}")
+        ice_agent = put_in(ice_agent.gathering_transactions[tr.t_id][:state], :failed)
+        ice_agent = update_gathering_state(ice_agent)
         {:error, ice_agent}
     end
   end
@@ -633,12 +713,8 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp timeout_gathering_transactions(ice_agent, now) do
     {stale_gath_trans, gath_trans} =
-      Enum.split_with(ice_agent.gathering_transactions, fn {_id,
-                                                            %{
-                                                              state: t_state,
-                                                              send_time: send_time
-                                                            }} ->
-        t_state == :in_progress and now - send_time >= @hto
+      Enum.split_with(ice_agent.gathering_transactions, fn {_id, tr} ->
+        tr.state == :in_progress and now - tr.send_time >= @hto
       end)
 
     gath_trans = Map.new(gath_trans)
@@ -651,7 +727,140 @@ defmodule ExICE.Priv.ICEAgent do
     %__MODULE__{ice_agent | gathering_transactions: gath_trans}
   end
 
-  defp handle_stun_msg(ice_agent, local_cand, src_ip, src_port, %Message{} = msg) do
+  defp from_turn?(ice_agent, src_ip, src_port),
+    do: {src_ip, src_port} in ice_agent.resolved_turn_servers
+
+  defp handle_turn_gathering_transaction_response(ice_agent, tr_id, tr, packet) do
+    {_socket, {src_ip, src_port}} = tr_id
+
+    case ExTURN.Client.handle_message(tr.client, {:socket_data, src_ip, src_port, packet}) do
+      {:allocation_created, {alloc_ip, alloc_port}, client} ->
+        tr = %{tr | client: client, state: :complete}
+
+        resolved_turn_servers = [
+          {client.turn_ip, client.turn_port} | ice_agent.resolved_turn_servers
+        ]
+
+        ice_agent = %{ice_agent | resolved_turn_servers: resolved_turn_servers}
+        ice_agent = put_in(ice_agent.gathering_transactions[tr_id], tr)
+
+        relay_cand =
+          Candidate.Relay.new(
+            address: alloc_ip,
+            port: alloc_port,
+            base_address: alloc_ip,
+            base_port: alloc_port,
+            transport_module: ice_agent.transport_module,
+            socket: tr.socket,
+            client: tr.client
+          )
+
+        Logger.debug("New relay candidate: #{inspect(relay_cand)}")
+
+        notify(
+          ice_agent.on_new_candidate,
+          {:new_candidate, Candidate.Relay.marshal(relay_cand)}
+        )
+
+        add_relay_cand(ice_agent, relay_cand)
+
+      {:send, turn_addr, data, client} ->
+        tr = %{tr | client: client}
+        :ok = ice_agent.transport_module.send(tr.socket, turn_addr, data)
+        put_in(ice_agent.gathering_transactions[tr_id], tr)
+
+      {:error, _reason, client} ->
+        Logger.debug("Failed to create TURN allocation.")
+        tr = %{tr | client: client, state: :failed}
+        put_in(ice_agent.gathering_transactions[tr_id], tr)
+    end
+  end
+
+  defp handle_turn_message(ice_agent, socket, src_ip, src_port, packet) do
+    %cand_mod{} = cand = find_relay_cand_by_socket(Map.values(ice_agent.local_cands), socket)
+
+    case cand_mod.receive_data(cand, src_ip, src_port, packet) do
+      {:ok, cand} ->
+        put_in(ice_agent.local_cands[cand.base.id], cand)
+
+      {:ok, src_ip, src_port, packet, cand} ->
+        ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
+
+        if ExSTUN.stun?(packet) do
+          case ExSTUN.Message.decode(packet) do
+            {:ok, msg} ->
+              do_handle_stun_message(ice_agent, cand, src_ip, src_port, msg)
+
+            {:error, reason} ->
+              Logger.warning("Couldn't decode stun message: #{inspect(reason)}")
+              ice_agent
+          end
+        else
+          handle_data_message(ice_agent, packet)
+        end
+
+      {:error, _reason, cand} ->
+        close_candidate(ice_agent, cand)
+    end
+  end
+
+  defp handle_stun_message(ice_agent, socket, src_ip, src_port, packet) do
+    case ExSTUN.Message.decode(packet) do
+      {:ok, msg} ->
+        local_cands = Map.values(ice_agent.local_cands)
+
+        case find_host_cand(local_cands, socket) do
+          nil ->
+            ice_agent
+
+          local_cand ->
+            do_handle_stun_message(ice_agent, local_cand, src_ip, src_port, msg)
+        end
+
+      {:error, reason} ->
+        Logger.warning("Couldn't decode stun message: #{inspect(reason)}")
+        ice_agent
+    end
+  end
+
+  defp handle_data_message(ice_agent, packet) do
+    notify(ice_agent.on_data, {:data, packet})
+
+    %{
+      ice_agent
+      | bytes_received: ice_agent.bytes_received + byte_size(packet),
+        packets_received: ice_agent.packets_received + 1
+    }
+  end
+
+  defp add_relay_cand(ice_agent, relay_cand) do
+    ice_agent = put_in(ice_agent.local_cands[relay_cand.base.id], relay_cand)
+
+    remote_cands = get_matching_candidates_local(Map.values(ice_agent.remote_cands), relay_cand)
+
+    checklist_foundations = get_foundations(ice_agent)
+
+    new_pairs =
+      for remote_cand <- remote_cands, into: %{} do
+        pair_state = get_pair_state(relay_cand, remote_cand, checklist_foundations)
+        pair = CandidatePair.new(relay_cand, remote_cand, ice_agent.role, pair_state)
+        {pair.id, pair}
+      end
+
+    checklist = Checklist.prune(Map.merge(ice_agent.checklist, new_pairs))
+
+    added_pairs = Map.drop(checklist, Map.keys(ice_agent.checklist))
+
+    if added_pairs == %{} do
+      Logger.debug("Not adding any new pairs as they were redundant")
+    else
+      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
+    end
+
+    %__MODULE__{ice_agent | checklist: checklist}
+  end
+
+  defp do_handle_stun_message(ice_agent, local_cand, src_ip, src_port, %Message{} = msg) do
     # TODO revisit 7.3.1.4
 
     case msg.type do
@@ -676,7 +885,7 @@ defmodule ExICE.Priv.ICEAgent do
         Received gathering transaction response from: #{inspect({src_ip, src_port})}, on: #{inspect(local_cand.base.base_address)} \
         """)
 
-        handle_gathering_transaction_response(ice_agent, msg)
+        handle_stun_gathering_transaction_response(ice_agent, msg)
 
       %Type{class: class, method: :binding} when is_response(class) ->
         Logger.warning("""
@@ -812,8 +1021,11 @@ defmodule ExICE.Priv.ICEAgent do
     Peer's tiebreaker: #{tiebreaker}\
     """)
 
-    checklist = Checklist.recompute_pair_prios(ice_agent.checklist, :controlled)
-    {:ok, %__MODULE__{ice_agent | role: :controlled, checklist: checklist}}
+    ice_agent = %__MODULE__{ice_agent | role: :controlled}
+
+    checklist = recompute_pair_prios(ice_agent)
+
+    {:ok, %__MODULE__{ice_agent | checklist: checklist}}
   end
 
   defp check_req_role_conflict(
@@ -827,8 +1039,11 @@ defmodule ExICE.Priv.ICEAgent do
     Peer's tiebreaker: #{tiebreaker}\
     """)
 
-    checklist = Checklist.recompute_pair_prios(ice_agent.checklist, :controlling)
-    {:ok, %__MODULE__{ice_agent | role: :controlling, checklist: checklist}}
+    ice_agent = %__MODULE__{ice_agent | role: :controlling}
+
+    checklist = recompute_pair_prios(ice_agent)
+
+    {:ok, %__MODULE__{ice_agent | checklist: checklist}}
   end
 
   defp check_req_role_conflict(%__MODULE__{role: :controlled}, %ICEControlled{
@@ -864,16 +1079,19 @@ defmodule ExICE.Priv.ICEAgent do
 
     # check that the source and destination transport
     # addresses are symmetric - see sec. 7.2.5.2.1
-    if symmetric?(local_cand.base.socket, {src_ip, src_port}, conn_check_pair) do
+    if symmetric?(ice_agent, local_cand.base.socket, {src_ip, src_port}, conn_check_pair) do
       case msg.type.class do
         :success_response -> handle_conn_check_success_response(ice_agent, conn_check_pair, msg)
         :error_response -> handle_conn_check_error_response(ice_agent, conn_check_pair, msg)
       end
     else
+      cc_local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
+      cc_remote_cand = Map.fetch!(ice_agent.remote_cands, conn_check_pair.remote_cand_id)
+
       Logger.warning("""
       Ignoring conn check response, non-symmetric src and dst addresses.
-      Sent from: #{inspect({conn_check_pair.local_cand.base.base_address, conn_check_pair.local_cand.base.base_port})}, \
-      to: #{inspect({conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port})}
+      Sent from: #{inspect({cc_local_cand.base.base_address, cc_local_cand.base.base_port})}, \
+      to: #{inspect({cc_remote_cand.address, cc_remote_cand.port})}
       Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})}
       Pair failed: #{conn_check_pair.id}
       """)
@@ -889,7 +1107,7 @@ defmodule ExICE.Priv.ICEAgent do
     with :ok <- authenticate_msg(msg, ice_agent.remote_pwd),
          {:ok, xor_addr} <- Message.get_attribute(msg, XORMappedAddress) do
       {local_cand, ice_agent} = get_or_create_local_cand(ice_agent, xor_addr, conn_check_pair)
-      remote_cand = conn_check_pair.remote_cand
+      remote_cand = Map.fetch!(ice_agent.remote_cands, conn_check_pair.remote_cand_id)
 
       valid_pair =
         CandidatePair.new(local_cand, remote_cand, ice_agent.role, :succeeded, valid?: true)
@@ -967,18 +1185,11 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp handle_gathering_transaction_response(ice_agent, msg) do
-    case msg.type.class do
-      :success_response ->
-        handle_gathering_transaction_success_response(ice_agent, msg)
-
-      :error_response ->
-        handle_gathering_transaction_error_response(ice_agent, msg)
-    end
-  end
-
-  defp handle_gathering_transaction_success_response(ice_agent, msg) do
-    t = Map.fetch!(ice_agent.gathering_transactions, msg.transaction_id)
+  defp handle_stun_gathering_transaction_response(
+         ice_agent,
+         %Message{type: %Type{class: :success_response}} = msg
+       ) do
+    tr = Map.fetch!(ice_agent.gathering_transactions, msg.transaction_id)
 
     {:ok, %XORMappedAddress{address: xor_addr, port: xor_port}} =
       Message.get_attribute(msg, XORMappedAddress)
@@ -986,19 +1197,22 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent =
       case find_local_cand(Map.values(ice_agent.local_cands), xor_addr, xor_port) do
         nil ->
+          {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
+
           c =
             Candidate.Srflx.new(
               address: xor_addr,
               port: xor_port,
-              base_address: t.host_cand.base.address,
-              base_port: t.host_cand.base.port,
+              base_address: base_addr,
+              base_port: base_port,
               transport_module: ice_agent.transport_module,
-              socket: t.host_cand.base.socket
+              socket: tr.socket
             )
 
           Logger.debug("New srflx candidate: #{inspect(c)}")
           notify(ice_agent.on_new_candidate, {:new_candidate, Candidate.Srflx.marshal(c)})
-          add_srflx_cand(ice_agent, c)
+          # don't pair reflexive candidate, it should be pruned anyway - see sec. 6.1.2.4
+          put_in(ice_agent.local_cands[c.base.id], c)
 
         cand ->
           Logger.debug("""
@@ -1010,12 +1224,15 @@ defmodule ExICE.Priv.ICEAgent do
       end
 
     gathering_transactions =
-      Map.update!(ice_agent.gathering_transactions, t.t_id, fn t -> %{t | state: :complete} end)
+      Map.update!(ice_agent.gathering_transactions, tr.t_id, fn tr -> %{tr | state: :complete} end)
 
     %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
   end
 
-  defp handle_gathering_transaction_error_response(ice_agent, msg) do
+  defp handle_stun_gathering_transaction_response(
+         ice_agent,
+         %Message{type: %Type{class: :error_response}} = msg
+       ) do
     t = Map.fetch!(ice_agent.gathering_transactions, msg.transaction_id)
 
     error_code =
@@ -1032,39 +1249,6 @@ defmodule ExICE.Priv.ICEAgent do
       Map.update!(ice_agent.gathering_transactions, t.t_id, fn t -> %{t | state: :failed} end)
 
     %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
-  end
-
-  defp add_srflx_cand(ice_agent, c) do
-    # replace address and port with candidate base
-    # and prune the checklist - see sec. 6.1.2.4
-    local_cand = %{c | base: %{c.base | address: c.base.base_address, port: c.base.base_port}}
-
-    remote_cands = get_matching_candidates_local(ice_agent.remote_cands, local_cand)
-
-    checklist_foundations = Checklist.get_foundations(ice_agent.checklist)
-
-    new_pairs =
-      for remote_cand <- remote_cands, into: %{} do
-        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
-        pair = CandidatePair.new(local_cand, remote_cand, ice_agent.role, pair_state)
-        {pair.id, pair}
-      end
-
-    checklist = Checklist.prune(Map.merge(ice_agent.checklist, new_pairs))
-
-    added_pairs = Map.drop(checklist, Map.keys(ice_agent.checklist))
-
-    if added_pairs == %{} do
-      Logger.debug("Not adding any new pairs as they were redundant")
-    else
-      Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
-    end
-
-    %__MODULE__{
-      ice_agent
-      | checklist: checklist,
-        local_cands: Map.put(ice_agent.local_cands, c.base.id, c)
-    }
   end
 
   # Adds valid pair according to sec 7.2.5.3.2
@@ -1162,7 +1346,7 @@ defmodule ExICE.Priv.ICEAgent do
     {checklist_pair.id, ice_agent}
   end
 
-  defp add_valid_pair(ice_agent, valid_pair, conn_check_pair, _) do
+  defp add_valid_pair(ice_agent, valid_pair, conn_check_pair, nil) do
     # TODO compute priority according to sec 7.2.5.3.2
     Logger.debug("""
     Adding new candidate pair resulted from conn check \
@@ -1196,8 +1380,11 @@ defmodule ExICE.Priv.ICEAgent do
   @doc false
   @spec send_binding_success_response(t(), CandidatePair.t(), Message.t()) :: t()
   def send_binding_success_response(ice_agent, pair, req) do
-    src_ip = pair.remote_cand.address
-    src_port = pair.remote_cand.port
+    local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
+    src_ip = remote_cand.address
+    src_port = remote_cand.port
 
     type = %Type{class: :success_response, method: :binding}
 
@@ -1207,7 +1394,7 @@ defmodule ExICE.Priv.ICEAgent do
       |> Message.with_fingerprint()
       |> Message.encode()
 
-    {_result, ice_agent} = do_send(ice_agent, pair.local_cand, {src_ip, src_port}, resp)
+    {_result, ice_agent} = do_send(ice_agent, local_cand, {src_ip, src_port}, resp)
     ice_agent
   end
 
@@ -1267,9 +1454,12 @@ defmodule ExICE.Priv.ICEAgent do
     end)
   end
 
-  defp symmetric?(socket, response_src, conn_check_pair) do
-    request_dst = {conn_check_pair.remote_cand.address, conn_check_pair.remote_cand.port}
-    response_src == request_dst and socket == conn_check_pair.local_cand.base.socket
+  defp symmetric?(ice_agent, socket, response_src, conn_check_pair) do
+    local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, conn_check_pair.remote_cand_id)
+
+    request_dst = {remote_cand.address, remote_cand.port}
+    response_src == request_dst and socket == local_cand.base.socket
   end
 
   defp get_pair_state(local_cand, remote_cand, checklist_foundations) do
@@ -1286,14 +1476,16 @@ defmodule ExICE.Priv.ICEAgent do
     else
       # prflx candidate sec 7.2.5.3.1
       # TODO calculate correct prio and foundation
+      local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
+
       cand =
         Candidate.Prflx.new(
           address: xor_addr.address,
           port: xor_addr.port,
-          base_address: conn_check_pair.local_cand.base.base_address,
-          base_port: conn_check_pair.local_cand.base.base_port,
+          base_address: local_cand.base.base_address,
+          base_port: local_cand.base.base_port,
           transport_module: ice_agent.transport_module,
-          socket: conn_check_pair.local_cand.base.socket
+          socket: local_cand.base.socket
         )
 
       Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
@@ -1308,17 +1500,51 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp get_or_create_remote_cand(ice_agent, src_ip, src_port, _prio_attr) do
-    case find_remote_cand(ice_agent.remote_cands, src_ip, src_port) do
+    case find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port) do
       nil ->
         # TODO calculate correct prio using prio_attr
         cand = ExICE.Candidate.new(:prflx, address: src_ip, port: src_port)
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
-        ice_agent = %__MODULE__{ice_agent | remote_cands: [cand | ice_agent.remote_cands]}
+        ice_agent = put_in(ice_agent.remote_cands[cand.id], cand)
         {cand, ice_agent}
 
       %_cand_mod{} = cand ->
         {cand, ice_agent}
     end
+  end
+
+  defp close_candidate(ice_agent, local_cand) do
+    local_cands = Map.delete(ice_agent.local_cands, local_cand.base.id)
+
+    selected_pair =
+      if ice_agent.selected_pair != nil and
+           ice_agent.selected_pair.local_cand.base.id == local_cand.base.id,
+         do: nil,
+         else: ice_agent.selected_pair
+
+    nominating? =
+      case ice_agent.nominating? do
+        {true, pair_id} ->
+          pair = Map.fetch!(ice_agent.checklist, pair_id)
+
+          if pair.local_cand.base.id == local_cand.base.id do
+            {false, nil}
+          else
+            ice_agent.nominating?
+          end
+
+        other ->
+          other
+      end
+
+    %{
+      ice_agent
+      | local_cands: local_cands,
+        selected_pair: selected_pair,
+        checklist: Checklist.prune(ice_agent.checklist, local_cand),
+        nominating?: nominating?
+    }
+    |> update_connection_state()
   end
 
   defp maybe_nominate(ice_agent) do
@@ -1343,9 +1569,7 @@ defmodule ExICE.Priv.ICEAgent do
       ice_agent.role == :controlling
   end
 
-  @doc false
-  @spec try_nominate(map()) :: map()
-  def try_nominate(ice_agent) do
+  defp try_nominate(ice_agent) do
     case Checklist.get_pair_for_nomination(ice_agent.checklist) do
       %CandidatePair{} = pair ->
         Logger.debug("Trying to nominate pair: #{inspect(pair.id)}")
@@ -1364,30 +1588,6 @@ defmodule ExICE.Priv.ICEAgent do
         """)
 
         change_connection_state(ice_agent, :failed)
-    end
-  end
-
-  defp update_gathering_state(%{gathering_state: :complete} = ice_agent), do: ice_agent
-
-  defp update_gathering_state(ice_agent) do
-    transaction_in_progress? =
-      Enum.any?(ice_agent.gathering_transactions, fn {_id, %{state: t_state}} ->
-        t_state in [:waiting, :in_progress]
-      end)
-
-    cond do
-      ice_agent.gathering_state == :new and transaction_in_progress? ->
-        Logger.debug("Gathering state change: new -> gathering")
-        notify(ice_agent.on_gathering_state_change, {:gathering_state_change, :gathering})
-        %__MODULE__{ice_agent | gathering_state: :gathering}
-
-      ice_agent.gathering_state == :gathering and not transaction_in_progress? ->
-        Logger.debug("Gathering state change: gathering -> complete")
-        notify(ice_agent.on_gathering_state_change, {:gathering_state_change, :complete})
-        %__MODULE__{ice_agent | gathering_state: :complete}
-
-      true ->
-        ice_agent
     end
   end
 
@@ -1413,19 +1613,16 @@ defmodule ExICE.Priv.ICEAgent do
         ice_agent
       end
 
-    Logger.debug("Gathering state change: #{ice_agent.gathering_state} -> new")
-    notify(ice_agent.on_gathering_state_change, {:gathering_state_change, :new})
+    ice_agent = change_gathering_state(ice_agent, :new)
 
     %__MODULE__{
       ice_agent
-      | state: new_ice_state,
-        gathering_state: :new,
-        gathering_transactions: %{},
+      | gathering_transactions: %{},
         selected_pair: nil,
         conn_checks: %{},
         checklist: %{},
         local_cands: %{},
-        remote_cands: [],
+        remote_cands: %{},
         local_ufrag: ufrag,
         local_pwd: pwd,
         remote_ufrag: nil,
@@ -1434,6 +1631,31 @@ defmodule ExICE.Priv.ICEAgent do
         nominating?: {false, nil}
     }
     |> update_ta_timer()
+  end
+
+  defp get_foundations(ice_agent) do
+    for {_id, pair} <- ice_agent.checklist do
+      local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+      remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+      {local_cand.base.foundation, remote_cand.foundation}
+    end
+  end
+
+  defp recompute_pair_prios(ice_agent) do
+    Map.new(ice_agent.checklist, fn {pair_id, pair} ->
+      local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+      remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
+      priority =
+        CandidatePair.recompute_priority(
+          pair,
+          local_cand.base.priority,
+          remote_cand.priority,
+          ice_agent.role
+        )
+
+      {pair_id, priority}
+    end)
   end
 
   defp find_local_cand(cands, ip, port) do
@@ -1449,23 +1671,35 @@ defmodule ExICE.Priv.ICEAgent do
     Enum.find(cands, fn cand -> cand.base.socket == socket and cand.base.type == :host end)
   end
 
-  defp parse_stun_servers(stun_servers) do
-    stun_servers
-    |> Enum.map(fn stun_server ->
-      case ExSTUN.URI.parse(stun_server) do
-        {:ok, stun_server} ->
-          stun_server
+  defp find_relay_cand_by_socket(cands, socket) do
+    Enum.find(cands, fn cand -> cand.base.type == :relay and cand.base.socket == socket end)
+  end
+
+  defp find_relay_cand_by_client(cands, client_ref) do
+    Enum.find(cands, fn cand -> cand.base.type == :relay and cand.client.ref == client_ref end)
+  end
+
+  defp find_gathering_transaction(gathering_transactions, client_ref) do
+    Enum.find(gathering_transactions, fn
+      {_tr_id, %{client: %{ref: ^client_ref}}} -> true
+      _ -> false
+    end)
+  end
+
+  defp parse_ice_servers(ice_servers) do
+    ice_servers
+    |> Enum.map(fn ice_server ->
+      case ExSTUN.URI.parse(ice_server.url) do
+        {:ok, url} ->
+          %{ice_server | url: url}
 
         :error ->
-          Logger.warning("""
-          Couldn't parse STUN server URI: #{inspect(stun_server)}. \
-          Ignoring.\
-          """)
-
+          Logger.warning("Couldn't parse URL: #{inspect(ice_server.url)}. Ignoring.")
           nil
       end
     end)
     |> Enum.reject(&(&1 == nil))
+    |> Enum.split_with(fn ice_server -> ice_server.url.scheme in [:stun, :stuns] end)
   end
 
   defp generate_tiebreaker() do
@@ -1486,6 +1720,32 @@ defmodule ExICE.Priv.ICEAgent do
       :ok
     else
       {:error, _reason} = err -> err
+    end
+  end
+
+  defp change_gathering_state(ice_agent, new_gathering_state) do
+    Logger.debug("Gathering state change: #{ice_agent.gathering_state} -> #{new_gathering_state}")
+    notify(ice_agent.on_gathering_state_change, {:gathering_state_change, new_gathering_state})
+    %__MODULE__{ice_agent | gathering_state: new_gathering_state}
+  end
+
+  defp update_gathering_state(%{gathering_state: :complete} = ice_agent), do: ice_agent
+
+  defp update_gathering_state(ice_agent) do
+    transaction_in_progress? =
+      Enum.any?(ice_agent.gathering_transactions, fn {_id, %{state: t_state}} ->
+        t_state in [:waiting, :in_progress]
+      end)
+
+    cond do
+      ice_agent.gathering_state == :new and transaction_in_progress? ->
+        change_gathering_state(ice_agent, :gathering)
+
+      ice_agent.gathering_state == :gathering and not transaction_in_progress? ->
+        change_gathering_state(ice_agent, :complete)
+
+      true ->
+        ice_agent
     end
   end
 
@@ -1673,6 +1933,9 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp send_conn_check(ice_agent, pair) do
+    local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
     type = %Type{class: :request, method: :binding}
 
     role_attr =
@@ -1707,9 +1970,9 @@ defmodule ExICE.Priv.ICEAgent do
       |> Message.with_integrity(ice_agent.remote_pwd)
       |> Message.with_fingerprint()
 
-    dst = {pair.remote_cand.address, pair.remote_cand.port}
+    dst = {remote_cand.address, remote_cand.port}
 
-    case do_send(ice_agent, pair.local_cand, dst, Message.encode(req)) do
+    case do_send(ice_agent, local_cand, dst, Message.encode(req)) do
       {:ok, ice_agent} ->
         pair = %CandidatePair{pair | state: :in_progress}
 
