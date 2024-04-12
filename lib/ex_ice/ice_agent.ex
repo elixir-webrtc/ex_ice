@@ -69,7 +69,7 @@ defmodule ExICE.ICEAgent do
               optional(:credential) => String.t()
             }
           ],
-          ice_transport_policy: :all | :relay | nil,
+          ice_transport_policy: :all | :relay,
           on_gathering_state_change: pid() | nil,
           on_connection_state_change: pid() | nil,
           on_data: pid() | nil,

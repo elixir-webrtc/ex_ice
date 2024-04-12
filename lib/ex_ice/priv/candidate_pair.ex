@@ -11,11 +11,11 @@ defmodule ExICE.Priv.CandidatePair do
 
   @type t() :: %__MODULE__{
           id: integer(),
-          local_cand_id: Candidate.id(),
+          local_cand_id: integer(),
           nominate?: boolean(),
           nominated?: boolean(),
           priority: non_neg_integer(),
-          remote_cand_id: Candidate.id(),
+          remote_cand_id: integer(),
           state: state(),
           valid?: boolean,
           succeeded_pair_id: integer() | nil,
