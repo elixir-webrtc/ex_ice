@@ -679,10 +679,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
       # assert ice agent started gathering transaction by sending an allocate request
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
-      assert {:ok, req} = ExSTUN.Message.decode(packet)
-      assert req.type.class == :request
-      assert req.type.method == :allocate
+      req = assert_allocate_request_sent(local_cand)
 
       # TURN uses long-term authentication mechanism
       # where the first response is an error response with
@@ -693,10 +690,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
 
       # assert ice agent repeats an allocate request
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
-      assert {:ok, req} = ExSTUN.Message.decode(packet)
-      assert req.type.class == :request
-      assert req.type.method == :allocate
+      req = assert_allocate_request_sent(local_cand)
 
       # reply with allocate success response
       resp = allocate_success_response(req.transaction_id, local_cand)
@@ -724,20 +718,14 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
-      assert {:ok, req} = ExSTUN.Message.decode(packet)
-      assert req.type.class == :request
-      assert req.type.method == :allocate
+      req = assert_allocate_request_sent(local_cand)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
         ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
 
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
-      assert {:ok, req} = ExSTUN.Message.decode(packet)
-      assert req.type.class == :request
-      assert req.type.method == :allocate
+      req = assert_allocate_request_sent(local_cand)
 
       # reply with allocate error response
       resp =
@@ -767,20 +755,14 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
-      assert {:ok, req} = ExSTUN.Message.decode(packet)
-      assert req.type.class == :request
-      assert req.type.method == :allocate
+      req = assert_allocate_request_sent(local_cand)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
         ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
 
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
-      assert {:ok, req} = ExSTUN.Message.decode(packet)
-      assert req.type.class == :request
-      assert req.type.method == :allocate
+      req = assert_allocate_request_sent(local_cand)
 
       # reply with invalid response (no attributes)
       resp =
@@ -803,6 +785,34 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # TODO reply with correct response and assert there is a new relay-cand
       # after fixing https://github.com/elixir-webrtc/ex_turn/issues/3
+    end
+
+    test "ex_turn timeout", %{ice_agent: ice_agent} do
+      [local_cand] = Map.values(ice_agent.local_cands)
+
+      ice_agent = ICEAgent.handle_timeout(ice_agent)
+
+      req = assert_allocate_request_sent(local_cand)
+
+      resp = allocate_error_response(req.transaction_id)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+
+      req = assert_allocate_request_sent(local_cand)
+
+      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      tr = Map.fetch!(ice_agent.gathering_transactions, turn_tr_id)
+
+      ice_agent =
+        ICEAgent.handle_ex_turn_msg(
+          ice_agent,
+          tr.client.ref,
+          {:transaction_timeout, req.transaction_id}
+        )
+
+      # assert gathering transaction failed
+      assert ice_agent.gathering_transactions[turn_tr_id].state == :failed
     end
   end
 
@@ -884,5 +894,13 @@ defmodule ExICE.Priv.ICEAgentTest do
     ])
     |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
     |> Message.encode()
+  end
+
+  defp assert_allocate_request_sent(local_cand) do
+    assert packet = Transport.Mock.recv(local_cand.base.socket)
+    assert {:ok, req} = ExSTUN.Message.decode(packet)
+    assert req.type.class == :request
+    assert req.type.method == :allocate
+    req
   end
 end
