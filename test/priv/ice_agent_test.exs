@@ -9,7 +9,7 @@ defmodule ExICE.Priv.ICEAgentTest do
   alias ExSTUN.Message.Type
   alias ExSTUN.Message.Attribute.{ErrorCode, Nonce, Realm, Username, XORMappedAddress}
 
-  alias ExTURN.Attribute.{Lifetime, XORRelayedAddress}
+  alias ExTURN.Attribute.{Data, Lifetime, XORRelayedAddress, XORPeerAddress}
 
   defmodule IfDiscovery.Mock do
     @behaviour ExICE.Priv.IfDiscovery
@@ -706,7 +706,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
       # assert ice agent started gathering transaction by sending an allocate request
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       # TURN uses long-term authentication mechanism
       # where the first response is an error response with
@@ -717,7 +717,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert ice agent repeats an allocate request
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       # reply with allocate success response
       resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
@@ -745,14 +745,14 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
         ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       # reply with allocate error response
       resp =
@@ -782,14 +782,14 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
         ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       # reply with invalid response (no attributes)
       resp =
@@ -819,14 +819,14 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
         ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
-      req = assert_allocate_request_sent(socket)
+      req = read_allocate_request(socket)
 
       turn_tr_id = {socket, {@turn_ip, @turn_port}}
       tr = Map.fetch!(ice_agent.gathering_transactions, turn_tr_id)
@@ -922,6 +922,121 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent.checklist == %{}
   end
 
+  test "relay connection" do
+    remote_cand_ip = {192, 168, 0, 2}
+    remote_cand_port = 8445
+    remote_cand = ExICE.Candidate.new(:host, address: remote_cand_ip, port: remote_cand_port)
+
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.Mock,
+        transport_module: Transport.Mock,
+        ice_servers: [
+          %{
+            url: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
+            username: @turn_username,
+            credential: @turn_password
+          }
+        ],
+        ice_transport_policy: :relay
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(ExICE.Candidate.marshal(remote_cand))
+
+    [socket] = ice_agent.sockets
+
+    # create relay candidate
+    ice_agent = ICEAgent.handle_timeout(ice_agent)
+    req = read_allocate_request(socket)
+    resp = allocate_error_response(req.transaction_id)
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+    req = read_allocate_request(socket)
+    resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+    # assert there is a new relay candidate
+    assert %ExICE.Priv.Candidate.Relay{} =
+             ice_agent.local_cands
+             |> Map.values()
+             |> Enum.find(&(&1.base.type == :relay))
+
+    # assert client sends create permission request
+    ice_agent = ICEAgent.handle_timeout(ice_agent)
+    assert packet = Transport.Mock.recv(socket)
+    assert {:ok, req} = ExSTUN.Message.decode(packet)
+    assert req.type.class == :request
+    assert req.type.method == :create_permission
+
+    # send success response
+    resp =
+      Message.new(
+        req.transaction_id,
+        %Type{class: :success_response, method: :create_permission},
+        []
+      )
+      |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
+      |> Message.encode()
+
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+    # assert client sends binding request
+    assert packet = Transport.Mock.recv(socket)
+    assert {:ok, req} = ExSTUN.Message.decode(packet)
+    assert req.type.class == :indication
+    assert req.type.method == :send
+
+    {:ok, %Data{value: data}} = Message.get_attribute(req, Data)
+    {:ok, req} = ExSTUN.Message.decode(data)
+    assert req.type.class == :request
+    assert req.type.method == :binding
+
+    # send binding success response
+    resp =
+      Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+        %XORMappedAddress{address: @turn_relay_ip, port: @turn_relay_port}
+      ])
+      |> Message.with_integrity(ice_agent.remote_pwd)
+      |> Message.with_fingerprint()
+      |> Message.encode()
+
+    resp =
+      Message.new(%Type{class: :indication, method: :data}, [
+        %Data{value: resp},
+        %XORPeerAddress{address: remote_cand_ip, port: remote_cand_port}
+      ])
+      |> Message.encode()
+
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+    # assert there is one succeeded pair
+    assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
+
+    # try to send some data
+    ice_agent = ICEAgent.send_data(ice_agent, "somedata")
+
+    # assert data has been sent
+    assert packet = Transport.Mock.recv(socket)
+    assert {:ok, indication} = ExSTUN.Message.decode(packet)
+    assert indication.type.class == :indication
+    assert indication.type.method == :send
+
+    {:ok, %Data{value: "somedata"}} = Message.get_attribute(indication, Data)
+
+    # try to receive some data
+    indication =
+      Message.new(%Type{class: :indication, method: :data}, [
+        %Data{value: "someremotedata"},
+        %XORPeerAddress{address: remote_cand_ip, port: remote_cand_port}
+      ])
+      |> Message.encode()
+
+    _ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, indication)
+    assert_receive {:ex_ice, _pid, {:data, "someremotedata"}}
+  end
+
   defp binding_response(t_id, transport_module, socket, remote_pwd) do
     {:ok, {sock_ip, sock_port}} = transport_module.sockname(socket)
 
@@ -954,7 +1069,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     |> Message.encode()
   end
 
-  defp assert_allocate_request_sent(socket) do
+  defp read_allocate_request(socket) do
     assert packet = Transport.Mock.recv(socket)
     assert {:ok, req} = ExSTUN.Message.decode(packet)
     assert req.type.class == :request
