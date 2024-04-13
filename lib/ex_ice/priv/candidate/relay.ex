@@ -25,20 +25,44 @@ defmodule ExICE.Priv.Candidate.Relay do
 
   @impl true
   def send_data(cand, dst_ip, dst_port, data) do
-    if MapSet.member?(cand.client.permissions, dst_ip) do
-      {:send, turn_addr, data, client} = ExTURN.Client.send(cand.client, {dst_ip, dst_port}, data)
-      cand = %{cand | client: client}
-      do_send(cand, turn_addr, data)
-    else
-      {:send, turn_addr, turn_data, client} = ExTURN.Client.create_permission(cand.client, dst_ip)
+    permission = ExTURN.Client.has_permission?(cand.client, dst_ip)
+    channel = ExTURN.Client.has_channel?(cand.client, dst_ip, dst_port)
 
-      cand = %{
-        cand
-        | client: client,
-          buffered_packets: [{dst_ip, dst_port, data} | cand.buffered_packets]
-      }
+    case {permission, channel} do
+      {true, true} ->
+        {:send, turn_addr, data, client} =
+          ExTURN.Client.send(cand.client, {dst_ip, dst_port}, data)
 
-      do_send(cand, turn_addr, turn_data)
+        cand = %{cand | client: client}
+        do_send(cand, turn_addr, data)
+
+      {true, false} ->
+        {:send, turn_addr, data, client} =
+          ExTURN.Client.send(cand.client, {dst_ip, dst_port}, data)
+
+        cand = %{cand | client: client}
+
+        case ExTURN.Client.create_channel(cand.client, dst_ip, dst_port) do
+          {:ok, client} ->
+            cand = %{cand | client: client}
+            do_send(cand, turn_addr, data)
+
+          {:send, ^turn_addr, channel_data, client} ->
+            cand = %{cand | client: client}
+
+            with {:ok, cand} <- do_send(cand, turn_addr, data) do
+              do_send(cand, turn_addr, channel_data)
+            end
+        end
+
+      {false, false} ->
+        {:send, turn_addr, turn_data, client} =
+          ExTURN.Client.create_permission(cand.client, dst_ip)
+
+        buffered_data = [{dst_ip, dst_port, data} | cand.buffered_packets]
+        cand = %{cand | client: client, buffered_packets: buffered_data}
+
+        do_send(cand, turn_addr, turn_data)
     end
   end
 
@@ -79,13 +103,12 @@ defmodule ExICE.Priv.Candidate.Relay do
   defp do_send_buffered_packets(cand, []), do: {:ok, cand}
 
   defp do_send_buffered_packets(cand, [{dst_ip, dst_port, packet} | packets]) do
-    {:send, turn_addr, data, client} = ExTURN.Client.send(cand.client, {dst_ip, dst_port}, packet)
+    case send_data(cand, dst_ip, dst_port, packet) do
+      {:ok, cand} ->
+        do_send_buffered_packets(cand, packets)
 
-    cand = %{cand | client: client}
-
-    case do_send(cand, turn_addr, data) do
-      {:ok, cand} -> do_send_buffered_packets(cand, packets)
-      {:error, _reason, _cand} = error -> error
+      {:error, _reaons, _cand} = error ->
+        error
     end
   end
 

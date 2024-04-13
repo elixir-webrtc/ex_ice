@@ -28,8 +28,14 @@ defmodule ExICE.Support.Transport.Mock do
 
   @spec recv(ExICE.Transport.socket()) :: binary() | nil
   def recv(socket) do
-    [{_socket, packet}] = :ets.lookup(:transport_mock, socket)
-    packet
+    case :ets.lookup(:transport_mock, socket) do
+      [{_socket, []}] ->
+        nil
+
+      [{_socket, [head | tail]}] ->
+        :ets.insert(:transport_mock, {socket, tail})
+        head
+    end
   end
 
   @impl true
@@ -57,7 +63,7 @@ defmodule ExICE.Support.Transport.Mock do
       port ->
         socket = %{port: port, ip: ip}
 
-        unless :ets.insert_new(:transport_mock, {socket, nil}) do
+        unless :ets.insert_new(:transport_mock, {socket, []}) do
           raise "Couldn't open socket: #{inspect(socket)}, reason: eaddrinuse."
         end
 
@@ -72,7 +78,8 @@ defmodule ExICE.Support.Transport.Mock do
 
   @impl true
   def send(socket, _dst, packet) do
-    :ets.insert(:transport_mock, {socket, packet})
+    [{_socket, buffer}] = :ets.lookup(:transport_mock, socket)
+    :ets.insert(:transport_mock, {socket, buffer ++ [packet]})
     :ok
   end
 
@@ -86,7 +93,7 @@ defmodule ExICE.Support.Transport.Mock do
     Enum.find_value(49_152..65_535, fn port ->
       socket = %{ip: ip, port: port}
 
-      if :ets.insert_new(:transport_mock, {socket, nil}) do
+      if :ets.insert_new(:transport_mock, {socket, []}) do
         socket
       else
         false

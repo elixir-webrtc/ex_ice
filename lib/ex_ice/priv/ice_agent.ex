@@ -519,7 +519,8 @@ defmodule ExICE.Priv.ICEAgent do
             |> update_gathering_state()
         end
 
-      {nil, cand} ->
+      # tr_id_tr might be nil or might be present with state == :complete
+      {_, cand} ->
         case ExTURN.Client.handle_message(cand.client, msg) do
           {:ok, client} ->
             cand = %{cand | client: client}
@@ -866,7 +867,8 @@ defmodule ExICE.Priv.ICEAgent do
     case msg.type do
       %Type{class: :request, method: :binding} ->
         Logger.debug("""
-        Received binding request from: #{inspect({src_ip, src_port})}, on: #{inspect(local_cand.base.base_address)} \
+        Received binding request from: #{inspect({src_ip, src_port})}, \
+        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
         """)
 
         handle_binding_request(ice_agent, local_cand, src_ip, src_port, msg)
@@ -874,7 +876,8 @@ defmodule ExICE.Priv.ICEAgent do
       %Type{class: class, method: :binding}
       when is_response(class) and is_map_key(ice_agent.conn_checks, msg.transaction_id) ->
         Logger.debug("""
-        Received conn check response from: #{inspect({src_ip, src_port})}, on: #{inspect(local_cand.base.base_address)} \
+        Received conn check response from: #{inspect({src_ip, src_port})}, \
+        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
         """)
 
         handle_conn_check_response(ice_agent, local_cand, src_ip, src_port, msg)
@@ -882,7 +885,8 @@ defmodule ExICE.Priv.ICEAgent do
       %Type{class: class, method: :binding}
       when is_response(class) and is_map_key(ice_agent.gathering_transactions, msg.transaction_id) ->
         Logger.debug("""
-        Received gathering transaction response from: #{inspect({src_ip, src_port})}, on: #{inspect(local_cand.base.base_address)} \
+        Received gathering transaction response from: #{inspect({src_ip, src_port})}, \
+        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
         """)
 
         handle_stun_gathering_transaction_response(ice_agent, msg)

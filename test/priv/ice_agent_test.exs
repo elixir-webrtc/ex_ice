@@ -977,7 +977,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
-    # assert client sends binding request
+    # assert client sends ice binding request and channel bind request
     assert packet = Transport.Mock.recv(socket)
     assert {:ok, req} = ExSTUN.Message.decode(packet)
     assert req.type.class == :indication
@@ -987,6 +987,11 @@ defmodule ExICE.Priv.ICEAgentTest do
     {:ok, req} = ExSTUN.Message.decode(data)
     assert req.type.class == :request
     assert req.type.method == :binding
+
+    assert packet = Transport.Mock.recv(socket)
+    assert {:ok, channel_req} = ExSTUN.Message.decode(packet)
+    assert channel_req.type.class == :request
+    assert channel_req.type.method == :channel_bind
 
     # send binding success response
     resp =
@@ -1028,8 +1033,27 @@ defmodule ExICE.Priv.ICEAgentTest do
       ])
       |> Message.encode()
 
-    _ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, indication)
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, indication)
     assert_receive {:ex_ice, _pid, {:data, "someremotedata"}}
+
+    # send channel bind success response
+    channel_resp =
+      Message.new(
+        channel_req.transaction_id,
+        %Type{class: :success_response, method: :channel_bind},
+        []
+      )
+      |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
+      |> Message.encode()
+
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, channel_resp)
+
+    # try to once again send some data, this time it should be sent over channel
+    _ice_agent = ICEAgent.send_data(ice_agent, "somedata")
+    assert packet = Transport.Mock.recv(socket)
+    assert nil == Transport.Mock.recv(socket)
+    assert ExTURN.channel_data?(packet)
+    assert <<_channel_number::16, _len::16, "somedata">> = packet
   end
 
   defp binding_response(t_id, transport_module, socket, remote_pwd) do
