@@ -579,6 +579,10 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  @stun_ip {192, 168, 0, 3}
+  @stun_ip_str :inet.ntoa(@stun_ip)
+  @stun_port 19_302
+
   describe "gather srflx candidates" do
     setup do
       ice_agent =
@@ -587,7 +591,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           role: :controlling,
           transport_module: Transport.Mock,
           if_discovery_module: IfDiscovery.Mock,
-          ice_servers: [%{url: "stun:192.168.0.3:19302"}]
+          ice_servers: [%{url: "stun:#{@stun_ip_str}:#{@stun_port}"}]
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
@@ -602,6 +606,9 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     test "success response", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
+      {:ok, {_sock_ip, sock_port}} = ice_agent.transport_module.sockname(socket)
+      srflx_ip = {192, 168, 0, 2}
+      srflx_port = sock_port + 1
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
@@ -611,16 +618,14 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert req.type.class == :request
       assert req.type.method == :binding
 
-      {:ok, {_sock_ip, sock_port}} = ice_agent.transport_module.sockname(socket)
-
       resp =
         Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
-          %XORMappedAddress{address: {192, 168, 0, 2}, port: sock_port + 1}
+          %XORMappedAddress{address: srflx_ip, port: srflx_port}
         ])
         |> Message.encode()
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, {192, 168, 0, 3}, 19_302, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @stun_ip, @stun_port, resp)
 
       # assert there is a new, srflx candidate
       assert %ExICE.Priv.Candidate.Srflx{} =
@@ -629,8 +634,8 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Map.values()
                |> Enum.find(&(&1.base.type == :srflx))
 
-      assert srflx_cand.base.address == {192, 168, 0, 2}
-      assert srflx_cand.base.port == sock_port + 1
+      assert srflx_cand.base.address == srflx_ip
+      assert srflx_cand.base.port == srflx_port
       # assert gathering transaction succeeded
       assert ice_agent.gathering_transactions[req.transaction_id].state == :complete
     end
@@ -650,7 +655,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> Message.encode()
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, {192, 168, 0, 3}, 19_302, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @stun_ip, @stun_port, resp)
 
       # assert there are no new srflx candidates
       assert nil ==
