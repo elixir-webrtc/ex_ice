@@ -610,9 +610,8 @@ defmodule ExICE.Priv.ICEAgentTest do
       srflx_ip = {192, 168, 0, 2}
       srflx_port = sock_port + 1
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
-
       # assert ice agent started gathering transaction by sending a binding request
+      ice_agent = ICEAgent.handle_timeout(ice_agent)
       assert packet = Transport.Mock.recv(socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
       assert req.type.class == :request
@@ -708,27 +707,22 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "success response", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
-
       # assert ice agent started gathering transaction by sending an allocate request
+      ice_agent = ICEAgent.handle_timeout(ice_agent)
       req = read_allocate_request(socket)
 
       # TURN uses long-term authentication mechanism
       # where the first response is an error response with
       # attributes that client will use in the next request
       resp = allocate_error_response(req.transaction_id)
-
-      ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert ice agent repeats an allocate request
       req = read_allocate_request(socket)
 
       # reply with allocate success response
       resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
-
-      ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert there is a new relay candidate
       assert %ExICE.Priv.Candidate.Relay{} =
@@ -754,8 +748,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       resp = allocate_error_response(req.transaction_id)
 
-      ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       req = read_allocate_request(socket)
 
@@ -768,8 +761,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
         |> Message.encode()
 
-      ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert there isn't a new relay candidate
       assert nil ==
@@ -791,8 +783,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       resp = allocate_error_response(req.transaction_id)
 
-      ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       req = read_allocate_request(socket)
 
@@ -828,8 +819,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       resp = allocate_error_response(req.transaction_id)
 
-      ice_agent =
-        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       req = read_allocate_request(socket)
 
