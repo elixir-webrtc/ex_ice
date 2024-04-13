@@ -816,6 +816,25 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  test "relay ice_transport_policy" do
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.Mock,
+        ice_servers: [%{url: "stun:192.168.0.3:19302"}],
+        ice_transport_policy: :relay
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+
+    assert %{} == ice_agent.local_cands
+    assert %{} == ice_agent.gathering_transactions
+    assert [_socket] = ice_agent.sockets
+    assert ice_agent.gathering_state == :complete
+  end
+
   test "candidate fails to send data when ice is connected" do
     # 1. make ice agent connected
     # 2. replace candidate with the mock one that always fails to send  data

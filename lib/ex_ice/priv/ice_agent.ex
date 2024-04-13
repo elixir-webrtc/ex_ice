@@ -65,7 +65,7 @@ defmodule ExICE.Priv.ICEAgent do
     eoc: false,
     # {did we nominate pair, pair id}
     nominating?: {false, nil},
-    sockets: MapSet.new(),
+    sockets: [],
     local_cands: %{},
     remote_cands: %{},
     stun_servers: [],
@@ -213,9 +213,7 @@ defmodule ExICE.Priv.ICEAgent do
   def gather_candidates(
         %__MODULE__{gathering_state: :new, ice_transport_policy: :all} = ice_agent
       ) do
-    Logger.debug("Gathering state change: #{ice_agent.gathering_state} -> gathering")
-    notify(ice_agent.on_gathering_state_change, {:gathering_state_change, :gathering})
-    ice_agent = %{ice_agent | gathering_state: :gathering}
+    ice_agent = change_gathering_state(ice_agent, :gathering)
 
     {:ok, sockets} = Gatherer.open_sockets(ice_agent.gatherer)
     host_cands = Gatherer.gather_host_candidates(ice_agent.gatherer, sockets)
@@ -247,7 +245,7 @@ defmodule ExICE.Priv.ICEAgent do
   def gather_candidates(
         %__MODULE__{gathering_state: :new, ice_transport_policy: :relay} = ice_agent
       ) do
-    change_gathering_state(ice_agent, :gathering)
+    ice_agent = change_gathering_state(ice_agent, :gathering)
 
     {:ok, sockets} = Gatherer.open_sockets(ice_agent.gatherer)
 
