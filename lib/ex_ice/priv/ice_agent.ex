@@ -1923,14 +1923,16 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp send_keepalive(ice_agent, pair) do
     type = %Type{class: :indication, method: :binding}
+    local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
     req =
       type
       |> Message.new()
       |> Message.with_fingerprint()
 
-    dst = {pair.remote_cand.address, pair.remote_cand.port}
-    {_result, ice_agent} = do_send(ice_agent, pair.local_cand, dst, Message.encode(req))
+    dst = {remote_cand.address, remote_cand.port}
+    {_result, ice_agent} = do_send(ice_agent, local_cand, dst, Message.encode(req))
     ice_agent
   end
 
