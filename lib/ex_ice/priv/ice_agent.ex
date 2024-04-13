@@ -732,6 +732,10 @@ defmodule ExICE.Priv.ICEAgent do
     {_socket, {src_ip, src_port}} = tr_id
 
     case ExTURN.Client.handle_message(tr.client, {:socket_data, src_ip, src_port, packet}) do
+      {:ok, client} ->
+        tr = %{tr | client: client}
+        put_in(ice_agent.gathering_transactions[tr_id], tr)
+
       {:allocation_created, {alloc_ip, alloc_port}, client} ->
         tr = %{tr | client: client, state: :complete}
 

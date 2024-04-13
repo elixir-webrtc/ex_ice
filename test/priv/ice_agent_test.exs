@@ -7,7 +7,9 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
-  alias ExSTUN.Message.Attribute.{ErrorCode, Username, XORMappedAddress}
+  alias ExSTUN.Message.Attribute.{ErrorCode, Nonce, Realm, Username, XORMappedAddress}
+
+  alias ExTURN.Attribute.{Lifetime, XORRelayedAddress}
 
   defmodule IfDiscovery.Mock do
     @behaviour ExICE.Priv.IfDiscovery
@@ -582,8 +584,11 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
+      # assert ice agent started gathering transaction by sending a binding request
       assert packet = Transport.Mock.recv(local_cand.base.socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :binding
 
       resp =
         Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
@@ -628,6 +633,176 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [local_cand] == Map.values(ice_agent.local_cands)
       # assert gathering transaction failed
       assert ice_agent.gathering_transactions[req.transaction_id].state == :failed
+    end
+  end
+
+  @turn_ip {192, 168, 0, 3}
+  @turn_ip_str :inet.ntoa(@turn_ip)
+  @turn_port 19_302
+  @turn_relay_ip {192, 168, 0, 3}
+  @turn_relay_port 12_345
+  @turn_realm "testrealm"
+  @turn_nonce "testnonce"
+  @turn_username "testusername"
+  @turn_password "testpassword"
+
+  describe "gather relay candidates" do
+    setup do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.Mock,
+          ice_servers: [
+            %{
+              url: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
+              username: @turn_username,
+              credential: @turn_password
+            }
+          ]
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+
+      [local_cand] = Map.values(ice_agent.local_cands)
+
+      # assert no transactions are started until handle_timeout is called
+      assert nil == Transport.Mock.recv(local_cand.base.socket)
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "success response", %{ice_agent: ice_agent} do
+      [local_cand] = Map.values(ice_agent.local_cands)
+
+      ice_agent = ICEAgent.handle_timeout(ice_agent)
+
+      # assert ice agent started gathering transaction by sending an allocate request
+      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :allocate
+
+      # TURN uses long-term authentication mechanism
+      # where the first response is an error response with
+      # attributes that client will use in the next request
+      resp = allocate_error_response(req.transaction_id)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+
+      # assert ice agent repeats an allocate request
+      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :allocate
+
+      # reply with allocate success response
+      resp = allocate_success_response(req.transaction_id, local_cand)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+
+      # assert there is a new relay candidate
+      assert %ExICE.Priv.Candidate.Relay{} =
+               relay_cand =
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.base.type == :relay))
+
+      assert relay_cand.base.address == @turn_relay_ip
+      assert relay_cand.base.port == @turn_relay_port
+
+      # assert gathering transaction succeeded
+      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      assert ice_agent.gathering_transactions[turn_tr_id].state == :complete
+    end
+
+    test "error response", %{ice_agent: ice_agent} do
+      [local_cand] = Map.values(ice_agent.local_cands)
+
+      ice_agent = ICEAgent.handle_timeout(ice_agent)
+
+      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :allocate
+
+      resp = allocate_error_response(req.transaction_id)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+
+      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :allocate
+
+      # reply with allocate error response
+      resp =
+        Message.new(req.transaction_id, %Type{class: :error_response, method: :allocate}, [
+          # allocation quota reached
+          %ErrorCode{code: 486}
+        ])
+        |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
+        |> Message.encode()
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+
+      # assert there isn't a new relay candidate
+      assert nil ==
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.base.type == :relay))
+
+      # assert gathering transaction failed
+      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      assert ice_agent.gathering_transactions[turn_tr_id].state == :failed
+    end
+
+    test "invalid response", %{ice_agent: ice_agent} do
+      [local_cand] = Map.values(ice_agent.local_cands)
+
+      ice_agent = ICEAgent.handle_timeout(ice_agent)
+
+      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :allocate
+
+      resp = allocate_error_response(req.transaction_id)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+
+      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :allocate
+
+      # reply with invalid response (no attributes)
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :allocate}, [])
+        |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
+        |> Message.encode()
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+
+      # assert there isn't a new relay candidate
+      assert nil ==
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.base.type == :relay))
+
+      # assert gathering transaction is still in-progress
+      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      assert ice_agent.gathering_transactions[turn_tr_id].state == :in_progress
+
+      # TODO reply with correct response and assert there is a new relay-cand
+      # after fixing https://github.com/elixir-webrtc/ex_turn/issues/3
     end
   end
 
@@ -689,6 +864,25 @@ defmodule ExICE.Priv.ICEAgentTest do
     ])
     |> Message.with_integrity(remote_pwd)
     |> Message.with_fingerprint()
+    |> Message.encode()
+  end
+
+  defp allocate_error_response(t_id) do
+    Message.new(t_id, %Type{class: :error_response, method: :allocate}, [
+      %Realm{value: @turn_realm},
+      %Nonce{value: @turn_nonce},
+      %ErrorCode{code: 401}
+    ])
+    |> Message.encode()
+  end
+
+  defp allocate_success_response(t_id, local_cand) do
+    Message.new(t_id, %Type{class: :success_response, method: :allocate}, [
+      %XORRelayedAddress{address: @turn_relay_ip, port: @turn_relay_port},
+      %Lifetime{value: 600},
+      %XORMappedAddress{address: local_cand.base.address, port: local_cand.base.port}
+    ])
+    |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
     |> Message.encode()
   end
 end
