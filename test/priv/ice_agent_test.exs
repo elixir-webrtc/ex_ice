@@ -114,7 +114,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "with correct attributes", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -130,13 +130,13 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert packet = Transport.Mock.recv(socket)
       assert {:ok, msg} = ExSTUN.Message.decode(packet)
       assert msg.type == %ExSTUN.Message.Type{class: :success_response, method: :binding}
       assert msg.transaction_id == request.transaction_id
@@ -150,7 +150,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "without username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -165,17 +165,17 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert_bad_request_error_response(local_cand.base.socket, request)
+      assert_bad_request_error_response(socket, request)
     end
 
     test "without message-integrity", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -190,17 +190,17 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert_bad_request_error_response(local_cand.base.socket, request)
+      assert_bad_request_error_response(socket, request)
     end
 
     test "without fingerprint", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -215,17 +215,17 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert_silently_discarded(local_cand.base.socket)
+      assert_silently_discarded(socket)
     end
 
     test "without role", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -240,17 +240,17 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert_bad_request_error_response(local_cand.base.socket, request)
+      assert_bad_request_error_response(socket, request)
     end
 
     test "without priority", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -265,17 +265,17 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert_bad_request_error_response(local_cand.base.socket, request)
+      assert_bad_request_error_response(socket, request)
     end
 
     test "with non-matching username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -291,17 +291,17 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert_unauthenticated_error_response(local_cand.base.socket, request)
+      assert_unauthenticated_error_response(socket, request)
     end
 
     test "with non-matching fingerprint", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -320,17 +320,17 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           request
         )
 
-      assert_silently_discarded(local_cand.base.socket)
+      assert_silently_discarded(socket)
     end
 
     test "with non-matching message integrity", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       request =
         Message.new(%Type{class: :request, method: :binding}, [
@@ -346,13 +346,13 @@ defmodule ExICE.Priv.ICEAgentTest do
       _ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           raw_request
         )
 
-      assert_unauthenticated_error_response(local_cand.base.socket, request)
+      assert_unauthenticated_error_response(socket, request)
     end
 
     defp assert_bad_request_error_response(socket, request) do
@@ -407,11 +407,11 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "request", %{ice_agent: ice_agent} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert packet = Transport.Mock.recv(socket)
       assert is_binary(packet)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
       assert :ok == ExSTUN.Message.check_fingerprint(req)
@@ -429,17 +429,24 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "success response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
-      resp = binding_response(req.transaction_id, local_cand, ice_agent.remote_pwd)
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
 
       ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           resp
@@ -452,20 +459,27 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent: ice_agent,
       remote_cand: remote_cand
     } do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
       <<first_byte, rest::binary>> = ice_agent.remote_pwd
       invalid_remote_pwd = <<first_byte + 1, rest::binary>>
 
-      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
-      resp = binding_response(req.transaction_id, local_cand, invalid_remote_pwd)
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          invalid_remote_pwd
+        )
 
       ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           resp
@@ -477,11 +491,11 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
+      req = read_binding_request(socket, ice_agent.remote_pwd)
 
       resp =
         Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
@@ -493,7 +507,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           resp
@@ -503,11 +517,11 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "unauthenticated error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
+      req = read_binding_request(socket, ice_agent.remote_pwd)
 
       resp =
         Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
@@ -519,7 +533,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           remote_cand.address,
           remote_cand.port,
           resp
@@ -529,19 +543,26 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "response from non-symmetric address", %{ice_agent: ice_agent, remote_cand: remote_cand} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
-      resp = binding_response(req.transaction_id, local_cand, ice_agent.remote_pwd)
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
 
       {a, b, c, d} = remote_cand.address
 
       ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          local_cand.base.socket,
+          socket,
           {a, b, c, d + 1},
           remote_cand.port + 1,
           resp
@@ -571,33 +592,35 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
 
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       # assert no transactions are started until handle_timeout is called
-      assert nil == Transport.Mock.recv(local_cand.base.socket)
+      assert nil == Transport.Mock.recv(socket)
 
       %{ice_agent: ice_agent}
     end
 
     test "success response", %{ice_agent: ice_agent} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
       # assert ice agent started gathering transaction by sending a binding request
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert packet = Transport.Mock.recv(socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
       assert req.type.class == :request
       assert req.type.method == :binding
 
+      {:ok, {_sock_ip, sock_port}} = ice_agent.transport_module.sockname(socket)
+
       resp =
         Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
-          %XORMappedAddress{address: {192, 168, 0, 2}, port: local_cand.base.port + 1}
+          %XORMappedAddress{address: {192, 168, 0, 2}, port: sock_port + 1}
         ])
         |> Message.encode()
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, {192, 168, 0, 3}, 19_302, resp)
+        ICEAgent.handle_udp(ice_agent, socket, {192, 168, 0, 3}, 19_302, resp)
 
       # assert there is a new, srflx candidate
       assert %ExICE.Priv.Candidate.Srflx{} =
@@ -607,17 +630,17 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Enum.find(&(&1.base.type == :srflx))
 
       assert srflx_cand.base.address == {192, 168, 0, 2}
-      assert srflx_cand.base.port == local_cand.base.port + 1
+      assert srflx_cand.base.port == sock_port + 1
       # assert gathering transaction succeeded
       assert ice_agent.gathering_transactions[req.transaction_id].state == :complete
     end
 
     test "error response", %{ice_agent: ice_agent} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      assert packet = Transport.Mock.recv(local_cand.base.socket)
+      assert packet = Transport.Mock.recv(socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
 
       resp =
@@ -627,10 +650,14 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> Message.encode()
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, {192, 168, 0, 3}, 19_302, resp)
+        ICEAgent.handle_udp(ice_agent, socket, {192, 168, 0, 3}, 19_302, resp)
 
-      # assert there are no new candidates
-      assert [local_cand] == Map.values(ice_agent.local_cands)
+      # assert there are no new srflx candidates
+      assert nil ==
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.base.type == :srflx))
+
       # assert gathering transaction failed
       assert ice_agent.gathering_transactions[req.transaction_id].state == :failed
     end
@@ -665,21 +692,21 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
 
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       # assert no transactions are started until handle_timeout is called
-      assert nil == Transport.Mock.recv(local_cand.base.socket)
+      assert nil == Transport.Mock.recv(socket)
 
       %{ice_agent: ice_agent}
     end
 
     test "success response", %{ice_agent: ice_agent} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
       # assert ice agent started gathering transaction by sending an allocate request
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
       # TURN uses long-term authentication mechanism
       # where the first response is an error response with
@@ -687,16 +714,16 @@ defmodule ExICE.Priv.ICEAgentTest do
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert ice agent repeats an allocate request
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
       # reply with allocate success response
-      resp = allocate_success_response(req.transaction_id, local_cand)
+      resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert there is a new relay candidate
       assert %ExICE.Priv.Candidate.Relay{} =
@@ -709,23 +736,23 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert relay_cand.base.port == @turn_relay_port
 
       # assert gathering transaction succeeded
-      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      turn_tr_id = {socket, {@turn_ip, @turn_port}}
       assert ice_agent.gathering_transactions[turn_tr_id].state == :complete
     end
 
     test "error response", %{ice_agent: ice_agent} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
       # reply with allocate error response
       resp =
@@ -737,7 +764,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> Message.encode()
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert there isn't a new relay candidate
       assert nil ==
@@ -746,23 +773,23 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Enum.find(&(&1.base.type == :relay))
 
       # assert gathering transaction failed
-      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      turn_tr_id = {socket, {@turn_ip, @turn_port}}
       assert ice_agent.gathering_transactions[turn_tr_id].state == :failed
     end
 
     test "invalid response", %{ice_agent: ice_agent} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
       # reply with invalid response (no attributes)
       resp =
@@ -771,7 +798,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> Message.encode()
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
       # assert there isn't a new relay candidate
       assert nil ==
@@ -780,7 +807,7 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Enum.find(&(&1.base.type == :relay))
 
       # assert gathering transaction is still in-progress
-      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      turn_tr_id = {socket, {@turn_ip, @turn_port}}
       assert ice_agent.gathering_transactions[turn_tr_id].state == :in_progress
 
       # TODO reply with correct response and assert there is a new relay-cand
@@ -788,20 +815,20 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "ex_turn timeout", %{ice_agent: ice_agent} do
-      [local_cand] = Map.values(ice_agent.local_cands)
+      [socket] = ice_agent.sockets
 
       ice_agent = ICEAgent.handle_timeout(ice_agent)
 
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
       resp = allocate_error_response(req.transaction_id)
 
       ice_agent =
-        ICEAgent.handle_udp(ice_agent, local_cand.base.socket, @turn_ip, @turn_port, resp)
+        ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
 
-      req = assert_allocate_request_sent(local_cand)
+      req = assert_allocate_request_sent(socket)
 
-      turn_tr_id = {local_cand.base.socket, {@turn_ip, @turn_port}}
+      turn_tr_id = {socket, {@turn_ip, @turn_port}}
       tr = Map.fetch!(ice_agent.gathering_transactions, turn_tr_id)
 
       ice_agent =
@@ -853,19 +880,26 @@ defmodule ExICE.Priv.ICEAgentTest do
       |> ICEAgent.gather_candidates()
       |> ICEAgent.add_remote_candidate(ExICE.Candidate.marshal(remote_cand))
 
-    [local_cand] = Map.values(ice_agent.local_cands)
+    [socket] = ice_agent.sockets
 
     assert ice_agent.gathering_state == :complete
 
     # make ice_agent connected
     ice_agent = ICEAgent.handle_timeout(ice_agent)
-    req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
-    resp = binding_response(req.transaction_id, local_cand, ice_agent.remote_pwd)
+    req = read_binding_request(socket, ice_agent.remote_pwd)
+
+    resp =
+      binding_response(
+        req.transaction_id,
+        ice_agent.transport_module,
+        socket,
+        ice_agent.remote_pwd
+      )
 
     ice_agent =
       ICEAgent.handle_udp(
         ice_agent,
-        local_cand.base.socket,
+        socket,
         remote_cand.address,
         remote_cand.port,
         resp
@@ -875,6 +909,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent.state == :connected
 
     # replace candidate with the mock one
+    [local_cand] = Map.values(ice_agent.local_cands)
     mock_cand = %Candidate.Mock{base: local_cand.base}
     ice_agent = %{ice_agent | local_cands: %{mock_cand.base.id => mock_cand}}
 
@@ -887,9 +922,11 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent.checklist == %{}
   end
 
-  defp binding_response(t_id, local_cand, remote_pwd) do
+  defp binding_response(t_id, transport_module, socket, remote_pwd) do
+    {:ok, {sock_ip, sock_port}} = transport_module.sockname(socket)
+
     Message.new(t_id, %Type{class: :success_response, method: :binding}, [
-      %XORMappedAddress{address: local_cand.base.address, port: local_cand.base.port}
+      %XORMappedAddress{address: sock_ip, port: sock_port}
     ])
     |> Message.with_integrity(remote_pwd)
     |> Message.with_fingerprint()
@@ -905,18 +942,20 @@ defmodule ExICE.Priv.ICEAgentTest do
     |> Message.encode()
   end
 
-  defp allocate_success_response(t_id, local_cand) do
+  defp allocate_success_response(t_id, transport_module, socket) do
+    {:ok, {sock_ip, sock_port}} = transport_module.sockname(socket)
+
     Message.new(t_id, %Type{class: :success_response, method: :allocate}, [
       %XORRelayedAddress{address: @turn_relay_ip, port: @turn_relay_port},
       %Lifetime{value: 600},
-      %XORMappedAddress{address: local_cand.base.address, port: local_cand.base.port}
+      %XORMappedAddress{address: sock_ip, port: sock_port}
     ])
     |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
     |> Message.encode()
   end
 
-  defp assert_allocate_request_sent(local_cand) do
-    assert packet = Transport.Mock.recv(local_cand.base.socket)
+  defp assert_allocate_request_sent(socket) do
+    assert packet = Transport.Mock.recv(socket)
     assert {:ok, req} = ExSTUN.Message.decode(packet)
     assert req.type.class == :request
     assert req.type.method == :allocate
