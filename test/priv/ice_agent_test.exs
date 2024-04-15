@@ -67,7 +67,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     test "with correct remote candidate", %{ice_agent: ice_agent} do
       remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-      ice_agent = ICEAgent.Impl.set_remote_credentials(ice_agent, "remoteufrag", "remotepwd")
+      ice_agent = ICEAgent.set_remote_credentials(ice_agent, "remoteufrag", "remotepwd")
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, ExICE.Candidate.marshal(remote_cand))
 
       assert [%ExICE.Candidate{} = r_cand] = Map.values(ice_agent.remote_cands)
