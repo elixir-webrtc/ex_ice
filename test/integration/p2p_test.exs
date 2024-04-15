@@ -8,8 +8,7 @@ defmodule ExICE.Integration.P2PTest do
   @tag :p2p
   @tag :tmp_dir
   test "P2P connection", %{tmp_dir: tmp_dir} do
-    stun_servers = ["stun:stun.l.google.com:19302"]
-    # stun_servers = []
+    ice_servers = [%{url: "stun:stun.l.google.com:19302"}]
 
     ip_filter = fn
       {_, _, _, _, _, _, _, _} -> true
@@ -18,10 +17,9 @@ defmodule ExICE.Integration.P2PTest do
     end
 
     {:ok, agent1} =
-      ICEAgent.start_link(:controlling, ip_filter: ip_filter, stun_servers: stun_servers)
+      ICEAgent.start_link(:controlling, ip_filter: ip_filter, ice_servers: ice_servers)
 
-    {:ok, agent2} =
-      ICEAgent.start_link(:controlled, ip_filter: ip_filter, stun_servers: stun_servers)
+    {:ok, agent2} = ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: [])
 
     {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
     {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
@@ -86,8 +84,8 @@ defmodule ExICE.Integration.P2PTest do
   @tag :tmp_dir
   @tag :role_conflict
   test "P2P connection with role conflict", %{tmp_dir: tmp_dir} do
-    stun_servers = ["stun:stun.l.google.com:19302"]
-    # stun_servers = []
+    ice_servers = [%{url: "stun:stun.l.google.com:19302"}]
+    # ice_servers = []
 
     ip_filter = fn
       {_, _, _, _, _, _, _, _} -> true
@@ -96,10 +94,64 @@ defmodule ExICE.Integration.P2PTest do
     end
 
     {:ok, agent1} =
-      ICEAgent.start_link(:controlled, ip_filter: ip_filter, stun_servers: stun_servers)
+      ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: ice_servers)
 
     {:ok, agent2} =
-      ICEAgent.start_link(:controlled, ip_filter: ip_filter, stun_servers: stun_servers)
+      ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: ice_servers)
+
+    {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
+    {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
+
+    :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
+    :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    :ok = ICEAgent.gather_candidates(agent1)
+    :ok = ICEAgent.gather_candidates(agent2)
+
+    a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
+    a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
+
+    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
+
+    assert p2p(agent1, agent2, a1_status, a2_status)
+
+    assert File.read!(Path.join([tmp_dir, "a1_recv_data"])) ==
+             File.read!("./test/fixtures/lotr.txt")
+
+    assert File.read!(Path.join([tmp_dir, "a2_recv_data"])) ==
+             File.read!("./test/fixtures/lotr.txt")
+  end
+
+  @tag :tmp_dir
+  @tag :relay
+  test "P2P connection via turn server", %{tmp_dir: tmp_dir} do
+    # This test is by default excluded from runinng.
+    # Before running, start coturn with: turnserver -a -u testusername:testpassword
+
+    ice_servers = [
+      %{
+        url: "turn:127.0.0.1:3478?transport=udp",
+        username: "testusername",
+        credential: "testpassword"
+      }
+    ]
+
+    ip_filter = fn
+      {_, _, _, _, _, _, _, _} -> true
+      {172, _, _, _} -> true
+      _other -> true
+    end
+
+    {:ok, agent1} =
+      ICEAgent.start_link(:controlling,
+        ip_filter: ip_filter,
+        ice_servers: ice_servers,
+        ice_transport_policy: :relay
+      )
+
+    {:ok, agent2} =
+      ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: [])
 
     {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
     {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
