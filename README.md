@@ -15,7 +15,7 @@ Implements:
 ## Features
 * compatible both with aggressive and regular nomination
 * role conflict resolution
-* supports host, prflx, srflx and remote relay candidates (support for local relay candidates is planned)
+* supports host, prflx, srflx and relay candidates
 * transaction pacing
 * keepalives on valid and selected pairs
 * mDNS client
