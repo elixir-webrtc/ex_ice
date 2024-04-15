@@ -34,6 +34,7 @@ defmodule ExICE.ICEAgent.ImplTest do
 
     test "with correct remote candidate", %{ice_agent: ice_agent} do
       remote_cand = Candidate.new(:host, {192, 168, 0, 2}, 8445, nil, nil, nil)
+      ice_agent = ICEAgent.Impl.set_remote_credentials(ice_agent, "remoteufrag", "remotepwd")
       ice_agent = ICEAgent.Impl.add_remote_candidate(ice_agent, Candidate.marshal(remote_cand))
 
       assert [%Candidate{} = r_cand] = ice_agent.remote_cands

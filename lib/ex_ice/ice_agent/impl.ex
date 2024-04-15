@@ -230,6 +230,17 @@ defmodule ExICE.ICEAgent.Impl do
     ice_agent
   end
 
+  def add_remote_candidate(
+        %__MODULE__{remote_ufrag: nil, remote_pwd: nil} = ice_agent,
+        remote_cand
+      ) do
+    Logger.warning(
+      "Received remote candidate but there are no remote credentials. Ignoring. Candidate: #{inspect(remote_cand)}"
+    )
+
+    ice_agent
+  end
+
   def add_remote_candidate(ice_agent, remote_cand) do
     Logger.debug("New remote candidate: #{inspect(remote_cand)}")
 
@@ -317,15 +328,6 @@ defmodule ExICE.ICEAgent.Impl do
   end
 
   @spec handle_timeout(t()) :: t()
-  def handle_timeout(%__MODULE__{remote_ufrag: nil, remote_pwd: nil} = ice_agent) do
-    # TODO we can do this better i.e.
-    # allow for executing gathering transactions
-    Logger.debug("Ta timer fired but there are no remote credentials. Scheduling next check")
-    ta_timer = Process.send_after(self(), :ta_timeout, @ta_timeout)
-    ice_agent = %{ice_agent | ta_timer: ta_timer}
-    update_ta_timer(ice_agent)
-  end
-
   def handle_timeout(%__MODULE__{state: state} = ice_agent)
       when state.state in [:completed, :failed] do
     Logger.warning("""
