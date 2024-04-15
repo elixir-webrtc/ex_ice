@@ -61,7 +61,7 @@ defmodule ExICE.Priv.Gatherer do
          ]) do
       {:ok, socket} ->
         {:ok, {^ip, sock_port}} = gatherer.transport_module.sockname(socket)
-        Logger.debug("Successfully open socket for: #{inspect(ip)}:#{sock_port}")
+        Logger.debug("Successfully opened socket for: #{inspect(ip)}:#{sock_port}")
         socket
 
       {:error, reason} ->
