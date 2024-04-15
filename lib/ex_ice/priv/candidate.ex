@@ -45,7 +45,8 @@ defmodule ExICE.Priv.Candidate do
     2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
   end
 
-  @spec foundation(type(), :inet.ip_address(), :inet.ip_address() | nil, atom()) :: integer()
+  @spec foundation(type(), :inet.ip_address() | String.t(), :inet.ip_address() | nil, atom()) ::
+          integer()
   def foundation(type, ip, stun_turn_ip, transport) do
     {type, ip, stun_turn_ip, transport}
     |> then(&inspect(&1))
