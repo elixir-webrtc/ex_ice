@@ -58,7 +58,7 @@ defmodule ExICE.Priv.GathererTest do
     [%Candidate.Host{} = c] = Gatherer.gather_host_candidates(gatherer, sockets)
 
     assert :ok = Gatherer.gather_srflx_candidate(gatherer, 1234, c.base.socket, stun_server)
-    assert [{_socket, packet}] = :ets.lookup(:transport_mock, c.base.socket)
+    assert packet = Transport.Mock.recv(c.base.socket)
     assert {:ok, req} = ExSTUN.Message.decode(packet)
     assert req.attributes == []
     assert req.type == %Type{class: :request, method: :binding}
