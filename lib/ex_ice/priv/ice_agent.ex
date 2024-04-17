@@ -262,27 +262,29 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   @spec add_remote_candidate(t(), String.t()) :: t()
-  def add_remote_candidate(%__MODULE__{eoc: true} = ice_agent, remote_cand) do
-    Logger.warning(
-      "Received remote candidate after end-of-candidates. Ignoring. Candidate: #{inspect(remote_cand)}"
-    )
+  def add_remote_candidate(%__MODULE__{eoc: true} = ice_agent, remote_cand_str) do
+    Logger.warning("""
+    Received remote candidate after end-of-candidates. Ignoring.
+    Candidate: #{remote_cand_str}\
+    """)
 
     ice_agent
   end
 
   def add_remote_candidate(
         %__MODULE__{remote_ufrag: nil, remote_pwd: nil} = ice_agent,
-        remote_cand
+        remote_cand_str
       ) do
-    Logger.warning(
-      "Received remote candidate but there are no remote credentials. Ignoring. Candidate: #{inspect(remote_cand)}"
-    )
+    Logger.warning("""
+    Received remote candidate but there are no remote credentials. Ignoring.
+    Candidate: #{remote_cand_str}\
+    """)
 
     ice_agent
   end
 
-  def add_remote_candidate(ice_agent, remote_cand) do
-    Logger.debug("New remote candidate: #{inspect(remote_cand)}")
+  def add_remote_candidate(ice_agent, remote_cand_str) do
+    Logger.debug("New remote candidate: #{remote_cand_str}")
 
     resolve_address = fn
       remote_cand when is_binary(remote_cand.address) ->
@@ -303,8 +305,15 @@ defmodule ExICE.Priv.ICEAgent do
         {:ok, remote_cand}
     end
 
-    with {_, {:ok, remote_cand}} <- {:unmarshal, ExICE.Candidate.unmarshal(remote_cand)},
-         {_, {:ok, remote_cand}} <- {:resolve_address, resolve_address.(remote_cand)} do
+    uniq? = fn remote_cands, remote_cand ->
+      not Enum.any?(remote_cands, fn cand ->
+        cand.address == remote_cand.address and cand.port == remote_cand.port
+      end)
+    end
+
+    with {_, {:ok, remote_cand}} <- {:unmarshal, ExICE.Candidate.unmarshal(remote_cand_str)},
+         {_, {:ok, remote_cand}} <- {:resolve_address, resolve_address.(remote_cand)},
+         {_, true} <- {:uniq, uniq?.(Map.values(ice_agent.remote_cands), remote_cand)} do
       ice_agent = do_add_remote_candidate(ice_agent, remote_cand)
       Logger.debug("Successfully added remote candidate.")
 
@@ -312,9 +321,18 @@ defmodule ExICE.Priv.ICEAgent do
       |> update_connection_state()
       |> update_ta_timer()
     else
+      {:uniq, false} ->
+        Logger.warning("""
+        Duplicated remote candidate. Ignoring.
+        Candidate: #{remote_cand_str}\
+        """)
+
+        ice_agent
+
       {operation, {:error, reason}} ->
         Logger.warning("""
         Invalid remote candidate. Couldn't #{operation}, reason: #{inspect(reason)}. Ignoring.
+        Candidate: #{remote_cand_str}\
         """)
 
         ice_agent
@@ -1926,6 +1944,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp send_keepalive(ice_agent, pair) do
+    Logger.debug("Sending keepalive")
     type = %Type{class: :indication, method: :binding}
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
