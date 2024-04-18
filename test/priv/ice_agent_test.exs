@@ -61,13 +61,13 @@ defmodule ExICE.Priv.ICEAgentTest do
           if_discovery_module: IfDiscovery.Mock,
           transport_module: Transport.Mock
         )
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
 
       %{ice_agent: ice_agent}
     end
 
     test "with correct remote candidate", %{ice_agent: ice_agent} do
       remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-      ice_agent = ICEAgent.set_remote_credentials(ice_agent, "remoteufrag", "remotepwd")
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, ExICE.Candidate.marshal(remote_cand))
 
       assert [%ExICE.Candidate{} = r_cand] = Map.values(ice_agent.remote_cands)
@@ -85,6 +85,21 @@ defmodule ExICE.Priv.ICEAgentTest do
       remote_cand =
         ExICE.Candidate.new(:host, address: "somehopefullyinvalidmdnscandidate.local", port: 8445)
 
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, ExICE.Candidate.marshal(remote_cand))
+      assert %{} == ice_agent.remote_cands
+    end
+
+    test "with duplicated remote candidate", %{ice_agent: ice_agent} do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+      serialized_remote_cand = ExICE.Candidate.marshal(remote_cand)
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, serialized_remote_cand)
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, serialized_remote_cand)
+      assert map_size(ice_agent.remote_cands) == 1
+    end
+
+    test "without remote credentials", %{ice_agent: ice_agent} do
+      ice_agent = %{ice_agent | remote_ufrag: nil, remote_pwd: nil}
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, ExICE.Candidate.marshal(remote_cand))
       assert %{} == ice_agent.remote_cands
     end
