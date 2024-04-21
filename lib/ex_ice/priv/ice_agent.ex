@@ -1711,16 +1711,23 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp parse_ice_servers(ice_servers) do
+    # Parse and flatten URLs
     ice_servers
-    |> Enum.map(fn ice_server ->
-      case ExSTUN.URI.parse(ice_server.url) do
-        {:ok, url} ->
-          %{ice_server | url: url}
+    |> Enum.flat_map(fn ice_server ->
+      ice_server.urls
+      |> List.wrap()
+      |> Enum.map(fn url ->
+        case ExSTUN.URI.parse(url) do
+          {:ok, url} ->
+            ice_server
+            |> Map.delete(:urls)
+            |> Map.put(:url, url)
 
-        :error ->
-          Logger.warning("Couldn't parse URL: #{inspect(ice_server.url)}. Ignoring.")
-          nil
-      end
+          :error ->
+            Logger.warning("Couldn't parse URL: #{inspect(ice_server.url)}. Ignoring.")
+            nil
+        end
+      end)
     end)
     |> Enum.reject(&(&1 == nil))
     |> Enum.split_with(fn ice_server -> ice_server.url.scheme in [:stun, :stuns] end)
