@@ -322,7 +322,9 @@ defmodule ExICE.Priv.ICEAgent do
       |> update_ta_timer()
     else
       {:uniq, false} ->
-        Logger.warning("""
+        # This is pretty common case (we can get conn-check
+        # before getting a remote candidate), hence debug.
+        Logger.debug("""
         Duplicated remote candidate. Ignoring.
         Candidate: #{remote_cand_str}\
         """)
