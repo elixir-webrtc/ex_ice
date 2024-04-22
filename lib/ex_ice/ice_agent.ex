@@ -64,7 +64,7 @@ defmodule ExICE.ICEAgent do
           ip_filter: (:inet.ip_address() -> boolean),
           ice_servers: [
             %{
-              :url => String.t(),
+              :urls => [String.t()] | String.t(),
               optional(:username) => String.t(),
               optional(:credential) => String.t()
             }

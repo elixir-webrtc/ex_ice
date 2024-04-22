@@ -8,7 +8,7 @@ defmodule ExICE.Integration.P2PTest do
   @tag :p2p
   @tag :tmp_dir
   test "P2P connection", %{tmp_dir: tmp_dir} do
-    ice_servers = [%{url: "stun:stun.l.google.com:19302"}]
+    ice_servers = [%{urls: "stun:stun.l.google.com:19302"}]
 
     ip_filter = fn
       {_, _, _, _, _, _, _, _} -> true
@@ -84,7 +84,7 @@ defmodule ExICE.Integration.P2PTest do
   @tag :tmp_dir
   @tag :role_conflict
   test "P2P connection with role conflict", %{tmp_dir: tmp_dir} do
-    ice_servers = [%{url: "stun:stun.l.google.com:19302"}]
+    ice_servers = [%{urls: "stun:stun.l.google.com:19302"}]
     # ice_servers = []
 
     ip_filter = fn
@@ -131,7 +131,7 @@ defmodule ExICE.Integration.P2PTest do
 
     ice_servers = [
       %{
-        url: "turn:127.0.0.1:3478?transport=udp",
+        urls: "turn:127.0.0.1:3478?transport=udp",
         username: "testusername",
         credential: "testpassword"
       }

@@ -607,7 +607,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           role: :controlling,
           transport_module: Transport.Mock,
           if_discovery_module: IfDiscovery.Mock,
-          ice_servers: [%{url: "stun:#{@stun_ip_str}:#{@stun_port}"}]
+          ice_servers: [%{urls: "stun:#{@stun_ip_str}:#{@stun_port}"}]
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
@@ -703,7 +703,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           if_discovery_module: IfDiscovery.Mock,
           ice_servers: [
             %{
-              url: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
+              urls: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
               username: @turn_username,
               credential: @turn_password
             }
@@ -861,7 +861,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         role: :controlling,
         transport_module: Transport.Mock,
         if_discovery_module: IfDiscovery.Mock,
-        ice_servers: [%{url: "stun:192.168.0.3:19302"}],
+        ice_servers: [%{urls: "stun:192.168.0.3:19302"}],
         ice_transport_policy: :relay
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -946,7 +946,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         transport_module: Transport.Mock,
         ice_servers: [
           %{
-            url: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
+            urls: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
             username: @turn_username,
             credential: @turn_password
           }
