@@ -1544,7 +1544,7 @@ defmodule ExICE.Priv.ICEAgent do
 
     selected_pair =
       if ice_agent.selected_pair != nil and
-           ice_agent.selected_pair.local_cand.base.id == local_cand.base.id,
+           ice_agent.selected_pair.local_cand_id == local_cand.base.id,
          do: nil,
          else: ice_agent.selected_pair
 
@@ -1553,7 +1553,7 @@ defmodule ExICE.Priv.ICEAgent do
         {true, pair_id} ->
           pair = Map.fetch!(ice_agent.checklist, pair_id)
 
-          if pair.local_cand.base.id == local_cand.base.id do
+          if pair.local_cand_id == local_cand.base.id do
             {false, nil}
           else
             ice_agent.nominating?
