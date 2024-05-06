@@ -341,7 +341,19 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_info(:ta_timeout, state) do
-    ice_agent = ExICE.Priv.ICEAgent.handle_timeout(state.ice_agent)
+    ice_agent = ExICE.Priv.ICEAgent.handle_ta_timeout(state.ice_agent)
+    {:noreply, %{state | ice_agent: ice_agent}}
+  end
+
+  @impl true
+  def handle_info(:eoc_timeout, state) do
+    ice_agent = ExICE.Priv.ICEAgent.handle_eoc_timeout(state.ice_agent)
+    {:noreply, %{state | ice_agent: ice_agent}}
+  end
+
+  @impl true
+  def handle_info(:pair_timeout, state) do
+    ice_agent = ExICE.Priv.ICEAgent.handle_pair_timeout(state.ice_agent)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 

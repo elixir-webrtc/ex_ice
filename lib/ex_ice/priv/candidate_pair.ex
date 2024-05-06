@@ -20,7 +20,8 @@ defmodule ExICE.Priv.CandidatePair do
           valid?: boolean,
           succeeded_pair_id: integer() | nil,
           discovered_pair_id: integer() | nil,
-          keepalive_timer: reference() | nil
+          keepalive_timer: reference() | nil,
+          last_seen: integer()
         }
 
   @enforce_keys [:id, :local_cand_id, :remote_cand_id, :priority]
@@ -32,7 +33,10 @@ defmodule ExICE.Priv.CandidatePair do
                 valid?: false,
                 succeeded_pair_id: nil,
                 discovered_pair_id: nil,
-                keepalive_timer: nil
+                keepalive_timer: nil,
+                # Time when this pair has received some data
+                # or sent conn check.
+                last_seen: nil
               ]
 
   @doc false
@@ -47,7 +51,8 @@ defmodule ExICE.Priv.CandidatePair do
       remote_cand_id: remote_cand.id,
       priority: priority,
       state: state,
-      valid?: opts[:valid?] || false
+      valid?: opts[:valid?] || false,
+      last_seen: opts[:last_seen]
     }
   end
 

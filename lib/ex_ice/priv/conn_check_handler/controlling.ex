@@ -26,20 +26,15 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
       nil ->
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
         checklist = Map.put(ice_agent.checklist, pair.id, pair)
-        %ICEAgent{ice_agent | checklist: checklist}
+        ice_agent = %ICEAgent{ice_agent | checklist: checklist}
+        ICEAgent.send_binding_success_response(ice_agent, pair, msg)
 
-      %CandidatePair{} = pair
-      when ice_agent.selected_pair != nil and
-             pair.discovered_pair_id == ice_agent.selected_pair.id ->
-        # to be honest this might also be a retransmission
-        Logger.debug("Keepalive on selected pair: #{pair.discovered_pair_id}")
-        ice_agent
-
-      %CandidatePair{} ->
-        # keepalive/retransmission?
-        ice_agent
+      %CandidatePair{} = checklist_pair ->
+        checklist_pair = %CandidatePair{checklist_pair | last_seen: pair.last_seen}
+        checklist = Map.put(ice_agent.checklist, checklist_pair.id, checklist_pair)
+        ice_agent = %ICEAgent{ice_agent | checklist: checklist}
+        ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
     end
-    |> ICEAgent.send_binding_success_response(pair, msg)
   end
 
   @impl true
@@ -61,6 +56,6 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
       Logger.warning("Nomination succeeded but checklist hasn't finished.")
     end
 
-    %ICEAgent{ice_agent | nominating?: {false, nil}, selected_pair: pair}
+    %ICEAgent{ice_agent | nominating?: {false, nil}, selected_pair_id: pair.id}
   end
 end
