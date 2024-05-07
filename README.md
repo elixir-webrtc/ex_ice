@@ -17,7 +17,7 @@ Implements:
 * role conflict resolution
 * supports host, prflx, srflx and relay candidates
 * transaction pacing
-* keepalives on valid and selected pairs
+* keepalives (both incoming and outgoing) on valid and selected pairs
 * mDNS client
 
 ## Limitations

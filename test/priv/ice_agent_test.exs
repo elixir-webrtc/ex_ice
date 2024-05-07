@@ -425,7 +425,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "request", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       assert packet = Transport.Mock.recv(socket)
       assert is_binary(packet)
@@ -447,7 +447,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "success response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       req = read_binding_request(socket, ice_agent.remote_pwd)
 
@@ -477,7 +477,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     } do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       <<first_byte, rest::binary>> = ice_agent.remote_pwd
       invalid_remote_pwd = <<first_byte + 1, rest::binary>>
@@ -509,7 +509,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       req = read_binding_request(socket, ice_agent.remote_pwd)
 
@@ -535,7 +535,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "unauthenticated error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       req = read_binding_request(socket, ice_agent.remote_pwd)
 
@@ -561,7 +561,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "response from non-symmetric address", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       req = read_binding_request(socket, ice_agent.remote_pwd)
 
@@ -595,6 +595,51 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  test "pair timeout" do
+    # 1. make ice agent connected
+    # 2. mock the time a pair has received something from the peer
+    # 3. trigger pair timeout
+    # 4. assert that the pair has been marked as failed
+    # 5. trigger eoc timeout and assert that ice agent moved to the failed state
+    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.Mock,
+        transport_module: Transport.Mock
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(ExICE.Candidate.marshal(remote_cand))
+
+    # Make sure we are not gathering local candidates.
+    # That's important for moving to the failed state later on.
+    assert ice_agent.gathering_state == :complete
+
+    # make ice_agent connected
+    ice_agent = connect(ice_agent)
+
+    # mock last_seen field
+    [pair] = Map.values(ice_agent.checklist)
+    last_seen = System.monotonic_time(:millisecond) - 5_000
+    pair = %{pair | last_seen: last_seen}
+    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+
+    # trigger pair timeout
+    ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+    # assert that the pair is marked as failed
+    assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+
+    # trigger eoc timeout
+    ice_agent = ICEAgent.handle_eoc_timeout(ice_agent)
+
+    # assert ice agent moved to the failed state
+    assert ice_agent.state == :failed
+  end
+
   @stun_ip {192, 168, 0, 3}
   @stun_ip_str :inet.ntoa(@stun_ip)
   @stun_port 19_302
@@ -614,7 +659,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [socket] = ice_agent.sockets
 
-      # assert no transactions are started until handle_timeout is called
+      # assert no transactions are started until handle_ta_timeout is called
       assert nil == Transport.Mock.recv(socket)
 
       %{ice_agent: ice_agent}
@@ -627,7 +672,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       srflx_port = sock_port + 1
 
       # assert ice agent started gathering transaction by sending a binding request
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
       assert packet = Transport.Mock.recv(socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
       assert req.type.class == :request
@@ -658,7 +703,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "error response", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       assert packet = Transport.Mock.recv(socket)
       assert {:ok, req} = ExSTUN.Message.decode(packet)
@@ -714,7 +759,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [socket] = ice_agent.sockets
 
-      # assert no transactions are started until handle_timeout is called
+      # assert no transactions are started until handle_ta_timeout is called
       assert nil == Transport.Mock.recv(socket)
 
       %{ice_agent: ice_agent}
@@ -724,7 +769,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       [socket] = ice_agent.sockets
 
       # assert ice agent started gathering transaction by sending an allocate request
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
       req = read_allocate_request(socket)
 
       # TURN uses long-term authentication mechanism
@@ -758,7 +803,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "error response", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       req = read_allocate_request(socket)
 
@@ -793,7 +838,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "invalid response", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       req = read_allocate_request(socket)
 
@@ -829,7 +874,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "ex_turn timeout", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
 
-      ice_agent = ICEAgent.handle_timeout(ice_agent)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       req = read_allocate_request(socket)
 
@@ -891,33 +936,10 @@ defmodule ExICE.Priv.ICEAgentTest do
       |> ICEAgent.gather_candidates()
       |> ICEAgent.add_remote_candidate(ExICE.Candidate.marshal(remote_cand))
 
-    [socket] = ice_agent.sockets
-
     assert ice_agent.gathering_state == :complete
 
     # make ice_agent connected
-    ice_agent = ICEAgent.handle_timeout(ice_agent)
-    req = read_binding_request(socket, ice_agent.remote_pwd)
-
-    resp =
-      binding_response(
-        req.transaction_id,
-        ice_agent.transport_module,
-        socket,
-        ice_agent.remote_pwd
-      )
-
-    ice_agent =
-      ICEAgent.handle_udp(
-        ice_agent,
-        socket,
-        remote_cand.address,
-        remote_cand.port,
-        resp
-      )
-
-    assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
-    assert ice_agent.state == :connected
+    ice_agent = connect(ice_agent)
 
     # replace candidate with the mock one
     [local_cand] = Map.values(ice_agent.local_cands)
@@ -960,7 +982,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     [socket] = ice_agent.sockets
 
     # create relay candidate
-    ice_agent = ICEAgent.handle_timeout(ice_agent)
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
     req = read_allocate_request(socket)
     resp = allocate_error_response(req.transaction_id)
     ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
@@ -975,7 +997,7 @@ defmodule ExICE.Priv.ICEAgentTest do
              |> Enum.find(&(&1.base.type == :relay))
 
     # assert client sends create permission request
-    ice_agent = ICEAgent.handle_timeout(ice_agent)
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
     assert packet = Transport.Mock.recv(socket)
     assert {:ok, req} = ExSTUN.Message.decode(packet)
     assert req.type.class == :request
@@ -1070,6 +1092,35 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert nil == Transport.Mock.recv(socket)
     assert ExTURN.channel_data?(packet)
     assert <<_channel_number::16, _len::16, "somedata">> = packet
+  end
+
+  defp connect(ice_agent) do
+    [socket] = ice_agent.sockets
+    [remote_cand] = Map.values(ice_agent.remote_cands)
+
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+    req = read_binding_request(socket, ice_agent.remote_pwd)
+
+    resp =
+      binding_response(
+        req.transaction_id,
+        ice_agent.transport_module,
+        socket,
+        ice_agent.remote_pwd
+      )
+
+    ice_agent =
+      ICEAgent.handle_udp(
+        ice_agent,
+        socket,
+        remote_cand.address,
+        remote_cand.port,
+        resp
+      )
+
+    assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
+    assert ice_agent.state == :connected
+    ice_agent
   end
 
   defp binding_response(t_id, transport_module, socket, remote_pwd) do
