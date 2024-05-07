@@ -506,9 +506,11 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp timeout_pairs(ice_agent, [pair | pairs], now) do
-    if now - pair.last_seen >= @pair_timeout do
+    diff = now - pair.last_seen
+
+    if diff >= @pair_timeout do
       Logger.debug("""
-      Pair: #{pair.id} didn't receive any data in #{@pair_timeout}ms. \
+      Pair: #{pair.id} didn't receive any data in #{diff}ms. \
       Marking as failed.\
       """)
 
