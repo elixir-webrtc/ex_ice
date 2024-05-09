@@ -531,8 +531,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   @spec handle_keepalive(t(), integer()) :: t()
-  def handle_keepalive(%__MODULE__{selected_pair_id: s_pair_id} = ice_agent, id)
-      when s_pair_id == id do
+  def handle_keepalive(%__MODULE__{selected_pair_id: id} = ice_agent, id) do
     # if pair was selected, send keepalives only on that pair
     s_pair = Map.fetch!(ice_agent.checklist, id)
     pair = CandidatePair.schedule_keepalive(s_pair)
@@ -549,14 +548,17 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   def handle_keepalive(ice_agent, id) do
-    # TODO: keepalives should be send only if no data has been send for @tr_timeout
+    # TODO: keepalives should be sent only if no data has been sent for @tr_timeout
     # atm, we send keepalives anyways, also it might be better to pace them with ta_timer
     # TODO: candidates not in a valid pair also should be kept alive (RFC 8445, sect 5.1.1.4)
     case Map.fetch(ice_agent.checklist, id) do
-      {:ok, pair} ->
+      {:ok, %CandidatePair{state: :succeeded, valid?: true} = pair} ->
         pair = CandidatePair.schedule_keepalive(pair)
         ice_agent = %__MODULE__{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
         send_keepalive(ice_agent, pair)
+
+      {:ok, _pair} ->
+        ice_agent
 
       :error ->
         Logger.warning("Received keepalive request for non-existant candidate pair")
@@ -945,7 +947,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp handle_data_message(ice_agent, pair, packet) do
-    pair = %{pair | last_seen: now()}
+    pair = %CandidatePair{pair | last_seen: now()}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     notify(ice_agent.on_data, {:data, packet})
@@ -988,6 +990,14 @@ defmodule ExICE.Priv.ICEAgent do
     # TODO revisit 7.3.1.4
 
     case msg.type do
+      %Type{class: :indication, method: :binding} ->
+        Logger.debug("""
+        Received binding indication from: #{inspect({src_ip, src_port})}, \
+        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
+        """)
+
+        handle_binding_indication(ice_agent, local_cand, src_ip, src_port)
+
       %Type{class: :request, method: :binding} ->
         Logger.debug("""
         Received binding request from: #{inspect({src_ip, src_port})}, \
@@ -1033,6 +1043,36 @@ defmodule ExICE.Priv.ICEAgent do
     |> update_connection_state()
     |> maybe_nominate()
     |> update_ta_timer()
+  end
+
+  ## BINDING INDICATION HANDLING ##
+  defp handle_binding_indication(ice_agent, local_cand, src_ip, src_port) do
+    remote_cand = find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port)
+    pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
+
+    case pair.state do
+      :succeeded ->
+        pair = Map.fetch!(ice_agent.checklist, pair.discovered_pair_id)
+        pair = %CandidatePair{pair | last_seen: now()}
+        put_in(ice_agent.checklist[pair.id], pair)
+
+      :failed ->
+        Logger.debug("""
+        Received binding indication on pair that has already been marked as failed. \
+        Ignoring. Pair id: #{pair.id}\
+        """)
+
+        ice_agent
+
+      _other ->
+        # We might receive binding indication on a pair that we haven't checked
+        # on our side yet.
+        # The `last_seen` field will be overritten when sending conn-check,
+        # but we update it for consistency, the same way we update it when
+        # receiving normal data.
+        pair = %CandidatePair{pair | last_seen: now()}
+        put_in(ice_agent.checklist[pair.id], pair)
+    end
   end
 
   ## BINDING REQUEST HANDLING ##
