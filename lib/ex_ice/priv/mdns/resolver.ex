@@ -8,7 +8,8 @@ defmodule ExICE.Priv.MDNS.Resolver do
 
   @mdns_port 5353
   @multicast_addr {{224, 0, 0, 251}, @mdns_port}
-  @response_timeout_ms 300
+  @response_timeout_ms 3000
+  @rtx_timeout_ms 500
 
   @spec start_link(module()) :: GenServer.on_start()
   def start_link(transport_module \\ :gen_udp) do
@@ -28,7 +29,7 @@ defmodule ExICE.Priv.MDNS.Resolver do
   @impl true
   def init(transport_module) do
     Logger.debug("Starting MDNS Resolver")
-    {:ok, %{transport_module: transport_module}, {:continue, nil}}
+    {:ok, %{transport_module: transport_module, cache: %{}}, {:continue, nil}}
   end
 
   @impl true
@@ -76,6 +77,12 @@ defmodule ExICE.Priv.MDNS.Resolver do
   end
 
   @impl true
+  def handle_call({:gethostbyname, addr}, _from, %{cache: cache} = state)
+      when is_map_key(cache, addr) do
+    {:reply, {:ok, Map.fetch!(cache, addr)}, state}
+  end
+
+  @impl true
   def handle_call({:gethostbyname, addr}, from, state) do
     query =
       %ExICE.Priv.DNS.Message{
@@ -92,9 +99,19 @@ defmodule ExICE.Priv.MDNS.Resolver do
 
     case state.transport_module.send(state.socket, @multicast_addr, query) do
       :ok ->
-        state = put_in(state, [:queries, addr], from)
         Process.send_after(self(), {:response_timeout, addr}, @response_timeout_ms)
-        {:noreply, state}
+        rtx_timer = Process.send_after(self(), {:rtx, addr}, @rtx_timeout_ms)
+
+        if Map.has_key?(state.queries, addr) do
+          query_info = Map.fetch!(state.queries, addr)
+          requesters = [from | query_info.requesters]
+          query_info = %{query_info | requesters: requesters}
+          state = put_in(state, [:queries, addr], query_info)
+          {:noreply, state}
+        else
+          state = put_in(state, [:queries, addr], %{requesters: [from], rtx_timer: rtx_timer})
+          {:noreply, state}
+        end
 
       {:error, reason} ->
         {:reply, {:error, reason}, state}
@@ -107,14 +124,28 @@ defmodule ExICE.Priv.MDNS.Resolver do
       # Only accept query response with one resource record.
       # See https://datatracker.ietf.org/doc/html/draft-ietf-mmusic-mdns-ice-candidates#section-3.2.2
       {:ok, %{qr: true, aa: true, answer: [%{type: :a, class: :in, rdata: <<a, b, c, d>>} = rr]}} ->
-        {from, state} = pop_in(state, [:queries, rr.name])
+        uuid4 = ice_name?(rr.name)
+        {query_info, state} = pop_in(state, [:queries, rr.name])
+        addr = {a, b, c, d}
 
-        if from do
-          addr = {a, b, c, d}
-          GenServer.reply(from, {:ok, addr})
+        case {uuid4, query_info} do
+          # Name is in the form of uuid4 and we didn't ask for it.
+          # This should be an annoucement - save it in the cache.
+          # See: https://issues.chromium.org/issues/339829283
+          {true, nil} ->
+            state = put_in(state, [:cache, rr.name], addr)
+            {:noreply, state}
+
+          {false, nil} ->
+            {:noreply, state}
+
+          {true, %{requesters: requesters}} ->
+            Process.cancel_timer(query_info.rtx_timer)
+            for requester <- requesters, do: :ok = GenServer.reply(requester, {:ok, addr})
+            Process.send_after(self(), {:ttl_expired, rr.name}, rr.ttl * 1000)
+            state = put_in(state, [:cache, rr.name], addr)
+            {:noreply, state}
         end
-
-        {:noreply, state}
 
       _other ->
         {:noreply, state}
@@ -127,9 +158,55 @@ defmodule ExICE.Priv.MDNS.Resolver do
       {nil, state} ->
         {:noreply, state}
 
-      {from, state} ->
-        GenServer.reply(from, {:error, :timeout})
+      {%{requesters: requesters}, state} ->
+        for requester <- requesters, do: :ok = GenServer.reply(requester, {:error, :timeout})
         {:noreply, state}
+    end
+  end
+
+  @impl true
+  def handle_info({:rtx, addr}, %{queries: queries} = state) when is_map_key(queries, addr) do
+    # rtx messages should be casual QM questions - no unicast-response flag set
+    query =
+      %ExICE.Priv.DNS.Message{
+        question: [
+          %{
+            qname: addr,
+            qtype: :a,
+            qclass: :in,
+            unicast_response: false
+          }
+        ]
+      }
+      |> ExICE.Priv.DNS.Message.encode()
+
+    state.transport_module.send(state.socket, @multicast_addr, query)
+    rtx_timer = Process.send_after(self(), {:rtx, addr}, @rtx_timeout_ms)
+    state = put_in(state, [:queries, addr, :rtx_timer], rtx_timer)
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:rtx, _addr}, state) do
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:ttl_expired, addr}, state) do
+    {_, state} = pop_in(state, [:cache, addr])
+    {:noreply, state}
+  end
+
+  defp ice_name?(name) do
+    name
+    |> String.trim_trailing(".local")
+    |> uuid4?()
+  end
+
+  defp uuid4?(uuid) do
+    case UUID.info(uuid) do
+      {:ok, info} -> info[:version] == 4
+      _ -> false
     end
   end
 end

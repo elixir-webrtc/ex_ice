@@ -252,7 +252,7 @@ defmodule ExICE.ICEAgent do
   @impl true
   def init(opts) do
     ice_agent = ExICE.Priv.ICEAgent.new(opts)
-    {:ok, %{ice_agent: ice_agent}}
+    {:ok, %{ice_agent: ice_agent, pending_eoc: false, pending_remote_cands: MapSet.new()}}
   end
 
   @impl true
@@ -317,14 +317,29 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
-    ice_agent = ExICE.Priv.ICEAgent.add_remote_candidate(state.ice_agent, remote_cand)
-    {:noreply, %{state | ice_agent: ice_agent}}
+    task =
+      Task.async(fn ->
+        Logger.debug("Unmarshaling remote candidate: #{remote_cand}")
+
+        case ExICE.Priv.ICEAgent.unmarshal_remote_candidate(remote_cand) do
+          {:ok, cand} -> {:unmarshal_task, {:ok, cand, remote_cand}}
+          {:error, reason} -> {:unmarshal_task, {:error, reason, remote_cand}}
+        end
+      end)
+
+    pending_remote_cands = MapSet.put(state.pending_remote_cands, task.ref)
+    state = %{state | pending_remote_cands: pending_remote_cands}
+    {:noreply, state}
   end
 
   @impl true
   def handle_cast(:end_of_candidates, state) do
-    ice_agent = ExICE.Priv.ICEAgent.end_of_candidates(state.ice_agent)
-    {:noreply, %{state | ice_agent: ice_agent}}
+    if MapSet.size(state.pending_remote_cands) == 0 do
+      ice_agent = ExICE.Priv.ICEAgent.end_of_candidates(state.ice_agent)
+      {:noreply, %{state | ice_agent: ice_agent}}
+    else
+      {:noreply, %{state | pending_eoc: true}}
+    end
   end
 
   @impl true
@@ -373,6 +388,45 @@ defmodule ExICE.ICEAgent do
   def handle_info({:ex_turn, ref, msg}, state) do
     ice_agent = ExICE.Priv.ICEAgent.handle_ex_turn_msg(state.ice_agent, ref, msg)
     {:noreply, %{state | ice_agent: ice_agent}}
+  end
+
+  @impl true
+  def handle_info({_ref, {:unmarshal_task, {:ok, %Candidate{} = cand, raw_cand}}}, state) do
+    Logger.debug("""
+    Successfully unmarshaled candidate.
+    Raw candidate: #{raw_cand}.
+    Unmarshaled candidate: #{inspect(cand)}
+    """)
+
+    ice_agent = ExICE.Priv.ICEAgent.add_remote_candidate(state.ice_agent, cand)
+    {:noreply, %{state | ice_agent: ice_agent}}
+  end
+
+  @impl true
+  def handle_info({_ref, {:unmarshal_task, {:error, reason, raw_cand}}}, state) do
+    Logger.warning("""
+    Couldn't unmarshal candidate, reason: #{inspect(reason)}.
+    Candidate: #{raw_cand}
+    """)
+
+    {:noreply, state}
+  end
+
+  @impl true
+  def handle_info({:DOWN, ref, _, _, _}, state) do
+    if MapSet.member?(state.pending_remote_cands, ref) do
+      pending_remote_cands = MapSet.delete(state.pending_remote_cands, ref)
+      state = %{state | pending_remote_cands: pending_remote_cands}
+
+      if MapSet.size(state.pending_remote_cands) == 0 and state.pending_eoc == true do
+        ice_agent = ExICE.Priv.ICEAgent.end_of_candidates(state.ice_agent)
+        {:noreply, %{state | ice_agent: ice_agent, pending_eoc: false}}
+      else
+        {:noreply, state}
+      end
+    else
+      {:noreply, state}
+    end
   end
 
   @impl true
