@@ -404,6 +404,95 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "incoming binding indication (keepalive)" do
+    setup do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(ExICE.Candidate.marshal(remote_cand))
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "on succeeded pair", %{ice_agent: ice_agent} do
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+
+      # make ice_agent connected
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [pair_before] = Map.values(ice_agent.checklist)
+
+      # wait so that we can observe a change in last_seen later on
+      Process.sleep(1)
+
+      # receive binding indication
+      msg = binding_indication()
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, msg)
+
+      # assert that last_seen of the pair has changed
+      [pair_after] = Map.values(ice_agent.checklist)
+
+      assert pair_after.last_seen > pair_before.last_seen
+    end
+
+    test "on failed pair", %{ice_agent: ice_agent} do
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [socket] = ice_agent.sockets
+
+      # mark pair as failed
+      [pair_before] = Map.values(ice_agent.checklist)
+      pair_before = %CandidatePair{pair_before | state: :failed, valid?: false}
+      ice_agent = put_in(ice_agent.checklist[pair_before.id], pair_before)
+
+      # wait so that there is a change in last_seen in case of
+      # incorrect behaviour
+      Process.sleep(1)
+
+      # receive binding indication
+      msg = binding_indication()
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, msg)
+
+      # assert that nothing has changed
+      [pair_after] = Map.values(ice_agent.checklist)
+      assert pair_after.state == :failed
+      assert pair_after.valid? == false
+      assert pair_after.last_seen == pair_before.last_seen
+    end
+
+    test "on a pair that hasn't been checked yet", %{ice_agent: ice_agent} do
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [socket] = ice_agent.sockets
+
+      [pair_before] = Map.values(ice_agent.checklist)
+      assert pair_before.last_seen == nil
+
+      Process.sleep(1)
+
+      # receive binding indication
+      msg = binding_indication()
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, msg)
+
+      # assert last_seen has been set
+      [pair_after] = Map.values(ice_agent.checklist)
+      assert pair_after.last_seen != nil
+    end
+  end
+
   describe "connectivity check" do
     setup do
       remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
@@ -1121,6 +1210,10 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
     assert ice_agent.state == :connected
     ice_agent
+  end
+
+  defp binding_indication() do
+    Message.new(%Type{class: :indication, method: :binding}) |> Message.encode()
   end
 
   defp binding_response(t_id, transport_module, socket, remote_pwd) do
