@@ -455,7 +455,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       pair_before = %CandidatePair{pair_before | state: :failed, valid?: false}
       ice_agent = put_in(ice_agent.checklist[pair_before.id], pair_before)
 
-      # wait so that there should be a chnage in last_seen in case of
+      # wait so that there is a change in last_seen in case of
       # incorrect behaviour
       Process.sleep(1)
 
