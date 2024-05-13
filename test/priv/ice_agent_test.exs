@@ -431,7 +431,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       [socket] = ice_agent.sockets
       [pair_before] = Map.values(ice_agent.checklist)
 
-      # wait so that we can observer a change in last_seen later on
+      # wait so that we can observe a change in last_seen later on
       Process.sleep(1)
 
       # receive binding indication
