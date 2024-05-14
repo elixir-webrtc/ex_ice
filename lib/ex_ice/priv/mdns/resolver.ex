@@ -84,37 +84,36 @@ defmodule ExICE.Priv.MDNS.Resolver do
 
   @impl true
   def handle_call({:gethostbyname, addr}, from, state) do
-    query =
-      %ExICE.Priv.DNS.Message{
-        question: [
-          %{
-            qname: addr,
-            qtype: :a,
-            qclass: :in,
-            unicast_response: true
-          }
-        ]
-      }
-      |> ExICE.Priv.DNS.Message.encode()
+    if Map.has_key?(state.queries, addr) do
+      query_info = Map.fetch!(state.queries, addr)
+      requesters = [from | query_info.requesters]
+      query_info = %{query_info | requesters: requesters}
+      state = put_in(state, [:queries, addr], query_info)
+      {:noreply, state}
+    else
+      query =
+        %ExICE.Priv.DNS.Message{
+          question: [
+            %{
+              qname: addr,
+              qtype: :a,
+              qclass: :in,
+              unicast_response: true
+            }
+          ]
+        }
+        |> ExICE.Priv.DNS.Message.encode()
 
-    case state.transport_module.send(state.socket, @multicast_addr, query) do
-      :ok ->
-        Process.send_after(self(), {:response_timeout, addr}, @response_timeout_ms)
-        rtx_timer = Process.send_after(self(), {:rtx, addr}, @rtx_timeout_ms)
-
-        if Map.has_key?(state.queries, addr) do
-          query_info = Map.fetch!(state.queries, addr)
-          requesters = [from | query_info.requesters]
-          query_info = %{query_info | requesters: requesters}
-          state = put_in(state, [:queries, addr], query_info)
-          {:noreply, state}
-        else
+      case state.transport_module.send(state.socket, @multicast_addr, query) do
+        :ok ->
+          Process.send_after(self(), {:response_timeout, addr}, @response_timeout_ms)
+          rtx_timer = Process.send_after(self(), {:rtx, addr}, @rtx_timeout_ms)
           state = put_in(state, [:queries, addr], %{requesters: [from], rtx_timer: rtx_timer})
           {:noreply, state}
-        end
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        {:error, reason} ->
+          {:reply, {:error, reason}, state}
+      end
     end
   end
 
