@@ -89,6 +89,35 @@ defmodule ExICE.Priv.ICEAgent do
     packets_received: 0
   ]
 
+  @spec unmarshal_remote_candidate(String.t()) :: {:ok, Candidate.t()} | {:error, term()}
+  def unmarshal_remote_candidate(remote_cand_str) do
+    with {_, {:ok, remote_cand}} <- {:unmarshal, ExICE.Candidate.unmarshal(remote_cand_str)},
+         {_, {:ok, remote_cand}} <- {:resolve_address, resolve_address(remote_cand)} do
+      {:ok, remote_cand}
+    else
+      {operation, {:error, reason}} -> {:error, {operation, reason}}
+    end
+  end
+
+  defp resolve_address(remote_cand) when is_binary(remote_cand.address) do
+    Logger.debug("Trying to resolve addr: #{remote_cand.address}")
+
+    case ExICE.Priv.MDNS.Resolver.gethostbyname(remote_cand.address) do
+      {:ok, addr} ->
+        Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
+        remote_cand = %ExICE.Candidate{remote_cand | address: addr}
+        {:ok, remote_cand}
+
+      {:error, reason} = err ->
+        Logger.debug("Couldn't resolve #{remote_cand.address}, reason: #{reason}")
+        err
+    end
+  end
+
+  defp resolve_address(remote_cand) do
+    {:ok, remote_cand}
+  end
+
   @spec new(Keyword.t()) :: t()
   def new(opts) do
     {stun_servers, turn_servers} = parse_ice_servers(opts[:ice_servers] || [])
@@ -278,11 +307,11 @@ defmodule ExICE.Priv.ICEAgent do
     |> update_ta_timer()
   end
 
-  @spec add_remote_candidate(t(), String.t()) :: t()
-  def add_remote_candidate(%__MODULE__{eoc: true} = ice_agent, remote_cand_str) do
+  @spec add_remote_candidate(t(), Candidate.t()) :: t()
+  def add_remote_candidate(%__MODULE__{eoc: true} = ice_agent, remote_cand) do
     Logger.warning("""
     Received remote candidate after end-of-candidates. Ignoring.
-    Candidate: #{remote_cand_str}\
+    Candidate: #{inspect(remote_cand)}\
     """)
 
     ice_agent
@@ -290,37 +319,18 @@ defmodule ExICE.Priv.ICEAgent do
 
   def add_remote_candidate(
         %__MODULE__{remote_ufrag: nil, remote_pwd: nil} = ice_agent,
-        remote_cand_str
+        remote_cand
       ) do
     Logger.warning("""
     Received remote candidate but there are no remote credentials. Ignoring.
-    Candidate: #{remote_cand_str}\
+    Candidate: #{inspect(remote_cand)}\
     """)
 
     ice_agent
   end
 
-  def add_remote_candidate(ice_agent, remote_cand_str) do
-    Logger.debug("New remote candidate: #{remote_cand_str}")
-
-    resolve_address = fn
-      remote_cand when is_binary(remote_cand.address) ->
-        Logger.debug("Trying to resolve addr: #{remote_cand.address}")
-
-        case ExICE.Priv.MDNS.Resolver.gethostbyname(remote_cand.address) do
-          {:ok, addr} ->
-            Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
-            remote_cand = %ExICE.Candidate{remote_cand | address: addr}
-            {:ok, remote_cand}
-
-          {:error, reason} = err ->
-            Logger.debug("Couldn't resolve #{remote_cand.address}, reason: #{reason}")
-            err
-        end
-
-      remote_cand ->
-        {:ok, remote_cand}
-    end
+  def add_remote_candidate(ice_agent, remote_cand) do
+    Logger.debug("New remote candidate: #{inspect(remote_cand)}")
 
     uniq? = fn remote_cands, remote_cand ->
       not Enum.any?(remote_cands, fn cand ->
@@ -328,9 +338,7 @@ defmodule ExICE.Priv.ICEAgent do
       end)
     end
 
-    with {_, {:ok, remote_cand}} <- {:unmarshal, ExICE.Candidate.unmarshal(remote_cand_str)},
-         {_, {:ok, remote_cand}} <- {:resolve_address, resolve_address.(remote_cand)},
-         {_, true} <- {:uniq, uniq?.(Map.values(ice_agent.remote_cands), remote_cand)} do
+    if uniq?.(Map.values(ice_agent.remote_cands), remote_cand) do
       ice_agent = do_add_remote_candidate(ice_agent, remote_cand)
       Logger.debug("Successfully added remote candidate.")
 
@@ -338,34 +346,27 @@ defmodule ExICE.Priv.ICEAgent do
       |> update_connection_state()
       |> update_ta_timer()
     else
-      {:uniq, false} ->
-        # This is pretty common case (we can get conn-check
-        # before getting a remote candidate), hence debug.
-        Logger.debug("""
-        Duplicated remote candidate. Ignoring.
-        Candidate: #{remote_cand_str}\
-        """)
+      # This is pretty common case (we can get conn-check
+      # before getting a remote candidate), hence debug.
+      Logger.debug("""
+      Duplicated remote candidate. Ignoring.
+      Candidate: #{inspect(remote_cand)}\
+      """)
 
-        ice_agent
-
-      {operation, {:error, reason}} ->
-        Logger.warning("""
-        Invalid remote candidate. Couldn't #{operation}, reason: #{inspect(reason)}. Ignoring.
-        Candidate: #{remote_cand_str}\
-        """)
-
-        ice_agent
+      ice_agent
     end
   end
 
   @spec end_of_candidates(t()) :: t()
   def end_of_candidates(%__MODULE__{role: :controlled} = ice_agent) do
+    Logger.debug("Setting end-of-candidates flag.")
     ice_agent = %{ice_agent | eoc: true}
     # we might need to move to the completed state
     update_connection_state(ice_agent)
   end
 
   def end_of_candidates(%__MODULE__{role: :controlling} = ice_agent) do
+    Logger.debug("Setting end-of-candidates flag.")
     ice_agent = %{ice_agent | eoc: true}
     # check wheter it's time to nominate and if yes, try noimnate
     maybe_nominate(ice_agent)

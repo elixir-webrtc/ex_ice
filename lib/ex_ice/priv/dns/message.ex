@@ -169,6 +169,7 @@ defmodule ExICE.Priv.DNS.Message do
   defp decode_type(<<14::16, data::binary>>), do: {:ok, :minfo, data}
   defp decode_type(<<15::16, data::binary>>), do: {:ok, :mx, data}
   defp decode_type(<<16::16, data::binary>>), do: {:ok, :txt, data}
+  defp decode_type(<<47::16, data::binary>>), do: {:ok, :nsec, data}
   defp decode_type(<<252::16, data::binary>>), do: {:ok, :afxr, data}
   defp decode_type(<<253::16, data::binary>>), do: {:ok, :mailb, data}
   defp decode_type(<<254::16, data::binary>>), do: {:ok, :maila, data}

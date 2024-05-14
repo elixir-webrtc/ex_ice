@@ -52,6 +52,7 @@ defmodule ExICE.MixProject do
     [
       {:ex_stun, "~> 0.2.0"},
       {:ex_turn, "~> 0.1.0"},
+      {:elixir_uuid, "~> 1.0"},
       {:excoveralls, "~> 0.15", only: :test, runtime: false},
       {:ex_doc, "~> 0.27", only: :dev, runtime: false},
       {:credo, "~> 1.6", only: [:dev, :test], runtime: false},
