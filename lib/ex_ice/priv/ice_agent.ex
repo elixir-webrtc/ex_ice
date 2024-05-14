@@ -91,32 +91,31 @@ defmodule ExICE.Priv.ICEAgent do
 
   @spec unmarshal_remote_candidate(String.t()) :: {:ok, Candidate.t()} | {:error, term()}
   def unmarshal_remote_candidate(remote_cand_str) do
-    resolve_address = fn
-      remote_cand when is_binary(remote_cand.address) ->
-        Logger.debug("Trying to resolve addr: #{remote_cand.address}")
-
-        case ExICE.Priv.MDNS.Resolver.gethostbyname(remote_cand.address) do
-          {:ok, addr} ->
-            Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
-            remote_cand = %ExICE.Candidate{remote_cand | address: addr}
-            {:ok, remote_cand}
-
-          {:error, reason} = err ->
-            Logger.debug("Couldn't resolve #{remote_cand.address}, reason: #{reason}")
-            err
-        end
-
-      remote_cand ->
-        {:ok, remote_cand}
-    end
-
     with {_, {:ok, remote_cand}} <- {:unmarshal, ExICE.Candidate.unmarshal(remote_cand_str)},
-         {_, {:ok, remote_cand}} <- {:resolve_address, resolve_address.(remote_cand)} do
+         {_, {:ok, remote_cand}} <- {:resolve_address, resolve_address(remote_cand)} do
       {:ok, remote_cand}
     else
-      {operation, {:error, reason}} ->
-        {:error, {operation, reason}}
+      {operation, {:error, reason}} -> {:error, {operation, reason}}
     end
+  end
+
+  defp resolve_address(remote_cand) when is_binary(remote_cand.address) do
+    Logger.debug("Trying to resolve addr: #{remote_cand.address}")
+
+    case ExICE.Priv.MDNS.Resolver.gethostbyname(remote_cand.address) do
+      {:ok, addr} ->
+        Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
+        remote_cand = %ExICE.Candidate{remote_cand | address: addr}
+        {:ok, remote_cand}
+
+      {:error, reason} = err ->
+        Logger.debug("Couldn't resolve #{remote_cand.address}, reason: #{reason}")
+        err
+    end
+  end
+
+  defp resolve_address(remote_cand) do
+    {:ok, remote_cand}
   end
 
   @spec new(Keyword.t()) :: t()
@@ -324,7 +323,7 @@ defmodule ExICE.Priv.ICEAgent do
       ) do
     Logger.warning("""
     Received remote candidate but there are no remote credentials. Ignoring.
-    Candidate: #{inspect(inspect(remote_cand))}\
+    Candidate: #{inspect(remote_cand)}\
     """)
 
     ice_agent
