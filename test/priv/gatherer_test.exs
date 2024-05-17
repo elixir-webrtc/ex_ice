@@ -29,10 +29,15 @@ defmodule ExICE.Priv.GathererTest do
 
   test "gather_host_candidates/1" do
     gatherer =
-      Gatherer.new(IfDiscovery.Mock, Transport.Mock, fn
-        {192, 168, 0, 2} -> false
-        _ -> true
-      end)
+      Gatherer.new(
+        IfDiscovery.Mock,
+        Transport.Mock,
+        fn
+          {192, 168, 0, 2} -> false
+          _ -> true
+        end,
+        [0]
+      )
 
     assert {:ok, sockets} = Gatherer.open_sockets(gatherer)
 
@@ -48,10 +53,15 @@ defmodule ExICE.Priv.GathererTest do
     {:ok, stun_server} = ExSTUN.URI.parse("stun:192.168.0.3:19302")
 
     gatherer =
-      Gatherer.new(IfDiscovery.Mock, Transport.Mock, fn
-        {192, 168, 0, 2} -> false
-        _ -> true
-      end)
+      Gatherer.new(
+        IfDiscovery.Mock,
+        Transport.Mock,
+        fn
+          {192, 168, 0, 2} -> false
+          _ -> true
+        end,
+        [0]
+      )
 
     {:ok, sockets} = Gatherer.open_sockets(gatherer)
 
@@ -62,5 +72,27 @@ defmodule ExICE.Priv.GathererTest do
     assert {:ok, req} = ExSTUN.Message.decode(packet)
     assert req.attributes == []
     assert req.type == %Type{class: :request, method: :binding}
+  end
+
+  test "use custom port range" do
+    port_range = 55_000..55_001
+
+    gatherer =
+      Gatherer.new(
+        IfDiscovery.Mock,
+        Transport.Mock,
+        fn
+          {192, 168, 0, 2} -> false
+          _ -> true
+        end,
+        port_range
+      )
+
+    {:ok, sockets} = Gatherer.open_sockets(gatherer)
+
+    for socket <- sockets do
+      {:ok, {_ip, port}} = Transport.Mock.sockname(socket)
+      assert port in port_range
+    end
   end
 end

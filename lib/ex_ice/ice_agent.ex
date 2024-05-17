@@ -48,6 +48,7 @@ defmodule ExICE.ICEAgent do
   This behavior can be overwritten using the following options.
 
   * `ip_filter` - filter applied when gathering local candidates
+  * `ports` - ports that will be used when gathering local candidates, otherwise the ports are chosen by the OS
   * `ice_servers` - list of STUN/TURN servers
   * `ice_transport_policy` - candidate types to be used.
     * `all` - all ICE candidates will be considered (default).
@@ -62,6 +63,7 @@ defmodule ExICE.ICEAgent do
   """
   @type opts() :: [
           ip_filter: (:inet.ip_address() -> boolean),
+          ports: Enumerable.t(non_neg_integer()),
           ice_servers: [
             %{
               :urls => [String.t()] | String.t(),
