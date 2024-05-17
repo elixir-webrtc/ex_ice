@@ -70,14 +70,10 @@ defmodule ExICE.Priv.Gatherer do
           {:halt, socket}
 
         {:error, :eaddrinuse} ->
-          Logger.debug(
-            "Couldn't open socket for #{inspect(ip)}:#{inspect(port)}, address in use. Trying next port. "
-          )
-
+          Logger.debug("Address #{inspect(ip)}:#{inspect(port)} in use. Trying next port.")
           {:cont, nil}
 
         {:error, reason} ->
-          ip = Keyword.fetch!(socket_opts, :ip)
           Logger.debug("Couldn't open socket for ip: #{inspect(ip)}. Reason: #{inspect(reason)}.")
           {:halt, nil}
       end
