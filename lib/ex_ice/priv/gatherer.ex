@@ -12,18 +12,20 @@ defmodule ExICE.Priv.Gatherer do
   @type t() :: %__MODULE__{
           if_discovery_module: module(),
           transport_module: module(),
-          ip_filter: (:inet.ip_address() -> boolean)
+          ip_filter: (:inet.ip_address() -> boolean),
+          ports: Enumerable.t(non_neg_integer())
         }
 
-  @enforce_keys [:if_discovery_module, :transport_module, :ip_filter]
+  @enforce_keys [:if_discovery_module, :transport_module, :ip_filter, :ports]
   defstruct @enforce_keys
 
-  @spec new(module(), module(), fun()) :: t()
-  def new(if_discovery_module, transport_module, ip_filter) do
+  @spec new(module(), module(), fun(), Enumerable.t(non_neg_integer())) :: t()
+  def new(if_discovery_module, transport_module, ip_filter, ports) do
     %__MODULE__{
       if_discovery_module: if_discovery_module,
       transport_module: transport_module,
-      ip_filter: ip_filter
+      ip_filter: ip_filter,
+      ports: ports
     }
   end
 
@@ -52,23 +54,30 @@ defmodule ExICE.Priv.Gatherer do
         {_, _, _, _, _, _, _, _} -> :inet6
       end
 
-    case gatherer.transport_module.open(0, [
-           {:inet_backend, :socket},
-           {:ip, ip},
-           {:active, true},
-           :binary,
-           inet
-         ]) do
-      {:ok, socket} ->
-        {:ok, {^ip, sock_port}} = gatherer.transport_module.sockname(socket)
-        Logger.debug("Successfully opened socket for: #{inspect(ip)}:#{sock_port}")
-        socket
+    socket_opts = [
+      {:inet_backend, :socket},
+      {:ip, ip},
+      {:active, true},
+      :binary,
+      inet
+    ]
 
-      {:error, reason} ->
-        Logger.debug("Couldn't open socket for ip: #{inspect(ip)}. Reason: #{inspect(reason)}.")
+    Enum.reduce_while(gatherer.ports, nil, fn port, _ ->
+      case gatherer.transport_module.open(port, socket_opts) do
+        {:ok, socket} ->
+          {:ok, {^ip, sock_port}} = gatherer.transport_module.sockname(socket)
+          Logger.debug("Successfully opened socket for: #{inspect(ip)}:#{sock_port}")
+          {:halt, socket}
 
-        nil
-    end
+        {:error, :eaddrinuse} ->
+          Logger.debug("Address #{inspect(ip)}:#{inspect(port)} in use. Trying next port.")
+          {:cont, nil}
+
+        {:error, reason} ->
+          Logger.debug("Couldn't open socket for ip: #{inspect(ip)}. Reason: #{inspect(reason)}.")
+          {:halt, nil}
+      end
+    end)
   end
 
   @spec gather_host_candidates(t(), [Transport.socket()]) :: [Candidate.t()]

@@ -129,6 +129,7 @@ defmodule ExICE.Priv.ICEAgent do
     if_discovery_module = opts[:if_discovery_module] || IfDiscovery.Inet
     transport_module = opts[:transport_module] || Transport.UDP
     ip_filter = opts[:ip_filter] || fn _ -> true end
+    ports = opts[:ports] || [0]
 
     start_pair_timer()
 
@@ -140,7 +141,7 @@ defmodule ExICE.Priv.ICEAgent do
       on_new_candidate: opts[:on_new_candidate] || controlling_process,
       if_discovery_module: if_discovery_module,
       transport_module: transport_module,
-      gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter),
+      gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter, ports),
       ice_transport_policy: opts[:ice_transport_policy] || :all,
       role: Keyword.fetch!(opts, :role),
       tiebreaker: generate_tiebreaker(),
