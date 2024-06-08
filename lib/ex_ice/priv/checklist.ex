@@ -71,7 +71,7 @@ defmodule ExICE.Priv.Checklist do
       # are redundant if their local candidates have the same base
       # and their remote candidates are identical.
       # But, because we replace reflexive candidates with their bases,
-      # checking againts local_cand_id should work fine.
+      # checking against local_cand_id should work fine.
       |> Enum.uniq_by(fn {_id, p} -> {p.local_cand_id, p.remote_cand_id} end)
 
     Map.new(waiting ++ in_flight_or_done)

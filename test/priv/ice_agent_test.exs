@@ -87,7 +87,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
 
       assert [%ExICE.Candidate{} = r_cand] = Map.values(ice_agent.remote_cands)
-      # override id for the purpose of comparision
+      # override id for the purpose of comparison
       r_cand = %ExICE.Candidate{r_cand | id: remote_cand.id}
       assert r_cand == remote_cand
     end

@@ -321,7 +321,7 @@ defmodule ExICE.ICEAgent do
   def handle_cast({:add_remote_candidate, remote_cand}, state) do
     task =
       Task.async(fn ->
-        Logger.debug("Unmarshaling remote candidate: #{remote_cand}")
+        Logger.debug("Unmarshalling remote candidate: #{remote_cand}")
 
         case ExICE.Priv.ICEAgent.unmarshal_remote_candidate(remote_cand) do
           {:ok, cand} -> {:unmarshal_task, {:ok, cand, remote_cand}}

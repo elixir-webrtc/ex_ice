@@ -29,7 +29,7 @@ defmodule ExICE.Priv.ICEAgent do
 
   # Pair timeout in ms.
   # If we don't receive any data in this time,
-  # a pair is marked as faield.
+  # a pair is marked as failed.
   @pair_timeout 5_000
 
   # End-of-candidates timeout in ms.
@@ -369,7 +369,7 @@ defmodule ExICE.Priv.ICEAgent do
   def end_of_candidates(%__MODULE__{role: :controlling} = ice_agent) do
     Logger.debug("Setting end-of-candidates flag.")
     ice_agent = %{ice_agent | eoc: true}
-    # check wheter it's time to nominate and if yes, try noimnate
+    # check whether it's time to nominate and if yes, try noimnate
     maybe_nominate(ice_agent)
   end
 
@@ -563,7 +563,7 @@ defmodule ExICE.Priv.ICEAgent do
         ice_agent
 
       :error ->
-        Logger.warning("Received keepalive request for non-existant candidate pair")
+        Logger.warning("Received keepalive request for non-existent candidate pair")
         ice_agent
     end
   end
@@ -1319,11 +1319,11 @@ defmodule ExICE.Priv.ICEAgent do
     # In the worst case scenario, we won't allow for the connection.
     case Message.get_attribute(msg, ErrorCode) do
       {:ok, %ErrorCode{code: 487}} ->
-        handle_role_confilct_error_response(ice_agent, conn_check_pair, msg)
+        handle_role_conflict_error_response(ice_agent, conn_check_pair, msg)
 
       other ->
         Logger.debug(
-          "Conn check failed due to error resposne from the peer, error: #{inspect(other)}"
+          "Conn check failed due to error response from the peer, error: #{inspect(other)}"
         )
 
         conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
@@ -1332,7 +1332,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp handle_role_confilct_error_response(ice_agent, conn_check_pair, msg) do
+  defp handle_role_conflict_error_response(ice_agent, conn_check_pair, msg) do
     case authenticate_msg(msg, ice_agent.remote_pwd) do
       :ok ->
         new_role = if ice_agent.role == :controlling, do: :controlled, else: :controlling
@@ -1993,7 +1993,7 @@ defmodule ExICE.Priv.ICEAgent do
       # the controlled side could move to the completed
       # state as soon as it receives nomination request (or after
       # successful triggered check caused by nomination request).
-      # However, to be compatible with the older RFC's aggresive
+      # However, to be compatible with the older RFC's aggressive
       # nomination, we wait for the end-of-candidates indication
       # and checklist to be finished.
       # This also means, that if the other side never sets eoc,
