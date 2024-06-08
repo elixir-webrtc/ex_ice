@@ -46,7 +46,7 @@ defmodule ExICE.Priv.MDNS.Resolver do
         # If there are multiple sockets, bound to the same port,
         # and subscribed to the same group (in fact, if one socket
         # subscribes to some group, all other sockets bound to
-        # the same port also join this gorup), all those sockets
+        # the same port also join this group), all those sockets
         # will receive every message. In other words, `reuseport` for
         # multicast works differently than for casual sockets.
         reuseport: true,
@@ -129,7 +129,7 @@ defmodule ExICE.Priv.MDNS.Resolver do
 
         case {uuid4, query_info} do
           # Name is in the form of uuid4 and we didn't ask for it.
-          # This should be an annoucement - save it in the cache.
+          # This should be an announcement - save it in the cache.
           # See: https://issues.chromium.org/issues/339829283
           {true, nil} ->
             state = put_in(state, [:cache, rr.name], addr)

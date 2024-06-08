@@ -107,7 +107,7 @@ defmodule ExICE.Priv.Candidate.Relay do
       {:ok, cand} ->
         do_send_buffered_packets(cand, packets)
 
-      {:error, _reaons, _cand} = error ->
+      {:error, _reasons, _cand} = error ->
         error
     end
   end
