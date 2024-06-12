@@ -656,9 +656,13 @@ defmodule ExICE.Priv.ICEAgent do
             do_send(ice_agent, cand, dst, data)
 
           {:error, _reason, client} ->
+            Logger.debug("""
+            Couldn't handle TURN message on candidate: #{inspect(cand)}. \
+            Closing candidate.\
+            """)
+
             cand = %{cand | client: client}
             ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
-
             close_candidate(ice_agent, cand)
         end
     end
@@ -704,6 +708,15 @@ defmodule ExICE.Priv.ICEAgent do
     end
     |> Enum.reject(fn {tr_id, tr} -> tr_id == nil and tr == nil end)
     |> Map.new()
+  end
+
+  defp do_add_remote_candidate(ice_agent, remote_cand) when ice_agent.local_cands == %{} do
+    Logger.debug("Not adding any new pairs as we don't have any local candidates.")
+
+    %__MODULE__{
+      ice_agent
+      | remote_cands: Map.put(ice_agent.remote_cands, remote_cand.id, remote_cand)
+    }
   end
 
   defp do_add_remote_candidate(ice_agent, remote_cand) do
@@ -925,6 +938,11 @@ defmodule ExICE.Priv.ICEAgent do
         end
 
       {:error, _reason, cand} ->
+        Logger.debug("""
+        Failed to receive TURN message on candidate: #{inspect(cand)}. \
+        Closing candidate.\
+        """)
+
         close_candidate(ice_agent, cand)
     end
   end
@@ -936,6 +954,11 @@ defmodule ExICE.Priv.ICEAgent do
 
         case find_host_cand(local_cands, socket) do
           nil ->
+            Logger.debug("""
+            Couldn't find host candidate for #{inspect(src_ip)}:#{src_port}. \
+            Ignoring incoming STUN message.\
+            """)
+
             ice_agent
 
           local_cand ->
@@ -2205,7 +2228,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp do_send(ice_agent, %cand_mod{} = local_cand, dst, data) do
+  defp do_send(ice_agent, %cand_mod{} = local_cand, dst, data, retry \\ true) do
     {dst_ip, dst_port} = dst
 
     case cand_mod.send_data(local_cand, dst_ip, dst_port, data) do
@@ -2214,10 +2237,25 @@ defmodule ExICE.Priv.ICEAgent do
         {:ok, ice_agent}
 
       {:error, reason, local_cand} ->
-        Logger.debug("Couldn't send data, reason: #{reason}, cand: #{inspect(local_cand)}")
-        ice_agent = put_in(ice_agent.local_cands[local_cand.base.id], local_cand)
-        ice_agent = close_candidate(ice_agent, local_cand)
-        {:error, ice_agent}
+        if retry do
+          # Sometimes, when sending the first UDP datagram,
+          # we get an eperm error but retrying seems to help ¯\_(ツ)_/¯
+          Logger.debug("""
+          Couldn't send data, reason: #{reason}, cand: #{inspect(local_cand)}. \
+          Retyring...\
+          """)
+
+          do_send(ice_agent, local_cand, dst, data, false)
+        else
+          Logger.debug("""
+          Couldn't send data, reason: #{reason}, cand: #{inspect(local_cand)}. \
+          Closing candidate.\
+          """)
+
+          ice_agent = put_in(ice_agent.local_cands[local_cand.base.id], local_cand)
+          ice_agent = close_candidate(ice_agent, local_cand)
+          {:error, ice_agent}
+        end
     end
   end
 
