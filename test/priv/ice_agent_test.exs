@@ -114,6 +114,47 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "sends keepalives" do
+    setup do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "on connected pair", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
+      ice_agent = ICEAgent.handle_keepalive(ice_agent, pair.id)
+
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, msg} = ExSTUN.Message.decode(packet)
+      assert msg.type == %ExSTUN.Message.Type{class: :request, method: :binding}
+      assert :ok == ExSTUN.Message.check_fingerprint(msg)
+      assert :ok == ExSTUN.Message.authenticate(msg, ice_agent.remote_pwd)
+    end
+
+    test "on unconnected pair", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
+      ICEAgent.handle_keepalive(ice_agent, pair.id)
+
+      assert nil == Transport.Mock.recv(socket)
+    end
+  end
+
   describe "incoming binding request" do
     setup do
       ice_agent =
@@ -714,7 +755,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # mock last_seen field
     [pair] = Map.values(ice_agent.checklist)
-    last_seen = System.monotonic_time(:millisecond) - 5_000
+    last_seen = System.monotonic_time(:millisecond) - 10_000
     pair = %{pair | last_seen: last_seen}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 

@@ -30,7 +30,7 @@ defmodule ExICE.Priv.ICEAgent do
   # Pair timeout in ms.
   # If we don't receive any data in this time,
   # a pair is marked as faield.
-  @pair_timeout 5_000
+  @pair_timeout 8_000
 
   # End-of-candidates timeout in ms.
   # If we don't receive end-of-candidates indication in this time,
