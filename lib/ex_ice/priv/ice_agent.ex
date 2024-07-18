@@ -72,7 +72,7 @@ defmodule ExICE.Priv.ICEAgent do
     gathering_transactions: %{},
     checklist: %{},
     conn_checks: %{},
-    keepalive_ids: MapSet.new(),
+    keepalives: %{},
     gathering_state: :new,
     eoc: false,
     # {did we nominate pair, pair id}
@@ -1051,10 +1051,15 @@ defmodule ExICE.Priv.ICEAgent do
         handle_stun_gathering_transaction_response(ice_agent, msg)
 
       %Type{class: class, method: :binding}
-      when is_response(class) and is_map_key(ice_agent.consent_checks, msg.transaction_id) ->
+      when is_response(class) and is_map_key(ice_agent.keepalives, msg.transaction_id) ->
         # TODO: this a good basis to implement consent freshness
-        keepalive_ids = MapSet.delete(ice_agent.keepalive_ids, msg.transaction_id)
-        %__MODULE__{ice_agent | keepalive_ids: keepalive_ids}
+        Logger.debug("""
+        Received keepalive response from from #{inspect({src_ip, src_port})}, \
+        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
+        """)
+
+        keepalives = Map.delete(ice_agent.keepalives, msg.transaction_id)
+        %__MODULE__{ice_agent | keepalives: keepalives}
 
       %Type{class: class, method: :binding} when is_response(class) ->
         Logger.warning("""
@@ -2178,8 +2183,8 @@ defmodule ExICE.Priv.ICEAgent do
 
     case do_send(ice_agent, local_cand, dst, Message.encode(req)) do
       {:ok, ice_agent} ->
-        keepalive_ids = MapSet.put(ice_agent.keepalive_ids, req.transaction_id)
-        %__MODULE__{ice_agent | keepalive_ids: keepalive_ids}
+        keepalives = Map.put(ice_agent.keepalives, req.transaction_id, pair.id)
+        %__MODULE__{ice_agent | keepalives: keepalives}
 
       {:error, ice_agent} ->
         ice_agent
