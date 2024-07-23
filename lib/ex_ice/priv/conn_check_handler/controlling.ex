@@ -15,8 +15,12 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
     Pair: #{pair.id}.
     """)
 
-    dst = {pair.remote_cand.address, pair.remote_cand.port}
-    ICEAgent.send_bad_request_error_response(ice_agent, pair.local_cand, dst, msg)
+    local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
+    dst = {remote_cand.address, remote_cand.port}
+
+    ICEAgent.send_bad_request_error_response(ice_agent, local_cand, dst, msg)
   end
 
   @impl true

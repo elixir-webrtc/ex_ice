@@ -2,7 +2,7 @@ defmodule ExICE.Priv.ICEAgentTest do
   use ExUnit.Case, async: true
 
   alias ExICE.Priv.{Candidate, CandidatePair, IfDiscovery, ICEAgent}
-  alias ExICE.Priv.Attribute.{ICEControlled, ICEControlling, Priority}
+  alias ExICE.Priv.Attribute.{ICEControlled, ICEControlling, Priority, UseCandidate}
   alias ExICE.Support.Transport
 
   alias ExSTUN.Message
@@ -206,6 +206,33 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       assert :ok == ExSTUN.Message.check_fingerprint(msg)
       assert :ok == ExSTUN.Message.authenticate(msg, ice_agent.local_pwd)
+    end
+
+    test "with use candidate", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [socket] = ice_agent.sockets
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234},
+          %ICEControlled{tiebreaker: 1234},
+          %UseCandidate{}
+        ])
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      _ice_agent =
+        ICEAgent.handle_udp(
+          ice_agent,
+          socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      assert_bad_request_error_response(socket, request)
     end
 
     test "without username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
