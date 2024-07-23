@@ -1058,8 +1058,11 @@ defmodule ExICE.Priv.ICEAgent do
         on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
         """)
 
-        keepalives = Map.delete(ice_agent.keepalives, msg.transaction_id)
-        %__MODULE__{ice_agent | keepalives: keepalives}
+        {pair_id, ice_agent} = pop_in(ice_agent.keepalives, msg.transaction_id)
+
+        pair = Map.fetch!(ice_agent.checklist, pair_id)
+        pair = %CandidatePair{pair | last_seen: now()}
+        put_in(ice_agent.checklist[pair.id], pair)
 
       %Type{class: class, method: :binding} when is_response(class) ->
         Logger.warning("""
