@@ -30,7 +30,7 @@ defmodule ExICE.Priv.ICEAgent do
   # Pair timeout in ms.
   # If we don't receive any data in this time,
   # a pair is marked as faield.
-  @pair_timeout 5_000
+  @pair_timeout 8_000
 
   # End-of-candidates timeout in ms.
   # If we don't receive end-of-candidates indication in this time,
@@ -72,6 +72,7 @@ defmodule ExICE.Priv.ICEAgent do
     gathering_transactions: %{},
     checklist: %{},
     conn_checks: %{},
+    keepalives: %{},
     gathering_state: :new,
     eoc: false,
     # {did we nominate pair, pair id}
@@ -1048,6 +1049,20 @@ defmodule ExICE.Priv.ICEAgent do
         """)
 
         handle_stun_gathering_transaction_response(ice_agent, msg)
+
+      %Type{class: class, method: :binding}
+      when is_response(class) and is_map_key(ice_agent.keepalives, msg.transaction_id) ->
+        # TODO: this a good basis to implement consent freshness
+        Logger.debug("""
+        Received keepalive response from from #{inspect({src_ip, src_port})}, \
+        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
+        """)
+
+        {pair_id, ice_agent} = pop_in(ice_agent.keepalives, msg.transaction_id)
+
+        pair = Map.fetch!(ice_agent.checklist, pair_id)
+        pair = %CandidatePair{pair | last_seen: now()}
+        put_in(ice_agent.checklist[pair.id], pair)
 
       %Type{class: class, method: :binding} when is_response(class) ->
         Logger.warning("""
@@ -2156,18 +2171,27 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp send_keepalive(ice_agent, pair) do
     Logger.debug("Sending keepalive")
-    type = %Type{class: :indication, method: :binding}
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
+    type = %Type{class: :request, method: :binding}
 
     req =
       type
       |> Message.new()
+      |> Message.with_integrity(ice_agent.remote_pwd)
       |> Message.with_fingerprint()
 
     dst = {remote_cand.address, remote_cand.port}
-    {_result, ice_agent} = do_send(ice_agent, local_cand, dst, Message.encode(req))
-    ice_agent
+
+    case do_send(ice_agent, local_cand, dst, Message.encode(req)) do
+      {:ok, ice_agent} ->
+        keepalives = Map.put(ice_agent.keepalives, req.transaction_id, pair.id)
+        %__MODULE__{ice_agent | keepalives: keepalives}
+
+      {:error, ice_agent} ->
+        ice_agent
+    end
   end
 
   defp send_conn_check(ice_agent, pair) do

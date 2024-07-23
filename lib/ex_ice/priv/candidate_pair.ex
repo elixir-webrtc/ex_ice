@@ -5,7 +5,7 @@ defmodule ExICE.Priv.CandidatePair do
   alias ExICE.Priv.{Candidate, Utils}
 
   # Tr timeout (keepalives) in ms
-  @tr_timeout 15 * 1000
+  @tr_timeout 5 * 1000
 
   @type state() :: :waiting | :in_progress | :succeeded | :failed | :frozen
 
