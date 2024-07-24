@@ -15,6 +15,7 @@ defmodule ExICE.Priv.ICEAgent do
   }
 
   alias ExICE.Priv.Attribute.{ICEControlling, ICEControlled, Priority, UseCandidate}
+  alias ExICE.Priv.Candidate.Srflx
 
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
@@ -725,20 +726,19 @@ defmodule ExICE.Priv.ICEAgent do
 
     checklist_foundations = get_foundations(ice_agent)
 
+    # See RFC 8445 sec. 6.1.2.4
+    # "For each pair where the local candidate is reflexive, the candidate
+    # MUST be replaced by its base."
+    # I belive that this is the same as filtering srflx candidates out.
+    # Libnice seems to do the same.
     new_pairs =
-      for local_cand <- local_cands, into: %{} do
-        local_cand =
-          if local_cand.base.type == :srflx do
-            local_cand = put_in(local_cand.base.address, local_cand.base.base_address)
-            put_in(local_cand.base.port, local_cand.base.base_port)
-          else
-            local_cand
-          end
-
+      local_cands
+      |> Enum.reject(fn %mod{} -> mod == Srflx end)
+      |> Map.new(fn local_cand ->
         pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
         pair = CandidatePair.new(local_cand, remote_cand, ice_agent.role, pair_state)
         {pair.id, pair}
-      end
+      end)
 
     checklist = Checklist.prune(Map.merge(ice_agent.checklist, new_pairs))
 
@@ -1487,41 +1487,6 @@ defmodule ExICE.Priv.ICEAgent do
 
     ice_agent = %__MODULE__{ice_agent | checklist: checklist}
     {conn_check_pair.id, ice_agent}
-  end
-
-  defp add_valid_pair(
-         ice_agent,
-         valid_pair,
-         conn_check_pair,
-         %CandidatePair{valid?: true} = checklist_pair
-       )
-       when are_pairs_equal(valid_pair, checklist_pair) do
-    Logger.debug("""
-    New valid pair: #{checklist_pair.id} \
-    resulted from conn check on pair: #{conn_check_pair.id} \
-    but there is already such a pair in the checklist marked as valid.
-    Should this ever happen after we don't add redundant srflx candidates?
-    Checklist pair: #{checklist_pair.id}.
-    """)
-
-    # if we get here, don't update discovered_pair_id and succeeded_pair_id of
-    # the checklist pair as they are already set
-    conn_check_pair = %CandidatePair{
-      conn_check_pair
-      | state: :succeeded,
-        succeeded_pair_id: conn_check_pair.id,
-        discovered_pair_id: checklist_pair.id
-    }
-
-    checklist_pair = %CandidatePair{checklist_pair | state: :succeeded}
-
-    checklist =
-      ice_agent.checklist
-      |> Map.replace!(checklist_pair.id, checklist_pair)
-      |> Map.replace!(conn_check_pair.id, conn_check_pair)
-
-    ice_agent = %__MODULE__{ice_agent | checklist: checklist}
-    {checklist_pair.id, ice_agent}
   end
 
   defp add_valid_pair(ice_agent, valid_pair, conn_check_pair, checklist_pair)

@@ -114,6 +114,42 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  test "don't add pairs with srflx local candidate to the checklist" do
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.Mock
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+
+    [socket] = ice_agent.sockets
+    [host_cand] = Map.values(ice_agent.local_cands)
+
+    srflx_cand =
+      ExICE.Priv.Candidate.Srflx.new(
+        address: {192, 168, 0, 2},
+        port: 1234,
+        base_address: host_cand.base.base_address,
+        base_port: host_cand.base.base_port,
+        transport_module: ice_agent.transport_module,
+        socket: socket
+      )
+
+    local_cands = %{host_cand.base.id => host_cand, srflx_cand.base.id => srflx_cand}
+    ice_agent = %{ice_agent | local_cands: local_cands}
+
+    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+    ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
+
+    # assert there is only one pair with host local candidate
+    assert [pair] = Map.values(ice_agent.checklist)
+    assert pair.local_cand_id == host_cand.base.id
+  end
+
   describe "sends keepalives" do
     setup do
       remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
