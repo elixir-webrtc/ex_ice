@@ -1069,7 +1069,7 @@ defmodule ExICE.Priv.ICEAgent do
         on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
         """)
 
-        {pair_id, ice_agent} = pop_in(ice_agent.keepalives, msg.transaction_id)
+        {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
 
         pair = Map.fetch!(ice_agent.checklist, pair_id)
         pair = %CandidatePair{pair | last_seen: now()}
