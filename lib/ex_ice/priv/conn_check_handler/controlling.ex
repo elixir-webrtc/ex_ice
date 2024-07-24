@@ -34,9 +34,14 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
         ICEAgent.send_binding_success_response(ice_agent, pair, msg)
 
       %CandidatePair{} = checklist_pair ->
-        checklist_pair = %CandidatePair{checklist_pair | last_seen: pair.last_seen}
-        checklist = Map.put(ice_agent.checklist, checklist_pair.id, checklist_pair)
-        ice_agent = %ICEAgent{ice_agent | checklist: checklist}
+        checklist_pair =
+          if checklist_pair.state == :failed do
+            %CandidatePair{checklist_pair | state: :waiting, last_seen: pair.last_seen}
+          else
+            %CandidatePair{checklist_pair | last_seen: pair.last_seen}
+          end
+
+        ice_agent = put_in(ice_agent.checklist[checklist_pair.id], checklist_pair)
         ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
     end
   end

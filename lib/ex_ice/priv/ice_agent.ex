@@ -600,20 +600,7 @@ defmodule ExICE.Priv.ICEAgent do
         %CandidatePair{} =
           pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
 
-        case pair.state do
-          :succeeded ->
-            pair = Map.fetch!(ice_agent.checklist, pair.discovered_pair_id)
-            handle_data_message(ice_agent, pair, packet)
-
-          :failed ->
-            Logger.error("Received data on failed pair! Ignoring. Pair id: #{pair.id}")
-            ice_agent
-
-          _other ->
-            # We might receive data on a pair that we haven't checked
-            # on our side yet.
-            handle_data_message(ice_agent, pair, packet)
-        end
+        handle_data_message(ice_agent, pair, packet)
     end
   end
 
@@ -972,7 +959,31 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
+  defp handle_data_message(ice_agent, %{state: :succeeded} = pair, packet) do
+    # take final pair as local candidate might be srflx
+    pair = Map.fetch!(ice_agent.checklist, pair.discovered_pair_id)
+    do_handle_data_message(ice_agent, pair, packet)
+  end
+
+  defp handle_data_message(ice_agent, %{state: :failed} = pair, packet) do
+    Logger.debug("""
+    Received data on failed pair. Rescheduling pair for conn check. Pair id: #{pair.id}\
+    """)
+
+    ice_agent = do_handle_data_message(ice_agent, pair, packet)
+
+    # re-schedule pair
+    pair = %{pair | state: :waiting}
+    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+    update_ta_timer(ice_agent)
+  end
+
+  # We might receive data on a pair that we haven't check on our side yet.
   defp handle_data_message(ice_agent, pair, packet) do
+    do_handle_data_message(ice_agent, pair, packet)
+  end
+
+  defp do_handle_data_message(ice_agent, pair, packet) do
     pair = %CandidatePair{pair | last_seen: now()}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
@@ -1058,7 +1069,7 @@ defmodule ExICE.Priv.ICEAgent do
         on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
         """)
 
-        {pair_id, ice_agent} = pop_in(ice_agent.keepalives, msg.transaction_id)
+        {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
 
         pair = Map.fetch!(ice_agent.checklist, pair_id)
         pair = %CandidatePair{pair | last_seen: now()}
@@ -1135,6 +1146,9 @@ defmodule ExICE.Priv.ICEAgent do
         msg,
         use_cand_attr
       )
+      # As a result of handling incoming binding request, we might have re-scheduled pair.
+      # Hence, we have to update ta timer.
+      |> update_ta_timer()
     else
       {:error, reason}
       when reason in [

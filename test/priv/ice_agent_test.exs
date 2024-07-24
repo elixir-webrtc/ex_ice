@@ -114,7 +114,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
-  test "don't add pairs with srflx local candidate to the checklist" do
+  test "doesn't add pairs with srflx local candidate to the checklist" do
     ice_agent =
       ICEAgent.new(
         controlling_process: self(),
@@ -148,6 +148,123 @@ defmodule ExICE.Priv.ICEAgentTest do
     # assert there is only one pair with host local candidate
     assert [pair] = Map.values(ice_agent.checklist)
     assert pair.local_cand_id == host_cand.base.id
+  end
+
+  test "forwards data received on a faild pair and re-schedules" do
+    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.Mock
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(remote_cand)
+
+    [socket] = ice_agent.sockets
+
+    # mark pair as failed
+    [pair] = Map.values(ice_agent.checklist)
+    ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
+
+    # clear ta_timer, ignore outgoing binding request that has been generated
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+    assert ice_agent.ta_timer == nil
+
+    # feed some data
+    ice_agent =
+      ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, "some data")
+
+    # assert that data has been passed
+    assert_receive {:ex_ice, _pid, {:data, "some data"}}
+
+    # assert that pair is re-scheduled
+    assert [pair] = Map.values(ice_agent.checklist)
+    assert pair.state == :waiting
+    assert ice_agent.ta_timer != nil
+  end
+
+  describe "re-schedules failed pair on incoming binding request" do
+    test "with controlling ice agent" do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      test_rescheduling(ice_agent, remote_cand)
+    end
+
+    test "with controlled ice agent" do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlled,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      test_rescheduling(ice_agent, remote_cand)
+    end
+
+    defp test_rescheduling(ice_agent, remote_cand) do
+      [socket] = ice_agent.sockets
+
+      # make sure we won't overflow when modifying tiebreakers later on
+      ice_agent = %{ice_agent | tiebreaker: 100}
+
+      # mark pair as failed
+      [pair] = Map.values(ice_agent.checklist)
+      ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
+
+      # clear ta_timer, ignore outgoing binding request that has been generated
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert ice_agent.ta_timer == nil
+
+      # feed incoming binding request
+      ice_attrs =
+        if ice_agent.role == :controlled do
+          [%ICEControlling{tiebreaker: ice_agent.tiebreaker + 1}, %UseCandidate{}]
+        else
+          [%ICEControlled{tiebreaker: ice_agent.tiebreaker - 1}]
+        end
+
+      attrs =
+        [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234}
+        ] ++ ice_attrs
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, attrs)
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, raw_request)
+
+      # assert that pair is re-scheduled
+      assert [pair] = Map.values(ice_agent.checklist)
+      assert pair.state == :waiting
+      assert ice_agent.ta_timer != nil
+    end
   end
 
   describe "sends keepalives" do
