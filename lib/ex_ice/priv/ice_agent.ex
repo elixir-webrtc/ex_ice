@@ -26,7 +26,7 @@ defmodule ExICE.Priv.ICEAgent do
 
   # Transaction timeout in ms.
   # See appendix B.1.
-  @hto 500
+  @hto 2_000
 
   # Pair timeout in ms.
   # If we don't receive any data in this time,
@@ -37,6 +37,9 @@ defmodule ExICE.Priv.ICEAgent do
   # If we don't receive end-of-candidates indication in this time,
   # we will set it on our own.
   @eoc_timeout 10_000
+
+  # Connectivity check retransmission timeout in ms.
+  @conn_check_rtx_timeout 500
 
   @conn_check_handler %{
     controlling: ConnCheckHandler.Controlling,
@@ -73,6 +76,7 @@ defmodule ExICE.Priv.ICEAgent do
     gathering_transactions: %{},
     checklist: %{},
     conn_checks: %{},
+    conn_checks_rtx: [],
     keepalives: %{},
     gathering_state: :new,
     eoc: false,
@@ -462,31 +466,15 @@ defmodule ExICE.Priv.ICEAgent do
     if ice_agent.state in [:completed, :failed] do
       update_ta_timer(ice_agent)
     else
-      {transaction_executed, ice_agent} =
-        case Checklist.get_next_pair(ice_agent.checklist) do
-          %CandidatePair{} = pair ->
-            Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
-            pair = %CandidatePair{pair | last_seen: now()}
-            ice_agent = send_conn_check(ice_agent, pair)
-            {true, ice_agent}
-
+      ice_agent =
+        case find_next_transaction(ice_agent) do
           nil ->
-            # credo:disable-for-lines:3 Credo.Check.Refactor.Nesting
-            case get_next_gathering_transaction(ice_agent) do
-              {_t_id, transaction} ->
-                case execute_gathering_transaction(ice_agent, transaction) do
-                  {:ok, ice_agent} -> {true, ice_agent}
-                  {:error, ice_agent} -> {false, ice_agent}
-                end
+            Logger.debug("No transaction to execute. Did Ta timer fired without the need?")
+            ice_agent
 
-              nil ->
-                {false, ice_agent}
-            end
+          tr ->
+            execute_transaction(ice_agent, tr)
         end
-
-      unless transaction_executed do
-        Logger.debug("Couldn't find transaction to execute. Did Ta timer fired without the need?")
-      end
 
       # schedule next check and call update_ta_timer
       # if the next check is not needed, update_ta_timer will
@@ -495,6 +483,97 @@ defmodule ExICE.Priv.ICEAgent do
       ice_agent = %{ice_agent | ta_timer: ta_timer}
       update_ta_timer(ice_agent)
     end
+  end
+
+  defp find_next_transaction(ice_agent) do
+    find_next_transaction(ice_agent, :pair)
+  end
+
+  defp find_next_transaction(ice_agent, :pair) do
+    case Checklist.get_next_pair(ice_agent.checklist) do
+      nil -> find_next_transaction(ice_agent, :gather)
+      pair -> pair
+    end
+  end
+
+  defp find_next_transaction(ice_agent, :gather) do
+    case get_next_gathering_transaction(ice_agent) do
+      nil -> find_next_transaction(ice_agent, :rtx)
+      {_id, gather_tr} -> gather_tr
+    end
+  end
+
+  defp find_next_transaction(ice_agent, :rtx) do
+    List.first(ice_agent.conn_checks_rtx)
+  end
+
+  defp execute_transaction(ice_agent, %CandidatePair{} = pair) do
+    Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
+    pair = %CandidatePair{pair | last_seen: now()}
+    send_conn_check(ice_agent, pair)
+  end
+
+  defp execute_transaction(ice_agent, gather_tr) when is_map(gather_tr) do
+    {_, ice_agent} = execute_gathering_transaction(ice_agent, gather_tr)
+    ice_agent
+  end
+
+  defp execute_transaction(ice_agent, conn_check_t_id) do
+    conn_checks_rtx = List.delete_at(ice_agent.conn_checks_rtx, 0)
+    ice_agent = %{ice_agent | conn_checks_rtx: conn_checks_rtx}
+
+    case Map.get(ice_agent.conn_checks, conn_check_t_id) do
+      nil ->
+        Logger.debug("""
+        Tried to retransmit conn check but it is no longer in-progress. Ignoring.
+        Conn check transaction id: #{conn_check_t_id}\
+        """)
+
+        ice_agent
+
+      conn_check ->
+        Logger.debug("Retransmitting conn check: #{conn_check_t_id}")
+        pair = Map.fetch!(ice_agent.checklist, conn_check.pair_id)
+        local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+        remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+        dst = {remote_cand.address, remote_cand.port}
+
+        case do_send(ice_agent, local_cand, dst, conn_check.raw_req) do
+          {:ok, ice_agent} ->
+            Process.send_after(
+              self(),
+              {:conn_check_rtx_timeout, conn_check_t_id},
+              @conn_check_rtx_timeout
+            )
+
+            ice_agent
+
+          {:error, ice_agent} ->
+            ice_agent
+        end
+    end
+  end
+
+  @spec handle_conn_check_rtx_timeout(t(), integer()) :: t()
+  def handle_conn_check_rtx_timeout(ice_agent, transaction_id)
+      when is_map_key(ice_agent.conn_checks, transaction_id) do
+    # Mark transaction id as ready to be retransmitted.
+    # We will do this in handle_ta_timeout as it has to be paced.
+    Logger.debug("""
+    Scheduling conn check for retransmission.
+    Conn check transaction id:  #{transaction_id}\
+    """)
+
+    %{ice_agent | conn_checks_rtx: ice_agent.conn_checks_rtx ++ [transaction_id]}
+  end
+
+  def handle_conn_check_rtx_timeout(ice_agent, transaction_id) do
+    Logger.debug("""
+    Conn check rtx timeout fired but there is no such conn check in progress.
+    Conn check transaction id: #{transaction_id}\
+    """)
+
+    ice_agent
   end
 
   @spec handle_eoc_timeout(t()) :: t()
@@ -2349,15 +2428,24 @@ defmodule ExICE.Priv.ICEAgent do
       |> Message.with_integrity(ice_agent.remote_pwd)
       |> Message.with_fingerprint()
 
+    raw_req = Message.encode(req)
+
     dst = {remote_cand.address, remote_cand.port}
 
-    case do_send(ice_agent, local_cand, dst, Message.encode(req)) do
+    case do_send(ice_agent, local_cand, dst, raw_req) do
       {:ok, ice_agent} ->
+        Process.send_after(
+          self(),
+          {:conn_check_rtx_timeout, req.transaction_id},
+          @conn_check_rtx_timeout
+        )
+
         pair = %CandidatePair{pair | state: :in_progress}
 
         conn_check = %{
           pair_id: pair.id,
-          send_time: now()
+          send_time: now(),
+          raw_req: raw_req
         }
 
         conn_checks = Map.put(ice_agent.conn_checks, req.transaction_id, conn_check)

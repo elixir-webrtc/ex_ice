@@ -907,6 +907,92 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "connectivity check rtx" do
+    setup do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      %{ice_agent: ice_agent, remote_cand: remote_cand}
+    end
+
+    test "retransmits cc when there is no response", %{
+      ice_agent: ice_agent,
+      remote_cand: remote_cand
+    } do
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      rtx_raw_req = Transport.Mock.recv(socket)
+
+      # assert this is exactly the same message
+      assert raw_req == rtx_raw_req
+
+      # provide a response and ensure no more retransmissions are sent
+      raw_resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, raw_resp)
+
+      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      _ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+    end
+
+    test "stop retransmissions when pair times out", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil != Transport.Mock.recv(socket)
+
+      # mock cc send time so we can timeout it
+      [cc] = Map.values(ice_agent.conn_checks)
+      cc = %{cc | send_time: cc.send_time - 2000}
+      ice_agent = put_in(ice_agent.conn_checks[req.transaction_id], cc)
+
+      # timeout cc
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert %{} == ice_agent.conn_checks
+
+      # trigger rtx timeout and assert there is no retransmission
+      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+      assert [] == ice_agent.conn_checks_rtx
+    end
+  end
+
   test "pair timeout" do
     # 1. make ice agent connected
     # 2. mock the time a pair has received something from the peer
