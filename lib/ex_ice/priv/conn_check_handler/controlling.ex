@@ -52,12 +52,10 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
   @impl true
   def update_nominated_flag(%ICEAgent{eoc: true} = ice_agent, pair_id, true) do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
-    ice_agent = ICEAgent.change_connection_state(ice_agent, :completed)
 
     pair = Map.fetch!(ice_agent.checklist, pair_id)
     pair = %CandidatePair{pair | nominate?: false, nominated?: true}
-    checklist = Map.put(ice_agent.checklist, pair.id, pair)
-    ice_agent = %ICEAgent{ice_agent | checklist: checklist}
+    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     # the controlling agent could nominate only when eoc was set
     # and checklist finished
@@ -65,6 +63,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
       Logger.warning("Nomination succeeded but checklist hasn't finished.")
     end
 
-    %ICEAgent{ice_agent | nominating?: {false, nil}, selected_pair_id: pair.id}
+    ice_agent = %ICEAgent{ice_agent | nominating?: {false, nil}, selected_pair_id: pair.id}
+    ICEAgent.change_connection_state(ice_agent, :completed)
   end
 end
