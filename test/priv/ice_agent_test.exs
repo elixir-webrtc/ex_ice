@@ -938,7 +938,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       {:ok, req} = ExSTUN.Message.decode(raw_req)
 
       # trigger rtx timeout
-      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
       rtx_raw_req = Transport.Mock.recv(socket)
 
@@ -957,7 +957,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent =
         ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, raw_resp)
 
-      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
       _ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
       assert nil == Transport.Mock.recv(socket)
     end
@@ -972,7 +972,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       {:ok, req} = ExSTUN.Message.decode(raw_req)
 
       # trigger rtx timeout
-      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
       assert nil != Transport.Mock.recv(socket)
 
@@ -986,10 +986,91 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert %{} == ice_agent.conn_checks
 
       # trigger rtx timeout and assert there is no retransmission
-      ice_agent = ICEAgent.handle_conn_check_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
       assert nil == Transport.Mock.recv(socket)
-      assert [] == ice_agent.conn_checks_rtx
+      assert [] == ice_agent.tr_rtx
+    end
+  end
+
+  describe "srflx gathering tr rtx" do
+    setup do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock,
+          ice_servers: [%{urls: ["stun:192.168.0.10:8445"]}]
+        )
+
+      %{ice_agent: ice_agent, stun_addr: %{ip: {192, 168, 0, 10}, port: 8445}}
+    end
+
+    test "retransmits tr when there is no response", %{ice_agent: ice_agent, stun_addr: stun_addr} do
+      ice_agent = ICEAgent.gather_candidates(ice_agent)
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      rtx_raw_req = Transport.Mock.recv(socket)
+
+      # assert this is exactly the same message
+      assert raw_req == rtx_raw_req
+
+      # provide a response and ensure no more retransmissions are sent
+      {:ok, {sock_ip, sock_port}} = ice_agent.transport_module.sockname(socket)
+
+      raw_resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: sock_ip, port: sock_port}
+        ])
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, stun_addr.ip, stun_addr.port, raw_resp)
+
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      _ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+    end
+
+    test "stop retransmissions when tr times out", %{ice_agent: ice_agent} do
+      ice_agent = ICEAgent.gather_candidates(ice_agent)
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil != Transport.Mock.recv(socket)
+
+      # mock tr send time so we can timeout it
+      [tr] = Map.values(ice_agent.gathering_transactions)
+      tr = %{tr | send_time: tr.send_time - 2000}
+      ice_agent = put_in(ice_agent.gathering_transactions[req.transaction_id], tr)
+
+      # timeout tr
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert %{} == ice_agent.gathering_transactions
+
+      # trigger rtx timeout and assert there is no retransmission
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+      assert [] == ice_agent.tr_rtx
     end
   end
 
@@ -1243,8 +1324,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       assert srflx_cand.base.address == srflx_ip
       assert srflx_cand.base.port == srflx_port
-      # assert gathering transaction succeeded
-      assert ice_agent.gathering_transactions[req.transaction_id].state == :complete
+      assert ice_agent.gathering_transactions == %{}
     end
 
     test "error response", %{ice_agent: ice_agent} do
@@ -1270,8 +1350,7 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Map.values()
                |> Enum.find(&(&1.base.type == :srflx))
 
-      # assert gathering transaction failed
-      assert ice_agent.gathering_transactions[req.transaction_id].state == :failed
+      assert ice_agent.gathering_transactions == %{}
     end
   end
 
@@ -1341,10 +1420,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       assert relay_cand.base.address == @turn_relay_ip
       assert relay_cand.base.port == @turn_relay_port
-
-      # assert gathering transaction succeeded
-      turn_tr_id = {socket, {@turn_ip, @turn_port}}
-      assert ice_agent.gathering_transactions[turn_tr_id].state == :complete
+      assert ice_agent.gathering_transactions == %{}
     end
 
     test "error response", %{ice_agent: ice_agent} do
@@ -1377,9 +1453,7 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Map.values()
                |> Enum.find(&(&1.base.type == :relay))
 
-      # assert gathering transaction failed
-      turn_tr_id = {socket, {@turn_ip, @turn_port}}
-      assert ice_agent.gathering_transactions[turn_tr_id].state == :failed
+      assert ice_agent.gathering_transactions == %{}
     end
 
     test "invalid response", %{ice_agent: ice_agent} do
@@ -1442,7 +1516,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
 
       # assert gathering transaction failed
-      assert ice_agent.gathering_transactions[turn_tr_id].state == :failed
+      assert ice_agent.gathering_transactions == %{}
     end
   end
 
@@ -1502,6 +1576,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent.checklist == %{}
   end
 
+  @tag :debug
   test "relay connection" do
     remote_cand_ip = {192, 168, 0, 2}
     remote_cand_port = 8445

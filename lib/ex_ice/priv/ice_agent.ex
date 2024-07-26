@@ -39,7 +39,7 @@ defmodule ExICE.Priv.ICEAgent do
   @eoc_timeout 10_000
 
   # Connectivity check retransmission timeout in ms.
-  @conn_check_rtx_timeout 500
+  @tr_rtx_timeout 500
 
   @conn_check_handler %{
     controlling: ConnCheckHandler.Controlling,
@@ -76,7 +76,7 @@ defmodule ExICE.Priv.ICEAgent do
     gathering_transactions: %{},
     checklist: %{},
     conn_checks: %{},
-    conn_checks_rtx: [],
+    tr_rtx: [],
     keepalives: %{},
     gathering_state: :new,
     eoc: false,
@@ -472,8 +472,8 @@ defmodule ExICE.Priv.ICEAgent do
             Logger.debug("No transaction to execute. Did Ta timer fired without the need?")
             ice_agent
 
-          tr ->
-            execute_transaction(ice_agent, tr)
+          {type, tr} ->
+            execute_transaction(ice_agent, type, tr)
         end
 
       # schedule next check and call update_ta_timer
@@ -486,91 +486,125 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp find_next_transaction(ice_agent) do
-    find_next_transaction(ice_agent, :pair)
+    find_next_transaction(ice_agent, :conn_check)
   end
 
-  defp find_next_transaction(ice_agent, :pair) do
+  defp find_next_transaction(ice_agent, :conn_check) do
     case Checklist.get_next_pair(ice_agent.checklist) do
-      nil -> find_next_transaction(ice_agent, :gather)
-      pair -> pair
+      nil -> find_next_transaction(ice_agent, :gathering)
+      pair -> {:conn_check, pair}
     end
   end
 
-  defp find_next_transaction(ice_agent, :gather) do
+  defp find_next_transaction(ice_agent, :gathering) do
     case get_next_gathering_transaction(ice_agent) do
       nil -> find_next_transaction(ice_agent, :rtx)
-      {_id, gather_tr} -> gather_tr
+      {_id, gather_tr} -> {:gathering, gather_tr}
     end
   end
 
   defp find_next_transaction(ice_agent, :rtx) do
-    List.first(ice_agent.conn_checks_rtx)
+    case List.first(ice_agent.tr_rtx) do
+      nil -> nil
+      tr_id -> {:rtx, tr_id}
+    end
   end
 
-  defp execute_transaction(ice_agent, %CandidatePair{} = pair) do
+  defp execute_transaction(ice_agent, :conn_check, pair) do
     Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
     pair = %CandidatePair{pair | last_seen: now()}
     send_conn_check(ice_agent, pair)
   end
 
-  defp execute_transaction(ice_agent, gather_tr) when is_map(gather_tr) do
-    {_, ice_agent} = execute_gathering_transaction(ice_agent, gather_tr)
+  defp execute_transaction(ice_agent, :gathering, tr) do
+    {_, ice_agent} = execute_gathering_transaction(ice_agent, tr)
     ice_agent
   end
 
-  defp execute_transaction(ice_agent, conn_check_t_id) do
-    conn_checks_rtx = List.delete_at(ice_agent.conn_checks_rtx, 0)
-    ice_agent = %{ice_agent | conn_checks_rtx: conn_checks_rtx}
+  defp execute_transaction(ice_agent, :rtx, t_id)
+       when is_map_key(ice_agent.gathering_transactions, t_id) do
+    Logger.debug("Retransmitting srflx gathering transaction: #{t_id}")
 
-    case Map.get(ice_agent.conn_checks, conn_check_t_id) do
-      nil ->
-        Logger.debug("""
-        Tried to retransmit conn check but it is no longer in-progress. Ignoring.
-        Conn check transaction id: #{conn_check_t_id}\
-        """)
+    tr_rtx = List.delete(ice_agent.tr_rtx, t_id)
+    ice_agent = %{ice_agent | tr_rtx: tr_rtx}
+    tr = Map.fetch!(ice_agent.gathering_transactions, t_id)
 
+    # gather_srflx_candidate will create exactly the same message
+    case Gatherer.gather_srflx_candidate(ice_agent.gatherer, t_id, tr.socket, tr.stun_server.url) do
+      :ok ->
+        Process.send_after(self(), {:tr_rtx_timeout, t_id}, @tr_rtx_timeout)
         ice_agent
 
-      conn_check ->
-        Logger.debug("Retransmitting conn check: #{conn_check_t_id}")
-        pair = Map.fetch!(ice_agent.checklist, conn_check.pair_id)
-        local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
-        remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
-        dst = {remote_cand.address, remote_cand.port}
+      {:error, reason} ->
+        Logger.debug("""
+        Failed to retransmit srflx gathering transaction, reason: #{inspect(reason)}.
+        Transaction id: #{t_id}.
+        Scheduling next rtx.\
+        """)
 
-        case do_send(ice_agent, local_cand, dst, conn_check.raw_req) do
-          {:ok, ice_agent} ->
-            Process.send_after(
-              self(),
-              {:conn_check_rtx_timeout, conn_check_t_id},
-              @conn_check_rtx_timeout
-            )
-
-            ice_agent
-
-          {:error, ice_agent} ->
-            ice_agent
-        end
+        Process.send_after(self(), {:tr_rtx_timeout, t_id}, @tr_rtx_timeout)
+        ice_agent
     end
   end
 
-  @spec handle_conn_check_rtx_timeout(t(), integer()) :: t()
-  def handle_conn_check_rtx_timeout(ice_agent, transaction_id)
-      when is_map_key(ice_agent.conn_checks, transaction_id) do
+  defp execute_transaction(ice_agent, :rtx, t_id) when is_map_key(ice_agent.conn_checks, t_id) do
+    Logger.debug("Retransmitting conn check: #{t_id}")
+
+    tr_rtx = List.delete(ice_agent.tr_rtx, t_id)
+    ice_agent = %{ice_agent | tr_rtx: tr_rtx}
+    conn_check = Map.fetch!(ice_agent.conn_checks, t_id)
+
+    pair = Map.fetch!(ice_agent.checklist, conn_check.pair_id)
+    local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+    dst = {remote_cand.address, remote_cand.port}
+
+    case do_send(ice_agent, local_cand, dst, conn_check.raw_req) do
+      {:ok, ice_agent} ->
+        Process.send_after(self(), {:tr_rtx_timeout, t_id}, @tr_rtx_timeout)
+        ice_agent
+
+      {:error, ice_agent} ->
+        ice_agent
+    end
+  end
+
+  defp execute_transaction(ice_agent, :rtx, t_id) do
+    Logger.debug("""
+    Tried to retransmit transaction but it is no longer in-progress. Ignoring.
+    Transaction id: #{t_id}\
+    """)
+
+    tr_rtx = List.delete(ice_agent.tr_rtx, t_id)
+    %{ice_agent | tr_rtx: tr_rtx}
+  end
+
+  @spec handle_tr_rtx_timeout(t(), integer()) :: t()
+  def handle_tr_rtx_timeout(ice_agent, t_id) when is_map_key(ice_agent.conn_checks, t_id) do
     # Mark transaction id as ready to be retransmitted.
     # We will do this in handle_ta_timeout as it has to be paced.
     Logger.debug("""
     Scheduling conn check for retransmission.
-    Conn check transaction id:  #{transaction_id}\
+    Conn check transaction id:  #{t_id}\
     """)
 
-    %{ice_agent | conn_checks_rtx: ice_agent.conn_checks_rtx ++ [transaction_id]}
+    %{ice_agent | tr_rtx: ice_agent.tr_rtx ++ [t_id]}
   end
 
-  def handle_conn_check_rtx_timeout(ice_agent, transaction_id) do
+  def handle_tr_rtx_timeout(ice_agent, t_id)
+      when is_map_key(ice_agent.gathering_transactions, t_id) do
     Logger.debug("""
-    Conn check rtx timeout fired but there is no such conn check in progress.
-    Conn check transaction id: #{transaction_id}\
+    Scheduling srflx gathering transaction for retransmission.
+    Transaction id: #{t_id}\
+    """)
+
+    %{ice_agent | tr_rtx: ice_agent.tr_rtx ++ [t_id]}
+  end
+
+  def handle_tr_rtx_timeout(ice_agent, transaction_id) do
+    Logger.debug("""
+    Transaction timeout timer fired but there is no such transaction in progress. Ignoring.
+    Transaction id: #{transaction_id}\
     """)
 
     ice_agent
@@ -777,15 +811,12 @@ defmodule ExICE.Priv.ICEAgent do
             :ok = ice_agent.transport_module.send(tr.socket, dst, data)
             put_in(ice_agent.gathering_transactions[tr_id], tr)
 
-          {:error, _reason, client} ->
-            tr = %{tr | client: client, state: :failed}
-
-            put_in(ice_agent.gathering_transactions[tr_id], tr)
-            |> update_gathering_state()
+          {:error, _reason, _client} ->
+            {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
+            update_gathering_state(ice_agent)
         end
 
-      # tr_id_tr might be nil or might be present with state == :complete
-      {_, cand} ->
+      {nil, cand} ->
         case ExTURN.Client.handle_message(cand.client, msg) do
           {:ok, client} ->
             cand = %{cand | client: client}
@@ -919,10 +950,7 @@ defmodule ExICE.Priv.ICEAgent do
       {:error, reason} ->
         Logger.debug("Couldn't send binding request, reason: #{reason}")
 
-        gathering_transactions =
-          put_in(ice_agent.gathering_transactions, [tr.t_id, :state], :failed)
-
-        ice_agent = %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
+        {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr.t_id])
         ice_agent = update_gathering_state(ice_agent)
 
         {:error, ice_agent}
@@ -950,8 +978,10 @@ defmodule ExICE.Priv.ICEAgent do
 
       {:error, reason} ->
         Logger.debug("Couldn't send allocate request, reason: #{reason}")
-        ice_agent = put_in(ice_agent.gathering_transactions[tr.t_id][:state], :failed)
+
+        {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr.t_id])
         ice_agent = update_gathering_state(ice_agent)
+
         {:error, ice_agent}
     end
   end
@@ -1011,14 +1041,13 @@ defmodule ExICE.Priv.ICEAgent do
         put_in(ice_agent.gathering_transactions[tr_id], tr)
 
       {:allocation_created, {alloc_ip, alloc_port}, client} ->
-        tr = %{tr | client: client, state: :complete}
+        {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
 
         resolved_turn_servers = [
           {client.turn_ip, client.turn_port} | ice_agent.resolved_turn_servers
         ]
 
         ice_agent = %{ice_agent | resolved_turn_servers: resolved_turn_servers}
-        ice_agent = put_in(ice_agent.gathering_transactions[tr_id], tr)
 
         relay_cand =
           Candidate.Relay.new(
@@ -1028,7 +1057,7 @@ defmodule ExICE.Priv.ICEAgent do
             base_port: alloc_port,
             transport_module: ice_agent.transport_module,
             socket: tr.socket,
-            client: tr.client
+            client: client
           )
 
         Logger.debug("New relay candidate: #{inspect(relay_cand)}")
@@ -1045,10 +1074,10 @@ defmodule ExICE.Priv.ICEAgent do
         :ok = ice_agent.transport_module.send(tr.socket, turn_addr, data)
         put_in(ice_agent.gathering_transactions[tr_id], tr)
 
-      {:error, _reason, client} ->
+      {:error, _reason, _client} ->
         Logger.debug("Failed to create TURN allocation.")
-        tr = %{tr | client: client, state: :failed}
-        put_in(ice_agent.gathering_transactions[tr_id], tr)
+        {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
+        ice_agent
     end
   end
 
@@ -1549,51 +1578,45 @@ defmodule ExICE.Priv.ICEAgent do
          ice_agent,
          %Message{type: %Type{class: :success_response}} = msg
        ) do
-    tr = Map.fetch!(ice_agent.gathering_transactions, msg.transaction_id)
+    {tr, ice_agent} = pop_in(ice_agent.gathering_transactions[msg.transaction_id])
 
     {:ok, %XORMappedAddress{address: xor_addr, port: xor_port}} =
       Message.get_attribute(msg, XORMappedAddress)
 
-    ice_agent =
-      case find_local_cand(Map.values(ice_agent.local_cands), xor_addr, xor_port) do
-        nil ->
-          {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
+    case find_local_cand(Map.values(ice_agent.local_cands), xor_addr, xor_port) do
+      nil ->
+        {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
 
-          c =
-            Candidate.Srflx.new(
-              address: xor_addr,
-              port: xor_port,
-              base_address: base_addr,
-              base_port: base_port,
-              transport_module: ice_agent.transport_module,
-              socket: tr.socket
-            )
+        c =
+          Candidate.Srflx.new(
+            address: xor_addr,
+            port: xor_port,
+            base_address: base_addr,
+            base_port: base_port,
+            transport_module: ice_agent.transport_module,
+            socket: tr.socket
+          )
 
-          Logger.debug("New srflx candidate: #{inspect(c)}")
-          notify(ice_agent.on_new_candidate, {:new_candidate, Candidate.Srflx.marshal(c)})
-          # don't pair reflexive candidate, it should be pruned anyway - see sec. 6.1.2.4
-          put_in(ice_agent.local_cands[c.base.id], c)
+        Logger.debug("New srflx candidate: #{inspect(c)}")
+        notify(ice_agent.on_new_candidate, {:new_candidate, Candidate.Srflx.marshal(c)})
+        # don't pair reflexive candidate, it should be pruned anyway - see sec. 6.1.2.4
+        put_in(ice_agent.local_cands[c.base.id], c)
 
-        cand ->
-          Logger.debug("""
-          Not adding srflx candidate as we already have a candidate with the same address.
-          Candidate: #{inspect(cand)}
-          """)
+      cand ->
+        Logger.debug("""
+        Not adding srflx candidate as we already have a candidate with the same address.
+        Candidate: #{inspect(cand)}
+        """)
 
-          ice_agent
-      end
-
-    gathering_transactions =
-      Map.update!(ice_agent.gathering_transactions, tr.t_id, fn tr -> %{tr | state: :complete} end)
-
-    %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
+        ice_agent
+    end
   end
 
   defp handle_stun_gathering_transaction_response(
          ice_agent,
          %Message{type: %Type{class: :error_response}} = msg
        ) do
-    t = Map.fetch!(ice_agent.gathering_transactions, msg.transaction_id)
+    {_, ice_agent} = pop_in(ice_agent.gathering_transactions[msg.transaction_id])
 
     error_code =
       case Message.get_attribute(msg, ErrorCode) do
@@ -1605,10 +1628,7 @@ defmodule ExICE.Priv.ICEAgent do
       "Gathering transaction failed, t_id: #{msg.transaction_id}, reason: #{inspect(error_code)}"
     )
 
-    gathering_transactions =
-      Map.update!(ice_agent.gathering_transactions, t.t_id, fn t -> %{t | state: :failed} end)
-
-    %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
+    ice_agent
   end
 
   # Adds valid pair according to sec 7.2.5.3.2
@@ -2434,11 +2454,7 @@ defmodule ExICE.Priv.ICEAgent do
 
     case do_send(ice_agent, local_cand, dst, raw_req) do
       {:ok, ice_agent} ->
-        Process.send_after(
-          self(),
-          {:conn_check_rtx_timeout, req.transaction_id},
-          @conn_check_rtx_timeout
-        )
+        Process.send_after(self(), {:tr_rtx_timeout, req.transaction_id}, @tr_rtx_timeout)
 
         pair = %CandidatePair{pair | state: :in_progress}
 

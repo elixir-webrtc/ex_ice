@@ -363,10 +363,8 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def handle_info({:conn_check_rtx_timeout, conn_check_t_id}, state) do
-    ice_agent =
-      ExICE.Priv.ICEAgent.handle_conn_check_rtx_timeout(state.ice_agent, conn_check_t_id)
-
+  def handle_info({:tr_rtx_timeout, tr_id}, state) do
+    ice_agent = ExICE.Priv.ICEAgent.handle_tr_rtx_timeout(state.ice_agent, tr_id)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 
