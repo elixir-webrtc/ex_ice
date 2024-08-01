@@ -1576,7 +1576,6 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent.checklist == %{}
   end
 
-  @tag :debug
   test "relay connection" do
     remote_cand_ip = {192, 168, 0, 2}
     remote_cand_port = 8445

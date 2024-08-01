@@ -1587,7 +1587,7 @@ defmodule ExICE.Priv.ICEAgent do
       nil ->
         {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
 
-        c =
+        cand =
           Candidate.Srflx.new(
             address: xor_addr,
             port: xor_port,
@@ -1597,10 +1597,10 @@ defmodule ExICE.Priv.ICEAgent do
             socket: tr.socket
           )
 
-        Logger.debug("New srflx candidate: #{inspect(c)}")
-        notify(ice_agent.on_new_candidate, {:new_candidate, Candidate.Srflx.marshal(c)})
+        Logger.debug("New srflx candidate: #{inspect(cand)}")
+        notify(ice_agent.on_new_candidate, {:new_candidate, Candidate.Srflx.marshal(cand)})
         # don't pair reflexive candidate, it should be pruned anyway - see sec. 6.1.2.4
-        put_in(ice_agent.local_cands[c.base.id], c)
+        put_in(ice_agent.local_cands[cand.base.id], cand)
 
       cand ->
         Logger.debug("""
