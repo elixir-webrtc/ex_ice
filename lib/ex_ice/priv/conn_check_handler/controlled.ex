@@ -38,7 +38,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlled do
       nil ->
         Logger.debug("""
         Adding new candidate pair that will be nominated after \
-        successfull conn check: #{inspect(pair.id)}\
+        successful conn check: #{inspect(pair.id)}\
         """)
 
         pair = %CandidatePair{pair | nominate?: true}

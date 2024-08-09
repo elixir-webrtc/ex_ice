@@ -111,7 +111,7 @@ defmodule ExICE.Priv.Gatherer do
           gatherer.transport_module.send(socket, {ip, port}, binding_request)
         else
           Logger.debug("""
-          Not gathering srflx candidate becasue of incompatible ip address families.
+          Not gathering srflx candidate because of incompatible ip address families.
           Socket family: #{inspect(cand_family)}
           STUN server family: #{inspect(stun_family)}
           Socket: #{inspect(sock_ip)}
