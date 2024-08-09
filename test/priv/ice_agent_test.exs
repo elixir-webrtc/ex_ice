@@ -2,7 +2,7 @@ defmodule ExICE.Priv.ICEAgentTest do
   use ExUnit.Case, async: true
 
   alias ExICE.Priv.{Candidate, CandidatePair, IfDiscovery, ICEAgent}
-  alias ExICE.Priv.Attribute.{ICEControlled, ICEControlling, Priority}
+  alias ExICE.Priv.Attribute.{ICEControlled, ICEControlling, Priority, UseCandidate}
   alias ExICE.Support.Transport
 
   alias ExSTUN.Message
@@ -114,6 +114,200 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  test "doesn't add pairs with srflx local candidate to the checklist" do
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.Mock
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+
+    [socket] = ice_agent.sockets
+    [host_cand] = Map.values(ice_agent.local_cands)
+
+    srflx_cand =
+      ExICE.Priv.Candidate.Srflx.new(
+        address: {192, 168, 0, 2},
+        port: 1234,
+        base_address: host_cand.base.base_address,
+        base_port: host_cand.base.base_port,
+        transport_module: ice_agent.transport_module,
+        socket: socket
+      )
+
+    local_cands = %{host_cand.base.id => host_cand, srflx_cand.base.id => srflx_cand}
+    ice_agent = %{ice_agent | local_cands: local_cands}
+
+    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+    ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
+
+    # assert there is only one pair with host local candidate
+    assert [pair] = Map.values(ice_agent.checklist)
+    assert pair.local_cand_id == host_cand.base.id
+  end
+
+  test "forwards data received on a faild pair and re-schedules" do
+    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.Mock
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(remote_cand)
+
+    [socket] = ice_agent.sockets
+
+    # mark pair as failed
+    [pair] = Map.values(ice_agent.checklist)
+    ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
+
+    # clear ta_timer, ignore outgoing binding request that has been generated
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+    assert ice_agent.ta_timer == nil
+
+    # feed some data
+    ice_agent =
+      ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, "some data")
+
+    # assert that data has been passed
+    assert_receive {:ex_ice, _pid, {:data, "some data"}}
+
+    # assert that pair is re-scheduled
+    assert [pair] = Map.values(ice_agent.checklist)
+    assert pair.state == :waiting
+    assert ice_agent.ta_timer != nil
+  end
+
+  describe "re-schedules failed pair on incoming binding request" do
+    test "with controlling ice agent" do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      test_rescheduling(ice_agent, remote_cand)
+    end
+
+    test "with controlled ice agent" do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlled,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      test_rescheduling(ice_agent, remote_cand)
+    end
+
+    defp test_rescheduling(ice_agent, remote_cand) do
+      [socket] = ice_agent.sockets
+
+      # make sure we won't overflow when modifying tiebreakers later on
+      ice_agent = %{ice_agent | tiebreaker: 100}
+
+      # mark pair as failed
+      [pair] = Map.values(ice_agent.checklist)
+      ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
+
+      # clear ta_timer, ignore outgoing binding request that has been generated
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert ice_agent.ta_timer == nil
+
+      # feed incoming binding request
+      ice_attrs =
+        if ice_agent.role == :controlled do
+          [%ICEControlling{tiebreaker: ice_agent.tiebreaker + 1}, %UseCandidate{}]
+        else
+          [%ICEControlled{tiebreaker: ice_agent.tiebreaker - 1}]
+        end
+
+      attrs =
+        [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234}
+        ] ++ ice_attrs
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, attrs)
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, raw_request)
+
+      # assert that pair is re-scheduled
+      assert [pair] = Map.values(ice_agent.checklist)
+      assert pair.state == :waiting
+      assert ice_agent.ta_timer != nil
+    end
+  end
+
+  describe "sends keepalives" do
+    setup do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "on connected pair", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
+      ice_agent = ICEAgent.handle_keepalive(ice_agent, pair.id)
+
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, msg} = ExSTUN.Message.decode(packet)
+      assert msg.type == %ExSTUN.Message.Type{class: :request, method: :binding}
+      assert :ok == ExSTUN.Message.check_fingerprint(msg)
+      assert :ok == ExSTUN.Message.authenticate(msg, ice_agent.remote_pwd)
+    end
+
+    test "on unconnected pair", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
+      ICEAgent.handle_keepalive(ice_agent, pair.id)
+
+      assert nil == Transport.Mock.recv(socket)
+    end
+  end
+
   describe "incoming binding request" do
     setup do
       ice_agent =
@@ -165,6 +359,33 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       assert :ok == ExSTUN.Message.check_fingerprint(msg)
       assert :ok == ExSTUN.Message.authenticate(msg, ice_agent.local_pwd)
+    end
+
+    test "with use candidate", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [socket] = ice_agent.sockets
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234},
+          %ICEControlled{tiebreaker: 1234},
+          %UseCandidate{}
+        ])
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      _ice_agent =
+        ICEAgent.handle_udp(
+          ice_agent,
+          socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      assert_bad_request_error_response(socket, request)
     end
 
     test "without username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
@@ -686,6 +907,173 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "connectivity check rtx" do
+    setup do
+      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(remote_cand)
+
+      %{ice_agent: ice_agent, remote_cand: remote_cand}
+    end
+
+    test "retransmits cc when there is no response", %{
+      ice_agent: ice_agent,
+      remote_cand: remote_cand
+    } do
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      rtx_raw_req = Transport.Mock.recv(socket)
+
+      # assert this is exactly the same message
+      assert raw_req == rtx_raw_req
+
+      # provide a response and ensure no more retransmissions are sent
+      raw_resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, raw_resp)
+
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      _ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+    end
+
+    test "stop retransmissions when pair times out", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil != Transport.Mock.recv(socket)
+
+      # mock cc send time so we can timeout it
+      [cc] = Map.values(ice_agent.conn_checks)
+      cc = %{cc | send_time: cc.send_time - 2000}
+      ice_agent = put_in(ice_agent.conn_checks[req.transaction_id], cc)
+
+      # timeout cc
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert %{} == ice_agent.conn_checks
+
+      # trigger rtx timeout and assert there is no retransmission
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+      assert [] == ice_agent.tr_rtx
+    end
+  end
+
+  describe "srflx gathering tr rtx" do
+    setup do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock,
+          ice_servers: [%{urls: ["stun:192.168.0.10:8445"]}]
+        )
+
+      %{ice_agent: ice_agent, stun_addr: %{ip: {192, 168, 0, 10}, port: 8445}}
+    end
+
+    test "retransmits tr when there is no response", %{ice_agent: ice_agent, stun_addr: stun_addr} do
+      ice_agent = ICEAgent.gather_candidates(ice_agent)
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      rtx_raw_req = Transport.Mock.recv(socket)
+
+      # assert this is exactly the same message
+      assert raw_req == rtx_raw_req
+
+      # provide a response and ensure no more retransmissions are sent
+      {:ok, {sock_ip, sock_port}} = ice_agent.transport_module.sockname(socket)
+
+      raw_resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: sock_ip, port: sock_port}
+        ])
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, stun_addr.ip, stun_addr.port, raw_resp)
+
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      _ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+    end
+
+    test "stop retransmissions when tr times out", %{ice_agent: ice_agent} do
+      ice_agent = ICEAgent.gather_candidates(ice_agent)
+      [socket] = ice_agent.sockets
+
+      # trigger binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      raw_req = Transport.Mock.recv(socket)
+      assert raw_req != nil
+      {:ok, req} = ExSTUN.Message.decode(raw_req)
+
+      # trigger rtx timeout
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil != Transport.Mock.recv(socket)
+
+      # mock tr send time so we can timeout it
+      [tr] = Map.values(ice_agent.gathering_transactions)
+      tr = %{tr | send_time: tr.send_time - 2000}
+      ice_agent = put_in(ice_agent.gathering_transactions[req.transaction_id], tr)
+
+      # timeout tr
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert %{} == ice_agent.gathering_transactions
+
+      # trigger rtx timeout and assert there is no retransmission
+      ice_agent = ICEAgent.handle_tr_rtx_timeout(ice_agent, req.transaction_id)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+      assert [] == ice_agent.tr_rtx
+    end
+  end
+
   test "pair timeout" do
     # 1. make ice agent connected
     # 2. mock the time a pair has received something from the peer
@@ -714,7 +1102,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # mock last_seen field
     [pair] = Map.values(ice_agent.checklist)
-    last_seen = System.monotonic_time(:millisecond) - 5_000
+    last_seen = System.monotonic_time(:millisecond) - 10_000
     pair = %{pair | last_seen: last_seen}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
@@ -729,6 +1117,155 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # assert ice agent moved to the failed state
     assert ice_agent.state == :failed
+  end
+
+  test "cleans up agent state when the connection fails" do
+    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.Mock
+      )
+      |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(remote_cand)
+
+    # save creds as they will be cleared after moving to the failed state
+    local_ufrag = ice_agent.local_ufrag
+    local_pwd = ice_agent.local_pwd
+
+    [socket] = ice_agent.sockets
+
+    # mark pair as failed
+    [pair] = Map.values(ice_agent.checklist)
+    ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
+
+    # set eoc flag
+    ice_agent = ICEAgent.end_of_candidates(ice_agent)
+
+    # agent should have moved to the failed state
+    assert ice_agent.state == :failed
+    assert ice_agent.sockets == []
+    assert ice_agent.local_cands == %{}
+    assert ice_agent.remote_cands == %{}
+    assert ice_agent.gathering_transactions == %{}
+    assert ice_agent.selected_pair_id == nil
+    assert ice_agent.conn_checks == %{}
+    assert ice_agent.checklist == %{}
+    assert ice_agent.local_ufrag == nil
+    assert ice_agent.local_pwd == nil
+    assert ice_agent.remote_ufrag == nil
+    assert ice_agent.remote_pwd == nil
+    assert ice_agent.eoc == false
+    assert ice_agent.nominating? == {false, nil}
+
+    # assert that handle_udp ignores incoming data i.e. the state of ice agent didn't change
+    new_ice_agent =
+      ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, "some data")
+
+    assert ice_agent == new_ice_agent
+
+    # the same with incoming binding request
+    req =
+      binding_request(
+        ice_agent.role,
+        ice_agent.tiebreaker,
+        "remoteufrag",
+        local_ufrag,
+        local_pwd
+      )
+
+    new_ice_agent =
+      ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, req)
+
+    assert ice_agent == new_ice_agent
+
+    # and handle_ta_timeout
+    new_ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+    assert ice_agent == new_ice_agent
+  end
+
+  test "cleans up agent state when the connection completes" do
+    r_cand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+    r_cand2 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 4}, port: 8445)
+
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlled,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.Mock
+      )
+      |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(r_cand1)
+
+    [socket] = ice_agent.sockets
+
+    raw_req =
+      binding_request(
+        ice_agent.role,
+        ice_agent.tiebreaker,
+        "remoteufrag",
+        ice_agent.local_ufrag,
+        ice_agent.local_pwd
+      )
+
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand1.address, r_cand1.port, raw_req)
+    # read binding response
+    _ = Transport.Mock.recv(socket)
+    # assert there is nothing else on socket
+    assert nil == Transport.Mock.recv(socket)
+
+    # execute conn-check
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+    assert req = Transport.Mock.recv(socket)
+    {:ok, req} = ExSTUN.Message.decode(req)
+
+    resp = binding_response(req.transaction_id, ice_agent.transport_module, socket, "remotepwd")
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand1.address, r_cand1.port, resp)
+
+    # add second candidate and repeat
+    ice_agent = ICEAgent.add_remote_candidate(ice_agent, r_cand2)
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand2.address, r_cand2.port, raw_req)
+    _ = Transport.Mock.recv(socket)
+    assert nil == Transport.Mock.recv(socket)
+
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+    assert req = Transport.Mock.recv(socket)
+    {:ok, req} = ExSTUN.Message.decode(req)
+    resp = binding_response(req.transaction_id, ice_agent.transport_module, socket, "remotepwd")
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand2.address, r_cand2.port, resp)
+
+    # assert we have two succeeded pairs
+    assert [%{state: :succeeded}, %{state: :succeeded}] = Map.values(ice_agent.checklist)
+
+    {_id, srflx_pair} =
+      Enum.find(ice_agent.checklist, fn {_pair_id, pair} -> pair.remote_cand_id == r_cand2.id end)
+
+    assert :connected == ice_agent.state
+
+    # set end-of-candidates
+    ice_agent = ICEAgent.end_of_candidates(ice_agent)
+
+    # assert ice agent changed its state to completed
+    # and we have one pair and one remote cand
+    assert ice_agent.state == :completed
+    assert [%{state: :succeeded}] = Map.values(ice_agent.checklist)
+    assert [%{type: :host}] = Map.values(ice_agent.remote_cands)
+
+    # try to feed data from the srflx remote cand
+    new_ice_agent =
+      ICEAgent.handle_udp(ice_agent, socket, r_cand2.address, r_cand2.port, "some data")
+
+    assert ice_agent == new_ice_agent
+
+    # try to handle keepalive on the srflx pair
+    new_ice_agent = ICEAgent.handle_keepalive(ice_agent, srflx_pair.id)
+    assert ice_agent == new_ice_agent
   end
 
   @stun_ip {192, 168, 0, 3}
@@ -787,8 +1324,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       assert srflx_cand.base.address == srflx_ip
       assert srflx_cand.base.port == srflx_port
-      # assert gathering transaction succeeded
-      assert ice_agent.gathering_transactions[req.transaction_id].state == :complete
+      assert ice_agent.gathering_transactions == %{}
     end
 
     test "error response", %{ice_agent: ice_agent} do
@@ -814,8 +1350,7 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Map.values()
                |> Enum.find(&(&1.base.type == :srflx))
 
-      # assert gathering transaction failed
-      assert ice_agent.gathering_transactions[req.transaction_id].state == :failed
+      assert ice_agent.gathering_transactions == %{}
     end
   end
 
@@ -885,10 +1420,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       assert relay_cand.base.address == @turn_relay_ip
       assert relay_cand.base.port == @turn_relay_port
-
-      # assert gathering transaction succeeded
-      turn_tr_id = {socket, {@turn_ip, @turn_port}}
-      assert ice_agent.gathering_transactions[turn_tr_id].state == :complete
+      assert ice_agent.gathering_transactions == %{}
     end
 
     test "error response", %{ice_agent: ice_agent} do
@@ -921,9 +1453,7 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Map.values()
                |> Enum.find(&(&1.base.type == :relay))
 
-      # assert gathering transaction failed
-      turn_tr_id = {socket, {@turn_ip, @turn_port}}
-      assert ice_agent.gathering_transactions[turn_tr_id].state == :failed
+      assert ice_agent.gathering_transactions == %{}
     end
 
     test "invalid response", %{ice_agent: ice_agent} do
@@ -986,7 +1516,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
 
       # assert gathering transaction failed
-      assert ice_agent.gathering_transactions[turn_tr_id].state == :failed
+      assert ice_agent.gathering_transactions == %{}
     end
   end
 
@@ -1216,6 +1746,28 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   defp binding_indication() do
     Message.new(%Type{class: :indication, method: :binding}) |> Message.encode()
+  end
+
+  defp binding_request(role, tiebreaker, local_ufrag, remote_ufrag, remote_pwd) do
+    ice_attrs =
+      if role == :controlled do
+        [%ICEControlling{tiebreaker: tiebreaker + 1}, %UseCandidate{}]
+      else
+        [%ICEControlled{tiebreaker: tiebreaker - 1}]
+      end
+
+    attrs =
+      [
+        %Username{value: "#{remote_ufrag}:#{local_ufrag}"},
+        %Priority{priority: 1234}
+      ] ++ ice_attrs
+
+    request =
+      Message.new(%Type{class: :request, method: :binding}, attrs)
+      |> Message.with_integrity(remote_pwd)
+      |> Message.with_fingerprint()
+
+    Message.encode(request)
   end
 
   defp binding_response(t_id, transport_module, socket, remote_pwd) do

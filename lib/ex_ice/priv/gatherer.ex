@@ -117,6 +117,8 @@ defmodule ExICE.Priv.Gatherer do
           Socket: #{inspect(sock_ip)}
           STUN server: #{inspect(stun_server)}
           """)
+
+          {:error, :non_matching_addr_family}
         end
 
       {:error, reason} ->

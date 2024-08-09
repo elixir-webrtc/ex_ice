@@ -19,9 +19,14 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlled do
         ICEAgent.send_binding_success_response(ice_agent, pair, msg)
 
       %CandidatePair{} = checklist_pair ->
-        checklist_pair = %CandidatePair{checklist_pair | last_seen: pair.last_seen}
-        checklist = Map.put(ice_agent.checklist, checklist_pair.id, checklist_pair)
-        ice_agent = %ICEAgent{ice_agent | checklist: checklist}
+        checklist_pair =
+          if checklist_pair.state == :failed do
+            %CandidatePair{checklist_pair | state: :waiting, last_seen: pair.last_seen}
+          else
+            %CandidatePair{checklist_pair | last_seen: pair.last_seen}
+          end
+
+        ice_agent = put_in(ice_agent.checklist[checklist_pair.id], checklist_pair)
         ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
     end
   end
@@ -42,37 +47,51 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlled do
         ice_agent = %ICEAgent{ice_agent | checklist: checklist}
         ICEAgent.send_binding_success_response(ice_agent, pair, msg)
 
-      %CandidatePair{} = checklist_pair ->
-        if checklist_pair.state == :succeeded do
-          discovered_pair = Map.fetch!(ice_agent.checklist, checklist_pair.discovered_pair_id)
-          discovered_pair = %CandidatePair{discovered_pair | last_seen: pair.last_seen}
-          ice_agent = put_in(ice_agent.checklist[discovered_pair.id], discovered_pair)
+      %CandidatePair{state: :succeeded} = checklist_pair ->
+        discovered_pair = Map.fetch!(ice_agent.checklist, checklist_pair.discovered_pair_id)
+        discovered_pair = %CandidatePair{discovered_pair | last_seen: pair.last_seen}
+        ice_agent = put_in(ice_agent.checklist[discovered_pair.id], discovered_pair)
 
-          if ice_agent.selected_pair_id == nil do
-            Logger.debug("Nomination request on pair: #{discovered_pair.id}.")
-            update_nominated_flag(ice_agent, discovered_pair.id, true)
-          else
-            ice_agent
-          end
-          |> ICEAgent.send_binding_success_response(discovered_pair, msg)
+        if ice_agent.selected_pair_id == nil do
+          Logger.debug("Nomination request on pair: #{discovered_pair.id}.")
+          update_nominated_flag(ice_agent, discovered_pair.id, true)
         else
-          # TODO should we check if this pair is not in failed?
-          Logger.debug("""
-          Nomination request on pair that hasn't been verified yet.
-          We will nominate pair once conn check passes.
-          Pair: #{inspect(checklist_pair.id)}
-          """)
-
-          checklist_pair = %CandidatePair{
-            checklist_pair
-            | nominate?: true,
-              last_seen: pair.last_seen
-          }
-
-          checklist = Map.put(ice_agent.checklist, checklist_pair.id, checklist_pair)
-          ice_agent = %ICEAgent{ice_agent | checklist: checklist}
-          ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
+          ice_agent
         end
+        |> ICEAgent.send_binding_success_response(discovered_pair, msg)
+
+      %CandidatePair{state: :failed} = checklist_pair ->
+        Logger.debug("""
+        Nomination request on failed pair. Re-scheduling pair for conn-check.
+        We will nominate pair once conn check passes.
+        Pair: #{inspect(checklist_pair.id)}
+        """)
+
+        checklist_pair = %CandidatePair{
+          checklist_pair
+          | nominate?: true,
+            last_seen: pair.last_seen,
+            state: :waiting
+        }
+
+        ice_agent = put_in(ice_agent.checklist[checklist_pair.id], checklist_pair)
+        ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
+
+      %CandidatePair{} = checklist_pair ->
+        Logger.debug("""
+        Nomination request on pair that hasn't been verified yet.
+        We will nominate pair once conn check passes.
+        Pair: #{inspect(checklist_pair.id)}
+        """)
+
+        checklist_pair = %CandidatePair{
+          checklist_pair
+          | nominate?: true,
+            last_seen: pair.last_seen
+        }
+
+        ice_agent = put_in(ice_agent.checklist[checklist_pair.id], checklist_pair)
+        ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
     end
   end
 

@@ -4,7 +4,6 @@ defmodule ExICE.CandidateTest do
   alias ExICE.Candidate
 
   test "candidate's foundation" do
-    # FIXME socket shouldn't be nil
     ip = {192, 168, 1, 1}
     port = 12_345
 

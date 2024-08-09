@@ -25,8 +25,10 @@ defmodule ExICE.Priv.Checklist do
   @spec get_valid_pair(t()) :: CandidatePair.t() | nil
   def get_valid_pair(checklist) do
     checklist
-    |> Enum.find({nil, nil}, fn {_id, pair} -> pair.valid? end)
-    |> elem(1)
+    |> Stream.map(fn {_id, pair} -> pair end)
+    |> Stream.filter(fn pair -> pair.valid? end)
+    |> Enum.sort_by(fn pair -> pair.priority end, :desc)
+    |> Enum.at(0)
   end
 
   @spec find_pair(t(), CandidatePair.t()) :: CandidatePair.t() | nil
