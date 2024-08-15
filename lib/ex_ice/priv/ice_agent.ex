@@ -876,6 +876,14 @@ defmodule ExICE.Priv.ICEAgent do
         }
 
         {t_id, t}
+      else
+        false ->
+          Logger.warning("Client's IP family doesn't match the socket's IP family. Ignoring.")
+          {nil, nil}
+
+        other ->
+          Logger.warning("Couldn't create TURN client: #{inspect(other)}. Ignoring.")
+          {nil, nil}
       end
     end
     |> Enum.reject(fn {tr_id, tr} -> tr_id == nil and tr == nil end)

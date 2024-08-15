@@ -68,6 +68,38 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "gather_candidates/1" do
+    setup do
+      ice_agent =
+        ICEAgent.new(
+          gathering_state: :new,
+          ice_transport_policy: :all,
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+
+      %{ice_agent: ice_agent}
+    end
+
+    test ~c"Agent with invalid TURN server url doesn't raise an exception", %{
+      ice_agent: ice_agent
+    } do
+      assert %ICEAgent{gathering_state: :complete} =
+               ICEAgent.gather_candidates(%{
+                 ice_agent
+                 | turn_servers: [
+                     %{
+                       url: "invalid.turn.url",
+                       username: "user",
+                       credential: "pass"
+                     }
+                   ]
+               })
+    end
+  end
+
   describe "add_remote_candidate/2" do
     setup do
       ice_agent =
