@@ -26,7 +26,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     @impl true
     def getifaddrs() do
-      ifs = [{~c"mockif", [{:flags, [:up, :running]}, {:addr, {64512, 0, 0, 0, 0, 0, 0, 1}}]}]
+      ifs = [{~c"mockif", [{:flags, [:up, :running]}, {:addr, {64_512, 0, 0, 0, 0, 0, 0, 1}}]}]
       {:ok, ifs}
     end
   end
