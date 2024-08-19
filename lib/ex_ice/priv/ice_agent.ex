@@ -864,7 +864,8 @@ defmodule ExICE.Priv.ICEAgent do
       with {:ok, client} <-
              ExTURN.Client.new(turn_server.url, turn_server.username, turn_server.credential),
            {:ok, {sock_ip, _sock_port}} <- ice_agent.transport_module.sockname(socket),
-           true <- Utils.family(client.turn_ip) == Utils.family(sock_ip) do
+           {true, _, _} <-
+             {Utils.family(client.turn_ip) == Utils.family(sock_ip), client, sock_ip} do
         t_id = {socket, {client.turn_ip, client.turn_port}}
 
         t = %{
@@ -876,6 +877,17 @@ defmodule ExICE.Priv.ICEAgent do
         }
 
         {t_id, t}
+      else
+        {false, client, sock_ip} ->
+          Logger.warning(
+            "Client's IP family doesn't match the socket's IP family (Client IP: #{inspect(client.turn_ip)} vs Socket IP: #{inspect(sock_ip)}). Ignoring."
+          )
+
+          {nil, nil}
+
+        other ->
+          Logger.warning("Couldn't create TURN client: #{inspect(other)}. Ignoring.")
+          {nil, nil}
       end
     end
     |> Enum.reject(fn {tr_id, tr} -> tr_id == nil and tr == nil end)
