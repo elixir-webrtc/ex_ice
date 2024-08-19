@@ -1,3 +1,3 @@
 ExICE.Support.Transport.Mock.init()
 
-ExUnit.start(capture_log: false, exclude: [:relay])
+ExUnit.start(capture_log: true, exclude: [:relay])
