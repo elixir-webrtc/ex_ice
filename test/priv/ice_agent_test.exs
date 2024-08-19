@@ -21,6 +21,16 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  defmodule IfDiscovery.IPV6.Mock do
+    @behaviour ExICE.Priv.IfDiscovery
+
+    @impl true
+    def getifaddrs() do
+      ifs = [{~c"mockif", [{:flags, [:up, :running]}, {:addr, {64_512, 0, 0, 0, 0, 0, 0, 1}}]}]
+      {:ok, ifs}
+    end
+  end
+
   defmodule Candidate.Mock do
     @moduledoc false
     @behaviour ExICE.Priv.Candidate
@@ -65,38 +75,6 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "with invalid address" do
       cand = "1 1 UDP 1686052863 someincalidmdnsadddress 57940 typ srflx raddr 0.0.0.0 rport 0"
       assert {:error, _reason} = ICEAgent.unmarshal_remote_candidate(cand)
-    end
-  end
-
-  describe "gather_candidates/1" do
-    setup do
-      ice_agent =
-        ICEAgent.new(
-          gathering_state: :new,
-          ice_transport_policy: :all,
-          controlling_process: self(),
-          role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
-          transport_module: Transport.Mock
-        )
-
-      %{ice_agent: ice_agent}
-    end
-
-    test ~c"Agent with invalid TURN server url doesn't raise an exception", %{
-      ice_agent: ice_agent
-    } do
-      assert %ICEAgent{gathering_state: :complete} =
-               ICEAgent.gather_candidates(%{
-                 ice_agent
-                 | turn_servers: [
-                     %{
-                       url: "invalid.turn.url",
-                       username: "user",
-                       credential: "pass"
-                     }
-                   ]
-               })
     end
   end
 
@@ -1549,6 +1527,46 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # assert gathering transaction failed
       assert ice_agent.gathering_transactions == %{}
+    end
+
+    test "invalid TURN URL" do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.Mock,
+          ice_servers: [
+            %{
+              urls: "turn:invalid.turn.url:#{@turn_port}?transport=udp",
+              username: @turn_username,
+              credential: @turn_password
+            }
+          ]
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+
+      assert %ICEAgent{gathering_state: :complete} = ICEAgent.gather_candidates(ice_agent)
+    end
+
+    test "non-matching IP families" do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.IPV6.Mock,
+          ice_servers: [
+            %{
+              urls: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
+              username: @turn_username,
+              credential: @turn_password
+            }
+          ]
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+
+      assert %ICEAgent{gathering_state: :complete} = ICEAgent.gather_candidates(ice_agent)
     end
   end
 

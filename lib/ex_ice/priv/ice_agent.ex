@@ -879,9 +879,13 @@ defmodule ExICE.Priv.ICEAgent do
         {t_id, t}
       else
         {false, client, sock_ip} ->
-          Logger.warning(
-            "Client's IP family doesn't match the socket's IP family (Client IP: #{inspect(client.turn_ip)} vs Socket IP: #{inspect(sock_ip)}). Ignoring."
-          )
+          Logger.debug("""
+          TURN's IP family doesn't match socket's IP family.
+          TURN: #{inspect(turn_server)}.
+          TURN IP: #{inspect(client.turn_ip)}.
+          Socket IP: #{inspect(sock_ip)}.
+          Ignoring.
+          """)
 
           {nil, nil}
 
@@ -2065,7 +2069,7 @@ defmodule ExICE.Priv.ICEAgent do
             |> Map.put(:url, url)
 
           :error ->
-            Logger.warning("Couldn't parse URL: #{inspect(ice_server.url)}. Ignoring.")
+            Logger.warning("Couldn't parse URL: #{inspect(url)}. Ignoring.")
             nil
         end
       end)
