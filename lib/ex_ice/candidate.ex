@@ -41,10 +41,22 @@ defmodule ExICE.Candidate do
       type: type
     } = cand
 
+    # This is based on RFC 8839 sec. 5.1.
+    # Reflexive candidates MUST contain rel-addr and rel-port.
+    # However, for security reasons, we always use "0.0.0.0"
+    # (or "::" for ipv6) as rel-addr and "9" as rel-port.
+    related_addr =
+      cond do
+        type == :host -> ""
+        ExICE.Priv.Utils.family(address) == :ipv4 -> "raddr 0.0.0.0 rport 9"
+        ExICE.Priv.Utils.family(address) == :ipv6 -> "raddr :: rport 9"
+      end
+
     transport = transport_to_string(transport)
     address = address_to_string(address)
 
-    "#{foundation} #{component_id} #{transport} #{priority} #{address} #{port} typ #{type}"
+    "#{foundation} #{component_id} #{transport} #{priority} #{address} #{port} typ #{type} #{related_addr}"
+    |> String.trim()
   end
 
   @spec unmarshal(String.t()) :: {:ok, t()} | {:error, term()}
@@ -100,6 +112,7 @@ defmodule ExICE.Candidate do
 
   defp address_to_string(address) when is_binary(address), do: address
   defp address_to_string(address), do: :inet.ntoa(address)
+
   defp transport_to_string(:udp), do: "UDP"
 
   defp parse_transport("udp"), do: {:ok, :udp}
