@@ -381,8 +381,8 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def handle_info({:keepalive, id}, state) do
-    ice_agent = ExICE.Priv.ICEAgent.handle_keepalive(state.ice_agent, id)
+  def handle_info({:keepalive_timeout, id}, state) do
+    ice_agent = ExICE.Priv.ICEAgent.handle_keepalive_timeout(state.ice_agent, id)
     {:noreply, %{state | ice_agent: ice_agent}}
   end
 

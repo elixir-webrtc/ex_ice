@@ -277,7 +277,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
-  describe "sends keepalives" do
+  describe "keepalive" do
     setup do
       remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
 
@@ -295,26 +295,157 @@ defmodule ExICE.Priv.ICEAgentTest do
       %{ice_agent: ice_agent}
     end
 
-    test "on connected pair", %{ice_agent: ice_agent} do
+    test "timeout on connected pair", %{ice_agent: ice_agent} do
       ice_agent = connect(ice_agent)
 
       [socket] = ice_agent.sockets
       [pair] = Map.values(ice_agent.checklist)
-      ice_agent = ICEAgent.handle_keepalive(ice_agent, pair.id)
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
 
       assert packet = Transport.Mock.recv(socket)
       assert {:ok, msg} = ExSTUN.Message.decode(packet)
       assert msg.type == %ExSTUN.Message.Type{class: :request, method: :binding}
+
+      # assert there are required attributes
+      username = "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"
+      assert length(msg.attributes) == 5
+
+      assert {:ok, %Username{value: ^username}} = ExSTUN.Message.get_attribute(msg, Username)
+      assert {:ok, %ICEControlling{}} = ExSTUN.Message.get_attribute(msg, ICEControlling)
+      assert {:ok, %Priority{}} = ExSTUN.Message.get_attribute(msg, Priority)
+
+      # authenticate and check fingerprint
       assert :ok == ExSTUN.Message.check_fingerprint(msg)
       assert :ok == ExSTUN.Message.authenticate(msg, ice_agent.remote_pwd)
     end
 
-    test "on unconnected pair", %{ice_agent: ice_agent} do
+    test "timeout on unconnected pair", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
       [pair] = Map.values(ice_agent.checklist)
-      ICEAgent.handle_keepalive(ice_agent, pair.id)
+      ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
 
       assert nil == Transport.Mock.recv(socket)
+    end
+
+    test "success response", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [pair] = Map.values(ice_agent.checklist)
+
+      # trigger keepalive request
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+
+      # create a response
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      # wait so that we can observe a change in last_seen later on
+      Process.sleep(1)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
+
+      [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.last_seen > pair.last_seen
+    end
+
+    test "invalid success response", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [pair] = Map.values(ice_agent.checklist)
+
+      # trigger keepalive request
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+
+      # create a response using wrong password
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.local_pwd
+        )
+
+      # wait so there will be a change in last_seen if something went wrong
+      Process.sleep(1)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
+
+      [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.last_seen == pair.last_seen
+    end
+
+    test "non-symmetric success response", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [pair] = Map.values(ice_agent.checklist)
+
+      # trigger keepalive request
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      # wait so there will be a change in last_seen if something went wrong
+      Process.sleep(1)
+
+      # modify port so that addresses are non-symmetic
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port + 1, resp)
+
+      [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.last_seen == pair.last_seen
+    end
+
+    test "error response", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [pair] = Map.values(ice_agent.checklist)
+
+      # trigger keepalive request
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
+          %ErrorCode{code: 400}
+        ])
+        |> Message.encode()
+
+      # wait so there will be a change in last_seen if something went wrong
+      Process.sleep(1)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
+
+      [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.last_seen == pair.last_seen
     end
   end
 
@@ -1274,7 +1405,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent == new_ice_agent
 
     # try to handle keepalive on the srflx pair
-    new_ice_agent = ICEAgent.handle_keepalive(ice_agent, srflx_pair.id)
+    new_ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, srflx_pair.id)
     assert ice_agent == new_ice_agent
   end
 

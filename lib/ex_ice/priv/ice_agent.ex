@@ -673,8 +673,8 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  @spec handle_keepalive(t(), integer()) :: t()
-  def handle_keepalive(%__MODULE__{selected_pair_id: id} = ice_agent, id) do
+  @spec handle_keepalive_timeout(t(), integer()) :: t()
+  def handle_keepalive_timeout(%__MODULE__{selected_pair_id: id} = ice_agent, id) do
     # if pair was selected, send keepalives only on that pair
     s_pair = Map.fetch!(ice_agent.checklist, id)
     pair = CandidatePair.schedule_keepalive(s_pair)
@@ -682,7 +682,7 @@ defmodule ExICE.Priv.ICEAgent do
     send_keepalive(ice_agent, ice_agent.checklist[id])
   end
 
-  def handle_keepalive(%__MODULE__{selected_pair_id: s_pair_id} = ice_agent, _id)
+  def handle_keepalive_timeout(%__MODULE__{selected_pair_id: s_pair_id} = ice_agent, _id)
       when not is_nil(s_pair_id) do
     # note: current implementation assumes that, if selected pair exists, none of the already existing
     # valid pairs will ever become selected (only new appearing valid pairs)
@@ -690,7 +690,7 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent
   end
 
-  def handle_keepalive(ice_agent, id) do
+  def handle_keepalive_timeout(ice_agent, id) do
     # TODO: keepalives should be sent only if no data has been sent for @tr_timeout
     # atm, we send keepalives anyways, also it might be better to pace them with ta_timer
     # TODO: candidates not in a valid pair also should be kept alive (RFC 8445, sect 5.1.1.4)
@@ -1246,16 +1246,7 @@ defmodule ExICE.Priv.ICEAgent do
       %Type{class: class, method: :binding}
       when is_response(class) and is_map_key(ice_agent.keepalives, msg.transaction_id) ->
         # TODO: this a good basis to implement consent freshness
-        Logger.debug("""
-        Received keepalive response from from #{inspect({src_ip, src_port})}, \
-        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
-        """)
-
-        {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
-
-        pair = Map.fetch!(ice_agent.checklist, pair_id)
-        pair = %CandidatePair{pair | last_seen: now()}
-        put_in(ice_agent.checklist[pair.id], pair)
+        handle_keepalive_response(ice_agent, local_cand, src_ip, src_port, msg)
 
       %Type{class: class, method: :binding} when is_response(class) ->
         Logger.warning("""
@@ -1475,7 +1466,6 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   ## BINDING RESPONSE HANDLING ##
-
   defp handle_conn_check_response(ice_agent, local_cand, src_ip, src_port, msg) do
     {%{pair_id: pair_id}, conn_checks} = Map.pop!(ice_agent.conn_checks, msg.transaction_id)
     ice_agent = %__MODULE__{ice_agent | conn_checks: conn_checks}
@@ -1643,6 +1633,66 @@ defmodule ExICE.Priv.ICEAgent do
     Logger.debug(
       "Gathering transaction failed, t_id: #{msg.transaction_id}, reason: #{inspect(error_code)}"
     )
+
+    ice_agent
+  end
+
+  defp handle_keepalive_response(
+         ice_agent,
+         local_cand,
+         src_ip,
+         src_port,
+         %Message{type: %Type{class: :success_response}} = msg
+       ) do
+    {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
+    pair = Map.fetch!(ice_agent.checklist, pair_id)
+
+    with true <- symmetric?(ice_agent, local_cand.base.socket, {src_ip, src_port}, pair),
+         :ok <- authenticate_msg(msg, ice_agent.remote_pwd) do
+      Logger.debug("Received keepalive success response on: #{pair_info(ice_agent, pair)}")
+      pair = %CandidatePair{pair | last_seen: now()}
+      put_in(ice_agent.checklist[pair.id], pair)
+    else
+      false ->
+        ka_local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+        ka_remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
+        Logger.warning("""
+        Ignoring keepalive success response, non-symmetric src and dst addresses.
+        Sent from: #{inspect({ka_local_cand.base.base_address, ka_local_cand.base.base_port})}, \
+        to: #{inspect({ka_remote_cand.address, ka_remote_cand.port})}
+        Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
+        Not refreshing last_seen time. \
+        """)
+
+        ice_agent
+
+      {:error, reason} ->
+        Logger.debug("""
+        Couldn't authenticate keepalive success response, reason: #{reason}. \
+        Not refreshing last_seen time.\
+        """)
+
+        ice_agent
+    end
+  end
+
+  defp handle_keepalive_response(
+         ice_agent,
+         local_cand,
+         src_ip,
+         src_port,
+         %Message{type: %Type{class: :error_response}} = msg
+       ) do
+    {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
+    pair = Map.fetch!(ice_agent.checklist, pair_id)
+
+    Logger.debug("""
+    Received keepalive error response from #{inspect({src_ip, src_port})}, \
+    on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})}. \
+    pair: #{pair_info(ice_agent, pair)} \
+    Not refreshing last_seen time. \
+    """)
 
     ice_agent
   end
@@ -2090,8 +2140,19 @@ defmodule ExICE.Priv.ICEAgent do
     {ufrag, pwd}
   end
 
-  defp authenticate_msg(msg, local_pwd) do
-    with :ok <- Message.authenticate(msg, local_pwd),
+  defp pair_info(ice_agent, pair) do
+    local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+    remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
+    """
+    #{pair.id} \
+    l: #{:inet.ntoa(local_cand.base.address)}:#{local_cand.base.port} \
+    r: #{:inet.ntoa(remote_cand.address)}:#{remote_cand.port} \
+    """
+  end
+
+  defp authenticate_msg(msg, pwd) do
+    with :ok <- Message.authenticate(msg, pwd),
          :ok <- Message.check_fingerprint(msg) do
       :ok
     else
@@ -2402,17 +2463,11 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp send_keepalive(ice_agent, pair) do
-    Logger.debug("Sending keepalive")
+    Logger.debug("Sending keepalive on #{pair_info(ice_agent, pair)}")
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
-    type = %Type{class: :request, method: :binding}
-
-    req =
-      type
-      |> Message.new()
-      |> Message.with_integrity(ice_agent.remote_pwd)
-      |> Message.with_fingerprint()
+    req = binding_request(ice_agent, false)
 
     dst = {remote_cand.address, remote_cand.port}
 
@@ -2430,39 +2485,10 @@ defmodule ExICE.Priv.ICEAgent do
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
-    type = %Type{class: :request, method: :binding}
-
-    role_attr =
-      if ice_agent.role == :controlling do
-        %ICEControlling{tiebreaker: ice_agent.tiebreaker}
-      else
-        %ICEControlled{tiebreaker: ice_agent.tiebreaker}
-      end
-
-    # priority sent to the other side has to be
-    # computed with the candidate type preference of
-    # peer-reflexive; refer to sec 7.1.1
-    priority = Candidate.priority(:prflx)
-
-    attrs = [
-      %Username{value: "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"},
-      %Priority{priority: priority},
-      role_attr
-    ]
-
     # we can nominate only when being the controlling agent
     # the controlled agent uses nominate? flag according to 7.3.1.5
-    attrs =
-      if pair.nominate? and ice_agent.role == :controlling do
-        attrs ++ [%UseCandidate{}]
-      else
-        attrs
-      end
-
-    req =
-      Message.new(type, attrs)
-      |> Message.with_integrity(ice_agent.remote_pwd)
-      |> Message.with_fingerprint()
+    nominate = pair.nominate? and ice_agent.role == :controlling
+    req = binding_request(ice_agent, nominate)
 
     raw_req = Message.encode(req)
 
@@ -2487,6 +2513,34 @@ defmodule ExICE.Priv.ICEAgent do
       {:error, ice_agent} ->
         ice_agent
     end
+  end
+
+  defp binding_request(ice_agent, nominate) do
+    type = %Type{class: :request, method: :binding}
+
+    role_attr =
+      if ice_agent.role == :controlling do
+        %ICEControlling{tiebreaker: ice_agent.tiebreaker}
+      else
+        %ICEControlled{tiebreaker: ice_agent.tiebreaker}
+      end
+
+    # priority sent to the other side has to be
+    # computed with the candidate type preference of
+    # peer-reflexive; refer to sec 7.1.1
+    priority = Candidate.priority(:prflx)
+
+    attrs = [
+      %Username{value: "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"},
+      %Priority{priority: priority},
+      role_attr
+    ]
+
+    attrs = if nominate, do: attrs ++ [%UseCandidate{}], else: attrs
+
+    Message.new(type, attrs)
+    |> Message.with_integrity(ice_agent.remote_pwd)
+    |> Message.with_fingerprint()
   end
 
   defp do_send(ice_agent, %cand_mod{} = local_cand, dst, data, retry \\ true) do

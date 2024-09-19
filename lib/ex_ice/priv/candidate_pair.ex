@@ -66,7 +66,7 @@ defmodule ExICE.Priv.CandidatePair do
   end
 
   def schedule_keepalive(pair, dest) do
-    ref = Process.send_after(dest, {:keepalive, pair.id}, @tr_timeout)
+    ref = Process.send_after(dest, {:keepalive_timeout, pair.id}, @tr_timeout)
     %{pair | keepalive_timer: ref}
   end
 
