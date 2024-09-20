@@ -43,12 +43,17 @@ defmodule ExICE.ICEAgent do
            | {:new_candidate, String.t()}}
 
   @typedoc """
+  Filter applied when gathering host candidates.
+  """
+  @type ip_filter() :: (:inet.ip_address() -> boolean)
+
+  @typedoc """
   ICE Agent configuration options.
   All notifications are by default sent to a process that spawns `ExICE`.
   This behavior can be overwritten using the following options.
 
-  * `ip_filter` - filter applied when gathering local candidates
-  * `ports` - ports that will be used when gathering local candidates, otherwise the ports are chosen by the OS
+  * `ip_filter` - filter applied when gathering host candidates
+  * `ports` - ports that will be used when gathering host candidates, otherwise the ports are chosen by the OS
   * `ice_servers` - list of STUN/TURN servers
   * `ice_transport_policy` - candidate types to be used.
     * `all` - all ICE candidates will be considered (default).
@@ -62,7 +67,7 @@ defmodule ExICE.ICEAgent do
   however, remote relay candidates work correctly.
   """
   @type opts() :: [
-          ip_filter: (:inet.ip_address() -> boolean),
+          ip_filter: ip_filter(),
           ports: Enumerable.t(non_neg_integer()),
           ice_servers: [
             %{
