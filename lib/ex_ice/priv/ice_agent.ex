@@ -1482,7 +1482,7 @@ defmodule ExICE.Priv.ICEAgent do
       cc_local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
       cc_remote_cand = Map.fetch!(ice_agent.remote_cands, conn_check_pair.remote_cand_id)
 
-      Logger.warning("""
+      Logger.debug("""
       Ignoring conn check response, non-symmetric src and dst addresses.
       Sent from: #{inspect({cc_local_cand.base.base_address, cc_local_cand.base.base_port})}, \
       to: #{inspect({cc_remote_cand.address, cc_remote_cand.port})}
@@ -1657,7 +1657,7 @@ defmodule ExICE.Priv.ICEAgent do
         ka_local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
         ka_remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
-        Logger.warning("""
+        Logger.debug("""
         Ignoring keepalive success response, non-symmetric src and dst addresses.
         Sent from: #{inspect({ka_local_cand.base.base_address, ka_local_cand.base.base_port})}, \
         to: #{inspect({ka_remote_cand.address, ka_remote_cand.port})}
