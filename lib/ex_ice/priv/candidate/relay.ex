@@ -72,6 +72,10 @@ defmodule ExICE.Priv.Candidate.Relay do
           | {:error, term(), t()}
   def receive_data(cand, src_ip, src_port, data) do
     case ExTURN.Client.handle_message(cand.client, {:socket_data, src_ip, src_port, data}) do
+      {:ok, client} ->
+        cand = %{cand | client: client}
+        {:ok, cand}
+
       {:permission_created, permission_ip, client} ->
         cand = %{cand | client: client}
         send_buffered_packets(cand, permission_ip)
