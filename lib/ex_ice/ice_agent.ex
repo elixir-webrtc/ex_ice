@@ -62,9 +62,6 @@ defmodule ExICE.ICEAgent do
   * `on_connection_state_change` - where to send connection state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.
   * `on_new_candidate` - where to send new candidates. Defaults to a process that spawns `ExICE`.
-
-  Currently, there is no support for local relay (TURN) candidates
-  however, remote relay candidates work correctly.
   """
   @type opts() :: [
           ip_filter: ip_filter(),
