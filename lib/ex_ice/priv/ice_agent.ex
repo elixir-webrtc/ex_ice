@@ -825,7 +825,8 @@ defmodule ExICE.Priv.ICEAgent do
           {:send, dst, data, client} ->
             cand = %{cand | client: client}
             ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
-            do_send(ice_agent, cand, dst, data)
+            {_result, ice_agent} = do_send(ice_agent, cand, dst, data)
+            ice_agent
 
           {:error, _reason, client} ->
             Logger.debug("""
