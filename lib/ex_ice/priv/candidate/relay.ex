@@ -84,6 +84,11 @@ defmodule ExICE.Priv.Candidate.Relay do
         cand = %{cand | client: client}
         {:ok, cand}
 
+      {:send, dst, data, client} ->
+        # this might happen when we receive stale nonce response
+        cand = %{cand | client: client}
+        do_send(cand, dst, data)
+
       {:data, {src_ip, src_port}, data, client} ->
         cand = %{cand | client: client}
         {:ok, src_ip, src_port, data, cand}

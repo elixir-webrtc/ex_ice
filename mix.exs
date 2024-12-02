@@ -1,7 +1,7 @@
 defmodule ExICE.MixProject do
   use Mix.Project
 
-  @version "0.8.5"
+  @version "0.9.0"
   @source_url "https://github.com/elixir-webrtc/ex_ice"
 
   def project do
@@ -51,7 +51,7 @@ defmodule ExICE.MixProject do
   defp deps do
     [
       {:ex_stun, "~> 0.2.0"},
-      {:ex_turn, "~> 0.1.0"},
+      {:ex_turn, "~> 0.2.0"},
       {:elixir_uuid, "~> 1.0"},
       {:excoveralls, "~> 0.15", only: :test, runtime: false},
       {:ex_doc, "~> 0.27", only: :dev, runtime: false},

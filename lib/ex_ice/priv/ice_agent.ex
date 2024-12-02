@@ -825,7 +825,8 @@ defmodule ExICE.Priv.ICEAgent do
           {:send, dst, data, client} ->
             cand = %{cand | client: client}
             ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
-            {_result, ice_agent} = do_send(ice_agent, cand, dst, data)
+            # we can't use do_send here as it will try to create permission for the turn address
+            :ok = ice_agent.transport_module.send(cand.base.socket, dst, data)
             ice_agent
 
           {:error, _reason, client} ->
