@@ -414,7 +414,7 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_info({_ref, {:unmarshal_task, {:error, reason, raw_cand}}}, state) do
-    Logger.warning("""
+    Logger.debug("""
     Couldn't unmarshal candidate, reason: #{inspect(reason)}.
     Candidate: #{raw_cand}
     """)
