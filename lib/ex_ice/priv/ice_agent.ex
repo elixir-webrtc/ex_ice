@@ -108,15 +108,19 @@ defmodule ExICE.Priv.ICEAgent do
   defp resolve_address(remote_cand) when is_binary(remote_cand.address) do
     Logger.debug("Trying to resolve addr: #{remote_cand.address}")
 
-    case ExICE.Priv.MDNS.Resolver.gethostbyname(remote_cand.address) do
-      {:ok, addr} ->
-        Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
-        remote_cand = %ExICE.Candidate{remote_cand | address: addr}
-        {:ok, remote_cand}
-
+    with pid when is_pid(pid) <- Process.whereis(ExICE.Priv.MDNS.Resolver),
+         {:ok, addr} <- ExICE.Priv.MDNS.Resolver.gethostbyname(remote_cand.address) do
+      Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
+      remote_cand = %ExICE.Candidate{remote_cand | address: addr}
+      {:ok, remote_cand}
+    else
       {:error, reason} = err ->
         Logger.debug("Couldn't resolve #{remote_cand.address}, reason: #{reason}")
         err
+
+      nil ->
+        Logger.debug("Couldn't resolve #{remote_cand.address}, reason: MDNS reslover not alive.")
+        {:error, :mdns_resolver_not_alive}
     end
   end
 

@@ -76,6 +76,21 @@ defmodule ExICE.Priv.ICEAgentTest do
       cand = "1 1 UDP 1686052863 someincalidmdnsadddress 57940 typ srflx raddr 0.0.0.0 rport 0"
       assert {:error, _reason} = ICEAgent.unmarshal_remote_candidate(cand)
     end
+
+    test "with MDNS resolver not started" do
+      # this test checks what happens when MDNS resolver has not been started due to too old Erlang version
+
+      # stop MDNS resolver
+      pid = Process.whereis(ExICE.Priv.MDNS.Resolver)
+      assert :ok == GenServer.stop(pid)
+      assert nil == Process.whereis(ExICE.Priv.MDNS.Resolver)
+
+      # try to resolve some address
+      cand = "1 1 UDP 1686052863 example.local 57940 typ srflx raddr 0.0.0.0 rport 0"
+
+      assert {:error, {:resolve_address, :mdns_resolver_not_alive}} =
+               ICEAgent.unmarshal_remote_candidate(cand)
+    end
   end
 
   describe "add_remote_candidate/2" do
