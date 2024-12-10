@@ -1961,10 +1961,19 @@ defmodule ExICE.Priv.ICEAgent do
           other
       end
 
+    conn_checks =
+      ice_agent.conn_checks
+      |> Enum.reject(fn {_, conn_check} ->
+        pair = Map.fetch!(ice_agent.checklist, conn_check.pair_id)
+        pair.local_cand_id == local_cand.base.id
+      end)
+      |> Map.new()
+
     %{
       ice_agent
       | local_cands: local_cands,
         selected_pair_id: selected_pair_id,
+        conn_checks: conn_checks,
         checklist: Checklist.prune(ice_agent.checklist, local_cand),
         nominating?: nominating?
     }
