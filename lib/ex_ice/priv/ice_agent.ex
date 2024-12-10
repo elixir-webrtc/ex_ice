@@ -2571,14 +2571,14 @@ defmodule ExICE.Priv.ICEAgent do
           # Sometimes, when sending the first UDP datagram,
           # we get an eperm error but retrying seems to help ¯\_(ツ)_/¯
           Logger.debug("""
-          Couldn't send data, reason: #{reason}, cand: #{inspect(local_cand)}. \
+          Couldn't send data to: #{inspect(dst_ip)}:#{dst_port}, reason: #{reason}, cand: #{inspect(local_cand)}. \
           Retyring...\
           """)
 
           do_send(ice_agent, local_cand, dst, data, false)
         else
           Logger.debug("""
-          Couldn't send data, reason: #{reason}, cand: #{inspect(local_cand)}. \
+          Couldn't send data to: #{inspect(dst_ip)}:#{dst_port}, reason: #{reason}, cand: #{inspect(local_cand)}. \
           Closing candidate.\
           """)
 
