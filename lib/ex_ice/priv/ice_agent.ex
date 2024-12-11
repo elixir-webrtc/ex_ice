@@ -357,7 +357,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   def add_remote_candidate(ice_agent, remote_cand) do
-    Logger.debug("New remote candidate: #{inspect(remote_cand)}")
+    Logger.debug("Trying to add a new remote candidate: #{inspect(remote_cand)}")
 
     uniq? = fn remote_cands, remote_cand ->
       not Enum.any?(remote_cands, fn cand ->
@@ -774,19 +774,21 @@ defmodule ExICE.Priv.ICEAgent do
 
       true ->
         with remote_cands <- Map.values(ice_agent.remote_cands),
-             %_{} = local_cand <- find_host_cand(Map.values(ice_agent.local_cands), socket),
-             %_{} = remote_cand <- find_remote_cand(remote_cands, src_ip, src_port) do
+             {:host, %_{} = local_cand} <-
+               {:host, find_host_cand(Map.values(ice_agent.local_cands), socket)},
+             {:remote, %_{} = remote_cand} <-
+               {:remote, find_remote_cand(remote_cands, src_ip, src_port)} do
           %CandidatePair{} =
             pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
 
           handle_data_message(ice_agent, pair, packet)
         else
-          _ ->
+          {type, _} ->
             Logger.debug("""
-            Couldn't find host or remote candidate for:
+            Couldn't find #{type} candidate for:
             socket: #{inspect(socket)}
-            src address: #{inspect({src_ip, src_port})}.
-            Ignoring incoming data message.
+            src address: #{inspect({src_ip, src_port})}. 
+            And this is not a STUN message. Ignoring.
             """)
 
             ice_agent
