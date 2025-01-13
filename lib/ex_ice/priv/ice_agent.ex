@@ -285,6 +285,11 @@ defmodule ExICE.Priv.ICEAgent do
     {:ok, sockets} = Gatherer.open_sockets(ice_agent.gatherer)
     host_cands = Gatherer.gather_host_candidates(ice_agent.gatherer, sockets)
 
+    ice_agent =
+      Enum.reduce(host_cands, ice_agent, fn host_cand, ice_agent ->
+        add_local_cand(ice_agent, host_cand)
+      end)
+
     for %cand_mod{} = cand <- host_cands do
       notify(ice_agent.on_new_candidate, {:new_candidate, cand_mod.marshal(cand)})
     end
@@ -297,12 +302,9 @@ defmodule ExICE.Priv.ICEAgent do
 
     gathering_transactions = Map.merge(srflx_gathering_transactions, relay_gathering_transactions)
 
-    local_cands = Map.new(host_cands, fn cand -> {cand.base.id, cand} end)
-
     %{
       ice_agent
       | sockets: sockets,
-        local_cands: local_cands,
         gathering_transactions: gathering_transactions
     }
     |> update_gathering_state()
@@ -787,7 +789,7 @@ defmodule ExICE.Priv.ICEAgent do
             Logger.debug("""
             Couldn't find #{type} candidate for:
             socket: #{inspect(socket)}
-            src address: #{inspect({src_ip, src_port})}. 
+            src address: #{inspect({src_ip, src_port})}.
             And this is not a STUN message. Ignoring.
             """)
 
@@ -1091,7 +1093,7 @@ defmodule ExICE.Priv.ICEAgent do
           {:new_candidate, Candidate.Relay.marshal(relay_cand)}
         )
 
-        add_relay_cand(ice_agent, relay_cand)
+        add_local_cand(ice_agent, relay_cand)
 
       {:send, turn_addr, data, client} ->
         tr = %{tr | client: client}
@@ -1186,17 +1188,17 @@ defmodule ExICE.Priv.ICEAgent do
     }
   end
 
-  defp add_relay_cand(ice_agent, relay_cand) do
-    ice_agent = put_in(ice_agent.local_cands[relay_cand.base.id], relay_cand)
+  defp add_local_cand(ice_agent, local_cand) do
+    ice_agent = put_in(ice_agent.local_cands[local_cand.base.id], local_cand)
 
-    remote_cands = get_matching_candidates_local(Map.values(ice_agent.remote_cands), relay_cand)
+    remote_cands = get_matching_candidates_local(Map.values(ice_agent.remote_cands), local_cand)
 
     checklist_foundations = get_foundations(ice_agent)
 
     new_pairs =
       for remote_cand <- remote_cands, into: %{} do
-        pair_state = get_pair_state(relay_cand, remote_cand, checklist_foundations)
-        pair = CandidatePair.new(relay_cand, remote_cand, ice_agent.role, pair_state)
+        pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
+        pair = CandidatePair.new(local_cand, remote_cand, ice_agent.role, pair_state)
         {pair.id, pair}
       end
 

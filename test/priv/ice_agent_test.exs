@@ -62,6 +62,8 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+
   describe "unmarshal_remote_candidate/1" do
     test "with correct candidate" do
       cand = "1 1 UDP 1686052863 127.0.0.1 57940 typ srflx raddr 0.0.0.0 rport 0"
@@ -103,40 +105,73 @@ defmodule ExICE.Priv.ICEAgentTest do
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+        |> ICEAgent.gather_candidates()
 
       %{ice_agent: ice_agent}
     end
 
     test "with correct remote candidate", %{ice_agent: ice_agent} do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-      ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
+      # assert there are no remote candidates and no pairs
+      assert %{} == ice_agent.remote_cands
+      assert %{} == ice_agent.checklist
+
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
 
       assert [%ExICE.Candidate{} = r_cand] = Map.values(ice_agent.remote_cands)
       # override id for the purpose of comparison
-      r_cand = %ExICE.Candidate{r_cand | id: remote_cand.id}
-      assert r_cand == remote_cand
+      r_cand = %ExICE.Candidate{r_cand | id: @remote_cand.id}
+      assert r_cand == @remote_cand
+
+      # assert that a new pair has been created
+      assert [%CandidatePair{} = cand_pair] = Map.values(ice_agent.checklist)
+      assert cand_pair.remote_cand_id == r_cand.id
     end
 
     test "with duplicated remote candidate", %{ice_agent: ice_agent} do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-      ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
-      ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
-      assert map_size(ice_agent.remote_cands) == 1
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+
+      # assert there is only one remote candidate and one pair
+      assert [%ExICE.Candidate{}] = Map.values(ice_agent.remote_cands)
+      assert [%CandidatePair{}] = Map.values(ice_agent.checklist)
     end
 
     test "without remote credentials", %{ice_agent: ice_agent} do
       ice_agent = %{ice_agent | remote_ufrag: nil, remote_pwd: nil}
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-      ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
       assert %{} == ice_agent.remote_cands
     end
 
     test "after setting end-of-candidates", %{ice_agent: ice_agent} do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
       ice_agent = ICEAgent.end_of_candidates(ice_agent)
-      ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
       assert %{} == ice_agent.remote_cands
     end
+  end
+
+  test "gather_candidates/1 creates pairs if there already are any remote candidates" do
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.Mock,
+        transport_module: Transport.Mock
+      )
+      |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+
+    ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+
+    # assert that there are no pairs and no local cands
+    assert [] == Map.values(ice_agent.checklist)
+    assert [] == Map.values(ice_agent.local_cands)
+
+    # gather candidates
+    ice_agent = ICEAgent.gather_candidates(ice_agent)
+    [host_cand] = Map.values(ice_agent.local_cands)
+
+    # assert that a new pair has been created
+    assert [%CandidatePair{} = cand_pair] = Map.values(ice_agent.checklist)
+    assert cand_pair.local_cand_id == host_cand.base.id
   end
 
   test "doesn't add pairs with srflx local candidate to the checklist" do
@@ -166,9 +201,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     local_cands = %{host_cand.base.id => host_cand, srflx_cand.base.id => srflx_cand}
     ice_agent = %{ice_agent | local_cands: local_cands}
 
-    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
-
-    ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand)
+    ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
 
     # assert there is only one pair with host local candidate
     assert [pair] = Map.values(ice_agent.checklist)
@@ -176,8 +209,6 @@ defmodule ExICE.Priv.ICEAgentTest do
   end
 
   test "forwards data received on a faild pair and re-schedules" do
-    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
-
     ice_agent =
       ICEAgent.new(
         controlling_process: self(),
@@ -187,7 +218,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
       |> ICEAgent.gather_candidates()
-      |> ICEAgent.add_remote_candidate(remote_cand)
+      |> ICEAgent.add_remote_candidate(@remote_cand)
 
     [socket] = ice_agent.sockets
 
@@ -201,7 +232,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # feed some data
     ice_agent =
-      ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, "some data")
+      ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "some data")
 
     # assert that data has been passed
     assert_receive {:ex_ice, _pid, {:data, "some data"}}
@@ -214,8 +245,6 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   describe "re-schedules failed pair on incoming binding request" do
     test "with controlling ice agent" do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
-
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
@@ -225,14 +254,12 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
-        |> ICEAgent.add_remote_candidate(remote_cand)
+        |> ICEAgent.add_remote_candidate(@remote_cand)
 
-      test_rescheduling(ice_agent, remote_cand)
+      test_rescheduling(ice_agent, @remote_cand)
     end
 
     test "with controlled ice agent" do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
-
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
@@ -242,9 +269,9 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
-        |> ICEAgent.add_remote_candidate(remote_cand)
+        |> ICEAgent.add_remote_candidate(@remote_cand)
 
-      test_rescheduling(ice_agent, remote_cand)
+      test_rescheduling(ice_agent, @remote_cand)
     end
 
     defp test_rescheduling(ice_agent, remote_cand) do
@@ -294,8 +321,6 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   describe "keepalive" do
     setup do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
@@ -305,7 +330,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
-        |> ICEAgent.add_remote_candidate(remote_cand)
+        |> ICEAgent.add_remote_candidate(@remote_cand)
 
       %{ice_agent: ice_agent}
     end
@@ -476,9 +501,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       ice_agent = ICEAgent.gather_candidates(ice_agent)
 
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-
-      %{ice_agent: ice_agent, remote_cand: remote_cand}
+      %{ice_agent: ice_agent, remote_cand: @remote_cand}
     end
 
     test "with correct attributes", %{ice_agent: ice_agent, remote_cand: remote_cand} do
@@ -785,8 +808,6 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   describe "incoming binding indication (keepalive)" do
     setup do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
@@ -796,7 +817,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
-        |> ICEAgent.add_remote_candidate(remote_cand)
+        |> ICEAgent.add_remote_candidate(@remote_cand)
 
       %{ice_agent: ice_agent}
     end
@@ -874,8 +895,6 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   describe "connectivity check" do
     setup do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
@@ -885,9 +904,9 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
-        |> ICEAgent.add_remote_candidate(remote_cand)
+        |> ICEAgent.add_remote_candidate(@remote_cand)
 
-      %{ice_agent: ice_agent, remote_cand: remote_cand}
+      %{ice_agent: ice_agent, remote_cand: @remote_cand}
     end
 
     test "request", %{ice_agent: ice_agent} do
@@ -1065,8 +1084,6 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   describe "connectivity check rtx" do
     setup do
-      remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
@@ -1076,9 +1093,9 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
-        |> ICEAgent.add_remote_candidate(remote_cand)
+        |> ICEAgent.add_remote_candidate(@remote_cand)
 
-      %{ice_agent: ice_agent, remote_cand: remote_cand}
+      %{ice_agent: ice_agent, remote_cand: @remote_cand}
     end
 
     test "retransmits cc when there is no response", %{
@@ -1236,7 +1253,6 @@ defmodule ExICE.Priv.ICEAgentTest do
     # 3. trigger pair timeout
     # 4. assert that the pair has been marked as failed
     # 5. trigger eoc timeout and assert that ice agent moved to the failed state
-    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
 
     ice_agent =
       ICEAgent.new(
@@ -1247,7 +1263,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
       |> ICEAgent.gather_candidates()
-      |> ICEAgent.add_remote_candidate(remote_cand)
+      |> ICEAgent.add_remote_candidate(@remote_cand)
 
     # Make sure we are not gathering local candidates.
     # That's important for moving to the failed state later on.
@@ -1276,8 +1292,6 @@ defmodule ExICE.Priv.ICEAgentTest do
   end
 
   test "cleans up agent state when the connection fails" do
-    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
-
     ice_agent =
       ICEAgent.new(
         controlling_process: self(),
@@ -1287,7 +1301,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       )
       |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
       |> ICEAgent.gather_candidates()
-      |> ICEAgent.add_remote_candidate(remote_cand)
+      |> ICEAgent.add_remote_candidate(@remote_cand)
 
     # save creds as they will be cleared after moving to the failed state
     local_ufrag = ice_agent.local_ufrag
@@ -1320,7 +1334,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # assert that handle_udp ignores incoming data i.e. the state of ice agent didn't change
     new_ice_agent =
-      ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, "some data")
+      ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "some data")
 
     assert ice_agent == new_ice_agent
 
@@ -1335,7 +1349,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       )
 
     new_ice_agent =
-      ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, req)
+      ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, req)
 
     assert ice_agent == new_ice_agent
 
@@ -1528,6 +1542,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           role: :controlling,
           transport_module: Transport.Mock,
           if_discovery_module: IfDiscovery.Mock,
+          ice_transport_policy: :relay,
           ice_servers: [
             %{
               urls: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
@@ -1538,6 +1553,8 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
+
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
 
       [socket] = ice_agent.sockets
 
@@ -1577,6 +1594,10 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert relay_cand.base.address == @turn_relay_ip
       assert relay_cand.base.port == @turn_relay_port
       assert ice_agent.gathering_transactions == %{}
+
+      # assert there is a new pair
+      assert [%CandidatePair{} = pair] = Map.values(ice_agent.checklist)
+      assert pair.local_cand_id == relay_cand.base.id
     end
 
     test "error response", %{ice_agent: ice_agent} do
@@ -1740,7 +1761,6 @@ defmodule ExICE.Priv.ICEAgentTest do
     # 2. replace candidate with the mock one that always fails to send  data
     # 3. assert that after unsuccessful data sending, ice_agent moves to the failed state
     # as there are no other pairs
-    remote_cand = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
 
     ice_agent =
       ICEAgent.new(
@@ -1751,7 +1771,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
       |> ICEAgent.gather_candidates()
-      |> ICEAgent.add_remote_candidate(remote_cand)
+      |> ICEAgent.add_remote_candidate(@remote_cand)
 
     assert ice_agent.gathering_state == :complete
 
@@ -1773,9 +1793,8 @@ defmodule ExICE.Priv.ICEAgentTest do
   end
 
   test "relay connection" do
-    remote_cand_ip = {192, 168, 0, 2}
-    remote_cand_port = 8445
-    remote_cand = ExICE.Candidate.new(:host, address: remote_cand_ip, port: remote_cand_port)
+    remote_cand_ip = @remote_cand.address
+    remote_cand_port = @remote_cand.port
 
     ice_agent =
       ICEAgent.new(
@@ -1794,7 +1813,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
       |> ICEAgent.gather_candidates()
-      |> ICEAgent.add_remote_candidate(remote_cand)
+      |> ICEAgent.add_remote_candidate(@remote_cand)
 
     [socket] = ice_agent.sockets
 
