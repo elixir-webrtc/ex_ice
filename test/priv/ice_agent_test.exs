@@ -773,6 +773,55 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert_unauthenticated_error_response(socket, request)
     end
 
+    test "before setting remote candidates", %{
+      ice_agent: ice_agent,
+      remote_cand: remote_cand
+    } do
+      # 1. Receive binding request from the remote side
+      # 2. This will create prflx candidate, pair it with our local candidates
+      # 3. Timer should not be started as we don't have remote credentials
+      # 4. Set remote credentials
+      # 5. Timer should be started as we have conn checks to execute and we also have remote credentials
+      [socket] = ice_agent.sockets
+
+      request =
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234},
+          %ICEControlled{tiebreaker: 1234}
+        ])
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+
+      raw_request = Message.encode(request)
+
+      ice_agent =
+        ICEAgent.handle_udp(
+          ice_agent,
+          socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      # flush the response
+      Transport.Mock.recv(socket)
+
+      # assert timer was not started
+      refute_receive :ta_timeout
+
+      # make sure that even if timer was started, handle_ta_timeout wouldn't try to send conn check
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert nil == Transport.Mock.recv(socket)
+
+      # set remote credentials and assert timer was started
+      ice_agent = ICEAgent.set_remote_credentials(ice_agent, "remote_ufrag", "remote_pwd")
+      assert_receive :ta_timeout
+
+      # handle timer without errors
+      ICEAgent.handle_ta_timeout(ice_agent)
+    end
+
     defp assert_bad_request_error_response(socket, request) do
       assert packet = Transport.Mock.recv(socket)
       assert is_binary(packet)
