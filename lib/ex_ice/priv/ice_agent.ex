@@ -242,8 +242,10 @@ defmodule ExICE.Priv.ICEAgent do
     # This is very loosely based on RFC 8863, sec. 4.
     # We can start eoc timer after sending and receiving ICE credentials.
     # In our case, we do this just after receiving remote credentials.
-    ice_agent = start_eoc_timer(ice_agent)
     %__MODULE__{ice_agent | remote_ufrag: ufrag, remote_pwd: pwd}
+    |> start_eoc_timer()
+    # check if timer does not need to be started
+    |> update_ta_timer()
   end
 
   def set_remote_credentials(
@@ -493,6 +495,10 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp find_next_transaction(ice_agent) do
     find_next_transaction(ice_agent, :conn_check)
+  end
+
+  defp find_next_transaction(%{remote_ufrag: nil, remote_pwd: nil} = ice_agent, :conn_check) do
+    find_next_transaction(ice_agent, :gathering)
   end
 
   defp find_next_transaction(ice_agent, :conn_check) do
@@ -2458,7 +2464,8 @@ defmodule ExICE.Priv.ICEAgent do
         t_state in [:waiting, :in_progress]
       end)
 
-    not Checklist.finished?(ice_agent.checklist) or gath_trans_in_progress?
+    (not Checklist.finished?(ice_agent.checklist) and ice_agent.remote_pwd != nil and
+       ice_agent.remote_ufrag != nil) or gath_trans_in_progress?
   end
 
   defp enable_timer(ice_agent) do
