@@ -736,6 +736,10 @@ defmodule ExICE.Priv.ICEAgent do
           :inet.port_number(),
           binary()
         ) :: t()
+  def handle_udp(%{state: :failed} = ice_agent, _socket, _src_ip, _src_port, _packet) do
+    ice_agent
+  end
+
   def handle_udp(ice_agent, socket, src_ip, src_port, packet) do
     turn_tr_id = {socket, {src_ip, src_port}}
     turn_tr = Map.get(ice_agent.gathering_transactions, turn_tr_id)
@@ -747,60 +751,13 @@ defmodule ExICE.Priv.ICEAgent do
         handle_turn_gathering_transaction_response(ice_agent, turn_tr_id, turn_tr, packet)
 
       from_turn?(ice_agent, src_ip, src_port) ->
-        local_cands = Map.values(ice_agent.local_cands)
-
-        case find_relay_cand_by_socket(local_cands, socket) do
-          nil ->
-            Logger.debug("""
-            Couldn't find relay candidate for:
-            socket: #{inspect(socket)}
-            src address: #{inspect({src_ip, src_port})}.
-            Ignoring incoming TURN message.
-            """)
-
-            ice_agent
-
-          relay_cand ->
-            handle_turn_message(ice_agent, relay_cand, src_ip, src_port, packet)
-        end
+        handle_turn_message_raw(ice_agent, socket, src_ip, src_port, packet)
 
       ExSTUN.stun?(packet) ->
-        local_cands = Map.values(ice_agent.local_cands)
-
-        case find_host_cand(local_cands, socket) do
-          nil ->
-            Logger.debug("""
-            Couldn't find host candidate for #{inspect(src_ip)}:#{src_port}. \
-            Ignoring incoming STUN message.\
-            """)
-
-            ice_agent
-
-          host_cand ->
-            handle_stun_message(ice_agent, host_cand, src_ip, src_port, packet)
-        end
+        handle_stun_message_raw(ice_agent, socket, src_ip, src_port, packet)
 
       true ->
-        with remote_cands <- Map.values(ice_agent.remote_cands),
-             {:host, %_{} = local_cand} <-
-               {:host, find_host_cand(Map.values(ice_agent.local_cands), socket)},
-             {:remote, %_{} = remote_cand} <-
-               {:remote, find_remote_cand(remote_cands, src_ip, src_port)} do
-          %CandidatePair{} =
-            pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
-
-          handle_data_message(ice_agent, pair, packet)
-        else
-          {type, _} ->
-            Logger.debug("""
-            Couldn't find #{type} candidate for:
-            socket: #{inspect(socket)}
-            src address: #{inspect({src_ip, src_port})}.
-            And this is not a STUN message. Ignoring.
-            """)
-
-            ice_agent
-        end
+        handle_data_message_raw(ice_agent, socket, src_ip, src_port, packet)
     end
   end
 
@@ -1113,6 +1070,29 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
+  defp handle_turn_message_raw(ice_agent, socket, src_ip, src_port, packet) do
+    local_cands = Map.values(ice_agent.local_cands)
+
+    case find_relay_cand_by_socket(local_cands, socket) do
+      nil ->
+        Logger.debug("""
+        Couldn't find relay candidate for:
+        socket: #{inspect(socket)}
+        src address: #{inspect({src_ip, src_port})}.
+        Ignoring incoming TURN message.
+        """)
+
+        ice_agent
+
+      %{base: %{closed?: false}} = relay_cand ->
+        handle_turn_message(ice_agent, relay_cand, src_ip, src_port, packet)
+
+      %{base: %{closed?: true}} = relay_cand ->
+        log_closed_cand_message(relay_cand, src_ip, src_port)
+        ice_agent
+    end
+  end
+
   defp handle_turn_message(ice_agent, %cand_mod{} = cand, src_ip, src_port, packet) do
     case cand_mod.receive_data(cand, src_ip, src_port, packet) do
       {:ok, cand} ->
@@ -1146,6 +1126,27 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
+  defp handle_stun_message_raw(ice_agent, socket, src_ip, src_port, packet) do
+    local_cands = Map.values(ice_agent.local_cands)
+
+    case find_host_cand(local_cands, socket) do
+      nil ->
+        Logger.debug("""
+        Couldn't find host candidate for #{inspect(src_ip)}:#{src_port}. \
+        Ignoring incoming STUN message.\
+        """)
+
+        ice_agent
+
+      %{base: %{closed?: false}} = host_cand ->
+        handle_stun_message(ice_agent, host_cand, src_ip, src_port, packet)
+
+      %{base: %{closed?: true}} = host_cand ->
+        log_closed_cand_message(host_cand, src_ip, src_port)
+        ice_agent
+    end
+  end
+
   defp handle_stun_message(ice_agent, host_cand, src_ip, src_port, packet) do
     case ExSTUN.Message.decode(packet) do
       {:ok, msg} ->
@@ -1153,6 +1154,33 @@ defmodule ExICE.Priv.ICEAgent do
 
       {:error, reason} ->
         Logger.warning("Couldn't decode stun message: #{inspect(reason)}")
+        ice_agent
+    end
+  end
+
+  defp handle_data_message_raw(ice_agent, socket, src_ip, src_port, packet) do
+    with remote_cands <- Map.values(ice_agent.remote_cands),
+         {:host, %_{base: %{closed?: false}} = local_cand} <-
+           {:host, find_host_cand(Map.values(ice_agent.local_cands), socket)},
+         {:remote, %_{} = remote_cand} <-
+           {:remote, find_remote_cand(remote_cands, src_ip, src_port)} do
+      %CandidatePair{} =
+        pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
+
+      handle_data_message(ice_agent, pair, packet)
+    else
+      {:host, %{base: %{closed?: true}} = host_cand} ->
+        log_closed_cand_message(host_cand, src_ip, src_port)
+        ice_agent
+
+      {type, _} ->
+        Logger.debug("""
+        Couldn't find #{type} candidate for:
+        socket: #{inspect(socket)}
+        src address: #{inspect({src_ip, src_port})}.
+        And this is not a STUN message. Ignoring.
+        """)
+
         ice_agent
     end
   end
@@ -1212,9 +1240,11 @@ defmodule ExICE.Priv.ICEAgent do
 
     added_pairs = Map.drop(checklist, Map.keys(ice_agent.checklist))
 
-    if added_pairs == %{} do
+    if added_pairs == %{} and remote_cands != [] do
       Logger.debug("Not adding any new pairs as they were redundant")
-    else
+    end
+
+    if added_pairs != %{} do
       Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
     end
 
@@ -1283,6 +1313,14 @@ defmodule ExICE.Priv.ICEAgent do
     |> update_connection_state()
     |> maybe_nominate()
     |> update_ta_timer()
+  end
+
+  defp log_closed_cand_message(local_cand, src_ip, src_port) do
+    Logger.debug("""
+    Received STUN, TURN or data message on closed candidate: \
+    #{local_cand.base.id} #{inspect(local_cand.base.base_address)}:#{local_cand.base.base_port} \
+    from #{inspect(src_ip)}:#{src_port}. Ignoring. \
+    """)
   end
 
   ## BINDING INDICATION HANDLING ##
@@ -1486,6 +1524,15 @@ defmodule ExICE.Priv.ICEAgent do
     {%{pair_id: pair_id}, conn_checks} = Map.pop!(ice_agent.conn_checks, msg.transaction_id)
     ice_agent = %__MODULE__{ice_agent | conn_checks: conn_checks}
     conn_check_pair = Map.fetch!(ice_agent.checklist, pair_id)
+
+    # This shouldn't happen as we clear conn checks when a pair times out.
+    if conn_check_pair.state == :failed do
+      raise """
+      Received conn check success response on failed pair. \
+      This should never happen. \
+      Pair: #{inspect(conn_check_pair)}\
+      """
+    end
 
     # check that the source and destination transport
     # addresses are symmetric - see sec. 7.2.5.2.1
@@ -1940,14 +1987,27 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp close_candidate(ice_agent, local_cand) do
-    local_cands = Map.delete(ice_agent.local_cands, local_cand.base.id)
+  defp close_candidate(ice_agent, %{base: %{closed?: false}} = local_cand) do
+    ice_agent
+    |> do_close_candidate(local_cand)
+    |> update_connection_state()
+  end
 
+  defp close_candidate(ice_agent, _local_cand), do: ice_agent
+
+  defp do_close_candidate(ice_agent, %{base: %{closed?: true}}), do: ice_agent
+
+  defp do_close_candidate(ice_agent, local_cand) do
+    Logger.debug("Closing candidate: #{local_cand.base.id}")
+    ice_agent = put_in(ice_agent.local_cands[local_cand.base.id].base.closed?, true)
+
+    # clear selected pair if needed
     selected_pair_id =
       if ice_agent.selected_pair_id != nil do
         selected_pair = Map.fetch!(ice_agent.checklist, ice_agent.selected_pair_id)
 
         if selected_pair.local_cand_id == local_cand.base.id do
+          Logger.debug("Clearing selected pair: #{selected_pair.id}")
           nil
         else
           ice_agent.selected_pair_id
@@ -1956,6 +2016,7 @@ defmodule ExICE.Priv.ICEAgent do
         ice_agent.selected_pair_id
       end
 
+    # clear pair that's during nomination if needed
     nominating? =
       case ice_agent.nominating? do
         {true, pair_id} ->
@@ -1971,23 +2032,55 @@ defmodule ExICE.Priv.ICEAgent do
           other
       end
 
-    conn_checks =
-      ice_agent.conn_checks
-      |> Enum.reject(fn {_, conn_check} ->
-        pair = Map.fetch!(ice_agent.checklist, conn_check.pair_id)
-        pair.local_cand_id == local_cand.base.id
+    {failed_pair_ids, checklist} = Checklist.close_candidate(ice_agent.checklist, local_cand)
+
+    {failed_conn_checks, conn_checks} =
+      Map.split_with(ice_agent.conn_checks, fn {_, conn_check} ->
+        conn_check.pair_id in failed_pair_ids
       end)
-      |> Map.new()
+
+    {failed_keepalives, keepalives} =
+      Map.split_with(ice_agent.keepalives, fn {_, pair_id} -> pair_id in failed_pair_ids end)
+
+    if failed_pair_ids != [] do
+      Logger.debug("""
+      Marking the following pairs as failed as their local candidate has been closed: #{inspect(failed_pair_ids)}\
+      """)
+    end
+
+    tr_rtx = ice_agent.tr_rtx -- (Map.keys(failed_conn_checks) ++ Map.keys(failed_keepalives))
 
     %{
       ice_agent
-      | local_cands: local_cands,
-        selected_pair_id: selected_pair_id,
+      | selected_pair_id: selected_pair_id,
         conn_checks: conn_checks,
-        checklist: Checklist.prune(ice_agent.checklist, local_cand),
+        keepalives: keepalives,
+        tr_rtx: tr_rtx,
+        checklist: checklist,
         nominating?: nominating?
     }
-    |> update_connection_state()
+  end
+
+  defp close_socket(ice_agent, socket) do
+    Logger.debug("Closing socket: #{inspect(socket)}")
+
+    ice_agent =
+      Enum.reduce(ice_agent.local_cands, ice_agent, fn {_local_cand_id, local_cand}, ice_agent ->
+        if local_cand.base.socket == socket do
+          do_close_candidate(ice_agent, local_cand)
+        else
+          ice_agent
+        end
+      end)
+
+    {removed_gathering_transactions, gathering_transactions} =
+      Map.split_with(ice_agent.gathering_transactions, fn {_tr_id, tr} ->
+        tr.socket == socket
+      end)
+
+    tr_rtx = ice_agent.tr_rtx -- Map.keys(removed_gathering_transactions)
+
+    %{ice_agent | tr_rtx: tr_rtx, gathering_transactions: gathering_transactions}
   end
 
   defp maybe_nominate(ice_agent) do
@@ -1999,9 +2092,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp time_to_nominate?(%__MODULE__{state: :completed}), do: false
-
-  defp time_to_nominate?(ice_agent) do
+  defp time_to_nominate?(%__MODULE__{state: :connected} = ice_agent) do
     {nominating?, _} = ice_agent.nominating?
     # if we are not during nomination and we know there won't be further candidates,
     # there are no checks waiting or in-progress,
@@ -2011,6 +2102,8 @@ defmodule ExICE.Priv.ICEAgent do
       Checklist.finished?(ice_agent.checklist) and
       ice_agent.role == :controlling
   end
+
+  defp time_to_nominate?(_ice_agent), do: false
 
   defp try_nominate(ice_agent) do
     case Checklist.get_pair_for_nomination(ice_agent.checklist) do
@@ -2036,9 +2129,17 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp do_restart(ice_agent) do
     Enum.each(ice_agent.sockets, fn socket ->
-      {:ok, {ip, port}} = ice_agent.transport_module.sockname(socket)
-      Logger.debug("Closing socket: #{inspect(ip)}:#{port}.")
-      :ok = ice_agent.transport_module.close(socket)
+      case ice_agent.transport_module.sockname(socket) do
+        {:ok, {ip, port}} ->
+          # we could use close_socket function here but because we are
+          # clearing the whole state anyway, we can close the socket manually
+          Logger.debug("Closing socket: #{inspect(ip)}:#{port}.")
+          :ok = ice_agent.transport_module.close(socket)
+
+        {:error, :closed} ->
+          # socket already closed
+          :ok
+      end
     end)
 
     {ufrag, pwd} = generate_credentials()
@@ -2065,6 +2166,7 @@ defmodule ExICE.Priv.ICEAgent do
         selected_pair_id: nil,
         conn_checks: %{},
         checklist: %{},
+        tr_rtx: [],
         local_cands: %{},
         remote_cands: %{},
         local_ufrag: ufrag,
@@ -2214,24 +2316,46 @@ defmodule ExICE.Priv.ICEAgent do
   @doc false
   @spec change_connection_state(t(), atom()) :: t()
   def change_connection_state(ice_agent, :failed) do
-    Enum.each(ice_agent.sockets, fn socket ->
-      :ok = ice_agent.transport_module.close(socket)
-    end)
+    ice_agent =
+      Enum.reduce(ice_agent.sockets, ice_agent, fn socket, ice_agent ->
+        close_socket(ice_agent, socket)
+      end)
+
+    # The following fields should be empty when this function is invoked.
+    # If they are not, log this fact as warning and clear them so we won't mess up when
+    # a late response for gathering transaction or conn check arrives.
+    if ice_agent.gathering_transactions != %{} do
+      Logger.warning(
+        "Requested ICE agent to move to the failed state but gathering transactions are not empty. Clearing gathering transactions."
+      )
+    end
+
+    if ice_agent.conn_checks != %{} do
+      Logger.warning(
+        "Requested ICE agent to move to the failed state but conn checks are not empty. Clearing conn checks."
+      )
+    end
+
+    if ice_agent.keepalives != %{} do
+      Logger.warning(
+        "Requested ICE agent to move to the failed state but keepalives are not empty. Clearing keepalives."
+      )
+    end
+
+    if ice_agent.tr_rtx != [] do
+      # we don't clear tr_rtx on finished transaction, hence debug
+      Logger.debug(
+        "Requested ICE agent to move to the failed state but tr_rtx are not empty. Clearing tr_rtx."
+      )
+    end
 
     %{
       ice_agent
-      | sockets: [],
-        gathering_transactions: %{},
+      | gathering_transactions: %{},
         selected_pair_id: nil,
         conn_checks: %{},
-        checklist: %{},
-        local_cands: %{},
-        remote_cands: %{},
-        local_ufrag: nil,
-        local_pwd: nil,
-        remote_ufrag: nil,
-        remote_pwd: nil,
-        eoc: false,
+        keepalives: %{},
+        tr_rtx: [],
         nominating?: {false, nil}
     }
     |> disable_timer()
@@ -2249,45 +2373,26 @@ defmodule ExICE.Priv.ICEAgent do
       """
     end
 
-    local_cand = Map.fetch!(ice_agent.local_cands, succeeded_pair.local_cand_id)
+    succ_local_cand = Map.fetch!(ice_agent.local_cands, succeeded_pair.local_cand_id)
+    sel_local_cand = Map.fetch!(ice_agent.local_cands, selected_pair.local_cand_id)
 
-    Enum.each(ice_agent.sockets, fn socket ->
-      unless socket == local_cand.base.socket do
-        :ok = ice_agent.transport_module.close(socket)
-      end
-    end)
+    if succ_local_cand.base.socket != sel_local_cand.base.socket do
+      raise """
+      Selected local candidate's socket is different than succeeded local candidate's socket. \
+      This should never happen as we check against symmetric response.\
+      """
+    end
 
-    # We need to use Map.filter as selected_pair might not
-    # be the same as succeeded pair
-    local_cands =
-      Map.filter(
-        ice_agent.local_cands,
-        fn {cand_id, _cand} ->
-          cand_id in [selected_pair.local_cand_id, succeeded_pair.local_cand_id]
+    ice_agent =
+      Enum.reduce(ice_agent.sockets, ice_agent, fn socket, ice_agent ->
+        if socket != sel_local_cand.base.socket do
+          close_socket(ice_agent, socket)
+        else
+          ice_agent
         end
-      )
-
-    remote_cands =
-      Map.filter(
-        ice_agent.remote_cands,
-        fn {cand_id, _cand} ->
-          cand_id in [selected_pair.remote_cand_id, succeeded_pair.remote_cand_id]
-        end
-      )
-
-    checklist =
-      Map.filter(ice_agent.checklist, fn {pair_id, _pair} ->
-        pair_id in [selected_pair.id, succeeded_pair.id]
       end)
 
-    %{
-      ice_agent
-      | sockets: [local_cand.base.socket],
-        local_cands: local_cands,
-        remote_cands: remote_cands,
-        checklist: checklist
-    }
-    |> do_change_connection_state(:completed)
+    do_change_connection_state(ice_agent, :completed)
   end
 
   def change_connection_state(ice_agent, new_conn_state) do
@@ -2302,6 +2407,11 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp update_connection_state(%__MODULE__{state: :new} = ice_agent) do
     if Checklist.waiting?(ice_agent.checklist) or Checklist.in_progress?(ice_agent.checklist) do
+      Logger.debug("""
+      There are pairs waiting or in-progress and we are in the new state. \
+      Changing state to checking.\
+      """)
+
       change_connection_state(ice_agent, :checking)
     else
       ice_agent
@@ -2358,12 +2468,16 @@ defmodule ExICE.Priv.ICEAgent do
         ice_agent.selected_pair_id != nil and Checklist.finished?(ice_agent.checklist) ->
         Logger.debug("""
         Finished all conn checks, there won't be any further local or remote candidates
-        and we have selected pair. Changing connection state to completed.
+        and we have selected pair. Changing connection state to completed.\
         """)
 
         change_connection_state(ice_agent, :completed)
 
       ice_agent.role == :controlling and ice_agent.selected_pair_id != nil ->
+        Logger.debug("""
+        We have selected pair and we are the controlling agent. Changing state to completed.\
+        """)
+
         change_connection_state(ice_agent, :completed)
 
       ice_agent.role == :controlling and match?({true, _pair_id}, ice_agent.nominating?) and
@@ -2372,16 +2486,17 @@ defmodule ExICE.Priv.ICEAgent do
 
         Logger.debug("""
         Pair we tried to nominate failed. Changing connection state to failed. \
-        Pair id: #{pair_id}
+        Pair id: #{pair_id}\
         """)
 
         change_connection_state(ice_agent, :failed)
 
-      Checklist.get_valid_pair(ice_agent.checklist) == nil and ice_agent.local_cands == %{} and
+      Checklist.get_valid_pair(ice_agent.checklist) == nil and
+        Enum.all?(Map.values(ice_agent.local_cands), & &1.base.closed?) and
           ice_agent.gathering_state == :complete ->
         Logger.debug("""
         No valid pairs in state connected, no local candidates and gathering state is complete.
-        Changing connection state to failed.
+        Changing connection state to failed.\
         """)
 
         change_connection_state(ice_agent, :failed)

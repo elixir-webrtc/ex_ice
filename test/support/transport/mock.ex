@@ -27,13 +27,13 @@ defmodule ExICE.Support.Transport.Mock do
   end
 
   @spec recv(ExICE.Transport.socket()) :: binary() | nil
-  def recv(socket) do
-    case :ets.lookup(:transport_mock, socket) do
-      [{_socket, []}] ->
+  def recv(ref) do
+    case :ets.lookup(:transport_mock, ref) do
+      [{^ref, %{buf: []} = _socket}] ->
         nil
 
-      [{_socket, [head | tail]}] ->
-        :ets.insert(:transport_mock, {socket, tail})
+      [{^ref, %{buf: [head | tail]} = socket}] ->
+        :ets.insert(:transport_mock, {ref, %{socket | buf: tail}})
         head
     end
   end
@@ -52,51 +52,54 @@ defmodule ExICE.Support.Transport.Mock do
 
     case port do
       0 ->
-        socket = open_ephemeral(ip)
+        ref = open_ephemeral(ip)
 
-        if socket == nil do
+        if ref == nil do
           raise "Couldn't open socket. No free ports"
         end
 
-        {:ok, socket}
+        {:ok, ref}
 
       port ->
-        socket = %{port: port, ip: ip}
+        socket = %{port: port, ip: ip, state: :open, buf: []}
+        ref = :erlang.phash2(socket)
 
-        unless :ets.insert_new(:transport_mock, {socket, []}) do
+        unless :ets.insert_new(:transport_mock, {ref, socket}) do
           raise "Couldn't open socket: #{inspect(socket)}, reason: eaddrinuse."
         end
 
-        {:ok, socket}
+        {:ok, ref}
     end
   end
 
   @impl true
-  def sockname(socket) do
+  def sockname(ref) do
+    [{^ref, socket}] = :ets.lookup(:transport_mock, ref)
     {:ok, {socket.ip, socket.port}}
   end
 
   @impl true
-  def send(socket, _dst, packet) do
-    [{_socket, buffer}] = :ets.lookup(:transport_mock, socket)
-    :ets.insert(:transport_mock, {socket, buffer ++ [packet]})
+  def send(ref, _dst, packet) do
+    [{^ref, %{state: :open} = socket}] = :ets.lookup(:transport_mock, ref)
+    :ets.insert(:transport_mock, {ref, %{socket | buf: socket.buf ++ [packet]}})
     :ok
   end
 
   @impl true
-  def close(socket) do
-    :ets.delete(:transport_mock, socket)
+  def close(ref) do
+    :ets.delete(:transport_mock, ref)
     :ok
   end
 
   defp open_ephemeral(ip) do
     Enum.find_value(49_152..65_535, fn port ->
-      socket = %{ip: ip, port: port}
+      socket = %{ip: ip, port: port, state: :open, buf: []}
+      ref = :erlang.phash2(socket)
 
-      if :ets.insert_new(:transport_mock, {socket, []}) do
-        socket
+      if :ets.insert_new(:transport_mock, {ref, socket}) do
+        ref
       else
-        false
+        nil
       end
     end)
   end
