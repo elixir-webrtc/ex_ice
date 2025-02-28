@@ -17,7 +17,10 @@ defmodule ExICE.Priv.Checklist do
   @spec get_pair_for_nomination(t()) :: CandidatePair.t() | nil
   def get_pair_for_nomination(checklist) do
     checklist
-    |> Enum.filter(fn {_id, pair} -> pair.valid? end)
+    # pair might have been marked as failed if the associated
+    # local candidate has been closed
+    |> Stream.filter(fn {_id, pair} -> pair.state == :succeeded end)
+    |> Stream.filter(fn {_id, pair} -> pair.valid? end)
     |> Enum.max_by(fn {_id, pair} -> pair.priority end, fn -> {nil, nil} end)
     |> elem(1)
   end
@@ -26,6 +29,9 @@ defmodule ExICE.Priv.Checklist do
   def get_valid_pair(checklist) do
     checklist
     |> Stream.map(fn {_id, pair} -> pair end)
+    # pair might have been marked as failed if the associated
+    # local candidate has been closed
+    |> Stream.filter(fn pair -> pair.state == :succeeded end)
     |> Stream.filter(fn pair -> pair.valid? end)
     |> Enum.sort_by(fn pair -> pair.priority end, :desc)
     |> Enum.at(0)
@@ -79,11 +85,16 @@ defmodule ExICE.Priv.Checklist do
     Map.new(waiting ++ in_flight_or_done)
   end
 
-  @spec prune(t(), Candidate.t()) :: t()
-  def prune(checklist, local_cand) do
-    checklist
-    |> Enum.reject(fn {_pair_id, pair} -> pair.local_cand_id == local_cand.base.id end)
-    |> Map.new()
+  @spec close_candidate(t(), Candidate.t()) :: {[integer()], t()}
+  def close_candidate(checklist, local_cand) do
+    Enum.reduce(checklist, {[], checklist}, fn {pair_id, pair}, {failed_pair_ids, checklist} ->
+      if pair.local_cand_id == local_cand.base.id and pair.state != :failed do
+        checklist = Map.put(checklist, pair_id, %{pair | state: :failed})
+        {[pair_id | failed_pair_ids], checklist}
+      else
+        {failed_pair_ids, checklist}
+      end
+    end)
   end
 
   @spec timeout_pairs(t(), [integer()]) :: t()

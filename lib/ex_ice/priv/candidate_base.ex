@@ -13,7 +13,8 @@ defmodule ExICE.Priv.CandidateBase do
           transport: :udp,
           transport_module: module(),
           socket: :inet.socket() | nil,
-          type: Candidate.type()
+          type: Candidate.type(),
+          closed?: boolean()
         }
 
   @derive {Inspect, except: [:socket]}
@@ -27,7 +28,7 @@ defmodule ExICE.Priv.CandidateBase do
     :transport_module,
     :type
   ]
-  defstruct @enforce_keys ++ [:base_address, :base_port, :socket]
+  defstruct @enforce_keys ++ [:base_address, :base_port, :socket, closed?: false]
 
   @spec new(Candidate.type(), Keyword.t()) :: t()
   def new(type, config) do
