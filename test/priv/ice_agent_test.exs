@@ -417,6 +417,11 @@ defmodule ExICE.Priv.ICEAgentTest do
       # authenticate and check fingerprint
       assert :ok == ExSTUN.Message.check_fingerprint(msg)
       assert :ok == ExSTUN.Message.authenticate(msg, ice_agent.remote_pwd)
+
+      # check stats
+      new_pair = Map.fetch!(ice_agent.checklist, pair.id)
+      assert new_pair.requests_sent == pair.requests_sent + 1
+      assert new_pair.responses_received == pair.responses_received
     end
 
     test "timeout on unconnected pair", %{ice_agent: ice_agent} do
@@ -425,6 +430,11 @@ defmodule ExICE.Priv.ICEAgentTest do
       ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
 
       assert nil == Transport.Mock.recv(socket)
+
+      # check stats
+      new_pair = Map.fetch!(ice_agent.checklist, pair.id)
+      assert new_pair.requests_sent == pair.requests_sent
+      assert new_pair.responses_received == pair.responses_received
     end
 
     test "success response", %{ice_agent: ice_agent} do
@@ -456,6 +466,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen > pair.last_seen
+      assert new_pair.responses_received == pair.responses_received + 1
     end
 
     test "invalid success response", %{ice_agent: ice_agent} do
@@ -487,6 +498,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.responses_received == pair.responses_received
     end
 
     test "non-symmetric success response", %{ice_agent: ice_agent} do
@@ -518,6 +530,10 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.responses_received == pair.responses_received
+
+      assert new_pair.non_symmetric_responses_received ==
+               pair.non_symmetric_responses_received + 1
     end
 
     test "error response", %{ice_agent: ice_agent} do
@@ -546,6 +562,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.responses_received == pair.responses_received + 1
     end
   end
 
@@ -1021,6 +1038,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "request", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
 
+      [pair] = Map.values(ice_agent.checklist)
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       assert packet = Transport.Mock.recv(socket)
@@ -1037,11 +1055,14 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert {:ok, %ICEControlling{}} = ExSTUN.Message.get_attribute(req, ICEControlling)
       assert {:ok, %Priority{}} = ExSTUN.Message.get_attribute(req, Priority)
 
-      assert [%CandidatePair{state: :in_progress}] = Map.values(ice_agent.checklist)
+      assert [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.state == :in_progress
+      assert new_pair.requests_sent == pair.requests_sent + 1
     end
 
     test "success response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
 
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
@@ -1064,7 +1085,9 @@ defmodule ExICE.Priv.ICEAgentTest do
           resp
         )
 
-      assert [%CandidatePair{state: :succeeded}] = Map.values(ice_agent.checklist)
+      assert [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.state == :succeeded
+      assert new_pair.responses_received == pair.responses_received + 1
     end
 
     test "success response with non-matching message integrity", %{
@@ -1072,6 +1095,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       remote_cand: remote_cand
     } do
       [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
 
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
@@ -1099,11 +1123,14 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # Unauthenticated response is ignored as it was never received.
       # Hence, no impact on pair's state.
-      assert [%CandidatePair{state: :in_progress}] = Map.values(ice_agent.checklist)
+      assert [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.state == :in_progress
+      assert new_pair.responses_received == pair.responses_received
     end
 
     test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
 
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
@@ -1125,11 +1152,14 @@ defmodule ExICE.Priv.ICEAgentTest do
           resp
         )
 
-      assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+      assert [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.state == :failed
+      assert new_pair.responses_received == pair.responses_received + 1
     end
 
     test "unauthenticated error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
 
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
@@ -1151,11 +1181,14 @@ defmodule ExICE.Priv.ICEAgentTest do
           resp
         )
 
-      assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+      assert [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.state == :failed
+      assert new_pair.responses_received == pair.responses_received + 1
     end
 
     test "response from non-symmetric address", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
 
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
@@ -1181,6 +1214,12 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
 
       assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+      assert [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.state == :failed
+      assert new_pair.responses_received == pair.responses_received
+
+      assert new_pair.non_symmetric_responses_received ==
+               pair.non_symmetric_responses_received + 1
     end
 
     defp read_binding_request(socket, remote_pwd) do
@@ -1215,6 +1254,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # trigger binding request
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      [pair] = Map.values(ice_agent.checklist)
       raw_req = Transport.Mock.recv(socket)
       assert raw_req != nil
       {:ok, req} = ExSTUN.Message.decode(raw_req)
@@ -1226,6 +1266,10 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # assert this is exactly the same message
       assert raw_req == rtx_raw_req
+
+      # assert that requests_sent is not incremented as it does not count retransmissions
+      [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.requests_sent == pair.requests_sent
 
       # provide a response and ensure no more retransmissions are sent
       raw_resp =
