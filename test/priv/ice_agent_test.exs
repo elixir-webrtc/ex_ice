@@ -174,6 +174,66 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert cand_pair.local_cand_id == host_cand.base.id
   end
 
+  test "handle_udp/5" do
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.Mock,
+        transport_module: Transport.Mock
+      )
+      |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(@remote_cand)
+
+    # mark candidate/pair as closed/failed
+    [cand] = Map.values(ice_agent.local_cands)
+    cand = put_in(cand.base.closed?, true)
+    ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
+
+    [pair] = Map.values(ice_agent.checklist)
+    pair = %{pair | state: :failed}
+    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+
+    # try to feed data on closed candidate, it should be ignored
+    [socket] = ice_agent.sockets
+    # make sure agent is not in the state failed before feeding data
+    assert ice_agent.state != :failed
+
+    # stun message
+    req =
+      binding_request(
+        ice_agent.role,
+        ice_agent.tiebreaker,
+        "remoteufrag",
+        ice_agent.local_ufrag,
+        ice_agent.local_pwd
+      )
+
+    new_ice_agent =
+      ICEAgent.handle_udp(
+        ice_agent,
+        socket,
+        @remote_cand.address,
+        @remote_cand.port,
+        req
+      )
+
+    assert new_ice_agent == ice_agent
+
+    # custom data
+    new_ice_agent =
+      ICEAgent.handle_udp(
+        ice_agent,
+        socket,
+        @remote_cand.address,
+        @remote_cand.port,
+        "some binary"
+      )
+
+    assert new_ice_agent == ice_agent
+  end
+
   test "doesn't add pairs with srflx local candidate to the checklist" do
     ice_agent =
       ICEAgent.new(
@@ -1340,7 +1400,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent.state == :failed
   end
 
-  test "cleans up agent state when the connection fails" do
+  test "agent state and behavior after it fails" do
     ice_agent =
       ICEAgent.new(
         controlling_process: self(),
@@ -1352,64 +1412,76 @@ defmodule ExICE.Priv.ICEAgentTest do
       |> ICEAgent.gather_candidates()
       |> ICEAgent.add_remote_candidate(@remote_cand)
 
-    # save creds as they will be cleared after moving to the failed state
-    local_ufrag = ice_agent.local_ufrag
-    local_pwd = ice_agent.local_pwd
+    # assert initial state, just to be sure it's correct before we move further
+    assert map_size(ice_agent.local_cands) == 1
+    assert map_size(ice_agent.remote_cands) == 1
+    assert map_size(ice_agent.checklist) == 1
 
-    [socket] = ice_agent.sockets
+    ice_agent = connect(ice_agent)
 
     # mark pair as failed
     [pair] = Map.values(ice_agent.checklist)
     ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
 
     # set eoc flag
-    ice_agent = ICEAgent.end_of_candidates(ice_agent)
+    failed_ice_agent = ICEAgent.end_of_candidates(ice_agent)
 
     # agent should have moved to the failed state
-    assert ice_agent.state == :failed
-    assert ice_agent.sockets == []
-    assert ice_agent.local_cands == %{}
-    assert ice_agent.remote_cands == %{}
-    assert ice_agent.gathering_transactions == %{}
-    assert ice_agent.selected_pair_id == nil
-    assert ice_agent.conn_checks == %{}
-    assert ice_agent.checklist == %{}
-    assert ice_agent.local_ufrag == nil
-    assert ice_agent.local_pwd == nil
-    assert ice_agent.remote_ufrag == nil
-    assert ice_agent.remote_pwd == nil
-    assert ice_agent.eoc == false
-    assert ice_agent.nominating? == {false, nil}
+    assert failed_ice_agent.state == :failed
+    assert failed_ice_agent.sockets == ice_agent.sockets
+    assert [%{base: %{closed?: true}}] = Map.values(failed_ice_agent.local_cands)
+    assert failed_ice_agent.remote_cands == ice_agent.remote_cands
+    assert failed_ice_agent.gathering_transactions == %{}
+    assert failed_ice_agent.selected_pair_id == nil
+    assert failed_ice_agent.conn_checks == %{}
+    assert failed_ice_agent.keepalives == %{}
+    assert failed_ice_agent.tr_rtx == []
+    assert failed_ice_agent.checklist == ice_agent.checklist
+    assert failed_ice_agent.local_ufrag == ice_agent.local_ufrag
+    assert failed_ice_agent.local_pwd == ice_agent.local_pwd
+    assert failed_ice_agent.remote_ufrag == ice_agent.remote_ufrag
+    assert failed_ice_agent.remote_pwd == ice_agent.remote_pwd
+    assert failed_ice_agent.eoc == true
+    assert failed_ice_agent.nominating? == {false, nil}
+
+    [socket] = ice_agent.sockets
 
     # assert that handle_udp ignores incoming data i.e. the state of ice agent didn't change
     new_ice_agent =
-      ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "some data")
+      ICEAgent.handle_udp(
+        failed_ice_agent,
+        socket,
+        @remote_cand.address,
+        @remote_cand.port,
+        "some data"
+      )
 
-    assert ice_agent == new_ice_agent
+    assert failed_ice_agent == new_ice_agent
 
     # the same with incoming binding request
     req =
       binding_request(
-        ice_agent.role,
-        ice_agent.tiebreaker,
+        failed_ice_agent.role,
+        failed_ice_agent.tiebreaker,
         "remoteufrag",
-        local_ufrag,
-        local_pwd
+        failed_ice_agent.local_ufrag,
+        failed_ice_agent.local_pwd
       )
 
     new_ice_agent =
-      ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, req)
+      ICEAgent.handle_udp(failed_ice_agent, socket, @remote_cand.address, @remote_cand.port, req)
 
-    assert ice_agent == new_ice_agent
+    assert failed_ice_agent == new_ice_agent
 
     # and handle_ta_timeout
-    new_ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
-    assert ice_agent == new_ice_agent
+    new_ice_agent = ICEAgent.handle_ta_timeout(failed_ice_agent)
+    assert failed_ice_agent == new_ice_agent
   end
 
-  test "cleans up agent state when the connection completes" do
+  test "agent state and behavior after it completes" do
     r_cand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
     r_cand2 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 4}, port: 8445)
+    r_cand3 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 5}, port: 8445)
 
     ice_agent =
       ICEAgent.new(
@@ -1459,32 +1531,92 @@ defmodule ExICE.Priv.ICEAgentTest do
     resp = binding_response(req.transaction_id, ice_agent.transport_module, socket, "remotepwd")
     ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand2.address, r_cand2.port, resp)
 
-    # assert we have two succeeded pairs
-    assert [%{state: :succeeded}, %{state: :succeeded}] = Map.values(ice_agent.checklist)
+    # add third candidate but with error response
+    ice_agent = ICEAgent.add_remote_candidate(ice_agent, r_cand3)
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand3.address, r_cand3.port, raw_req)
+    _ = Transport.Mock.recv(socket)
+    assert nil == Transport.Mock.recv(socket)
 
-    {_id, srflx_pair} =
-      Enum.find(ice_agent.checklist, fn {_pair_id, pair} -> pair.remote_cand_id == r_cand2.id end)
+    ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+    assert req = Transport.Mock.recv(socket)
+    {:ok, req} = ExSTUN.Message.decode(req)
 
+    resp =
+      Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
+        %ErrorCode{code: 400}
+      ])
+      |> Message.encode()
+
+    ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand3.address, r_cand3.port, resp)
+
+    # assert ice agent is connected, and it has two succeeded pairs and one failed pair
     assert :connected == ice_agent.state
+
+    assert [:succeeded, :succeeded, :failed] --
+             Enum.map(ice_agent.checklist, fn {_id, pair} -> pair.state end) == []
 
     # set end-of-candidates
     ice_agent = ICEAgent.end_of_candidates(ice_agent)
 
     # assert ice agent changed its state to completed
-    # and we have one pair and one remote cand
+    # and it still has three pairs and three remote candidates
     assert ice_agent.state == :completed
-    assert [%{state: :succeeded}] = Map.values(ice_agent.checklist)
-    assert [%{type: :host}] = Map.values(ice_agent.remote_cands)
 
-    # try to feed data from the srflx remote cand
-    new_ice_agent =
+    assert [:succeeded, :succeeded, :failed] --
+             Enum.map(ice_agent.checklist, fn {_id, pair} -> pair.state end) == []
+
+    # Because this test simulates aggressive nomination, two pairs will be nominated.
+    assert [true, true, false] --
+             Enum.map(ice_agent.checklist, fn {_id, pair} -> pair.nominated? end) == []
+
+    assert map_size(ice_agent.local_cands) == 1
+    assert map_size(ice_agent.remote_cands) == 3
+
+    # try to feed data from the srflx remote cand - it should be accepted
+    ice_agent =
       ICEAgent.handle_udp(ice_agent, socket, r_cand2.address, r_cand2.port, "some data")
 
-    assert ice_agent == new_ice_agent
+    assert_receive {:ex_ice, _pid, {:data, "some data"}}
 
-    # try to handle keepalive on the srflx pair
+    # try to handle keepalive on the srflx pair, it should be ignored
+    {_id, srflx_pair} =
+      Enum.find(ice_agent.checklist, fn {_pair_id, pair} -> pair.remote_cand_id == r_cand2.id end)
+
     new_ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, srflx_pair.id)
     assert ice_agent == new_ice_agent
+
+    # try to handle binding request on failed pair, it should be ignored
+    req =
+      binding_request(
+        ice_agent.role,
+        ice_agent.tiebreaker,
+        "remoteufrag",
+        ice_agent.local_ufrag,
+        ice_agent.local_pwd
+      )
+
+    new_ice_agent = ICEAgent.handle_udp(ice_agent, socket, r_cand3.address, r_cand3.port, req)
+
+    # assert we still have two succeeded and one failed pair
+    assert [:succeeded, :succeeded, :failed] --
+             Enum.map(new_ice_agent.checklist, fn {_id, pair} -> pair.state end) == []
+
+    # assert there is no response
+    assert nil == Transport.Mock.recv(socket)
+
+    # try to handle binding request from unknown remote candidate
+    prflx_cand = ExICE.Candidate.new(:prflx, address: {192, 168, 0, 6}, port: 8445)
+
+    new_ice_agent =
+      ICEAgent.handle_udp(ice_agent, socket, prflx_cand.address, prflx_cand.port, req)
+
+    # assert there is a new prflx candidate but the checklist remains the same
+    # In theory, we could even ignore this candidate, but this would require some changes
+    # in the code base architecture.
+    [%ExICE.Candidate{type: :prflx}] =
+      Map.values(new_ice_agent.remote_cands) -- Map.values(ice_agent.remote_cands)
+
+    assert new_ice_agent.checklist == ice_agent.checklist
   end
 
   @stun_ip {192, 168, 0, 3}
@@ -1835,10 +1967,10 @@ defmodule ExICE.Priv.ICEAgentTest do
     # try to send some data
     ice_agent = ICEAgent.send_data(ice_agent, "somedata")
 
-    # assert that ice_agent removed failed candidate and moved to the failed state
-    assert ice_agent.local_cands == %{}
+    # assert that local cand has been closed and the agent moved to the failed state
+    assert [%{base: %{closed?: true}}] = Map.values(ice_agent.local_cands)
     assert ice_agent.state == :failed
-    assert ice_agent.checklist == %{}
+    assert [%{state: :failed}] = Map.values(ice_agent.checklist)
   end
 
   test "relay connection" do
