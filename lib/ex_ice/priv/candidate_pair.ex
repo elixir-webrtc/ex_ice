@@ -21,7 +21,12 @@ defmodule ExICE.Priv.CandidatePair do
           succeeded_pair_id: integer() | nil,
           discovered_pair_id: integer() | nil,
           keepalive_timer: reference() | nil,
-          last_seen: integer()
+          last_seen: integer(),
+          requests_received: non_neg_integer(),
+          requests_sent: non_neg_integer(),
+          responses_received: non_neg_integer(),
+          non_symmetric_responses_received: non_neg_integer(),
+          responses_sent: non_neg_integer()
         }
 
   @enforce_keys [:id, :local_cand_id, :remote_cand_id, :priority]
@@ -36,7 +41,12 @@ defmodule ExICE.Priv.CandidatePair do
                 keepalive_timer: nil,
                 # Time when this pair has received some data
                 # or sent conn check.
-                last_seen: nil
+                last_seen: nil,
+                requests_received: 0,
+                requests_sent: 0,
+                responses_received: 0,
+                non_symmetric_responses_received: 0,
+                responses_sent: 0
               ]
 
   @doc false
@@ -101,7 +111,13 @@ defmodule ExICE.Priv.CandidatePair do
       priority: pair.priority,
       remote_cand_id: pair.remote_cand_id,
       state: pair.state,
-      valid?: pair.valid?
+      valid?: pair.valid?,
+      last_seen: pair.last_seen,
+      requests_received: pair.requests_received,
+      requests_sent: pair.requests_sent,
+      responses_received: pair.responses_received,
+      non_symmetric_responses_received: pair.non_symmetric_responses_received,
+      responses_sent: pair.responses_sent
     }
   end
 end

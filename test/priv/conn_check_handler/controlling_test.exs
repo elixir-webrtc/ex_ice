@@ -78,6 +78,28 @@ defmodule ExICE.Priv.ConnCheckHandler.ControllingTest do
       assert new_pair.state == pair.state
     end
 
+    test "on failed pair in failed state", %{ice_agent: ice_agent, req: req} do
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+
+      # set pair and agent states to failed
+      [pair_id] = Map.keys(ice_agent.checklist)
+      ice_agent = put_in(ice_agent.checklist[pair_id].state, :failed)
+      ice_agent = %{ice_agent | state: :failed}
+
+      # try to handle binding request
+      [socket] = ice_agent.sockets
+      pair = Map.fetch!(ice_agent.checklist, pair_id)
+      new_ice_agent = Controlling.handle_conn_check_request(ice_agent, pair, req, nil)
+
+      # assert a response has not been sent, and pair and agent are still in state failed
+      new_pair = Map.fetch!(new_ice_agent.checklist, pair_id)
+      assert Transport.Mock.recv(socket) == nil
+      assert new_ice_agent.state == :failed
+      assert new_pair.state == :failed
+      assert new_pair.requests_received == pair.requests_received + 1
+      assert new_pair.responses_sent == pair.responses_sent
+    end
+
     test "on failed pair in completed state", %{ice_agent: ice_agent, req: req} do
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand2)
@@ -96,10 +118,12 @@ defmodule ExICE.Priv.ConnCheckHandler.ControllingTest do
       new_ice_agent = Controlling.handle_conn_check_request(ice_agent, pair1, req, nil)
 
       # assert a response has not been sent, pair_id1 is still in state failed and agent is still in state completed
-      pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
+      new_pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
       assert Transport.Mock.recv(socket) == nil
       assert new_ice_agent.state == :completed
-      assert pair1.state == :failed
+      assert new_pair1.state == :failed
+      assert new_pair1.requests_received == pair1.requests_received + 1
+      assert new_pair1.responses_sent == pair1.responses_sent
     end
 
     test "on failed pair in connected state", %{ice_agent: ice_agent, req: req} do
@@ -119,11 +143,13 @@ defmodule ExICE.Priv.ConnCheckHandler.ControllingTest do
       new_ice_agent = Controlling.handle_conn_check_request(ice_agent, pair1, req, nil)
 
       # assert a response has been sent, pair_id1 is waiting and agent is connected
-      pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
+      new_pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
       assert Transport.Mock.recv(socket) != nil
       assert new_ice_agent.state == :connected
-      assert pair1.state == :waiting
-      assert pair1.nominate? == false
+      assert new_pair1.state == :waiting
+      assert new_pair1.nominate? == false
+      assert new_pair1.requests_received == pair1.requests_received + 1
+      assert new_pair1.responses_sent == pair1.responses_sent + 1
     end
 
     test "on selected pair in completed state", %{ice_agent: ice_agent, req: req} do
@@ -146,12 +172,14 @@ defmodule ExICE.Priv.ConnCheckHandler.ControllingTest do
       new_ice_agent = Controlling.handle_conn_check_request(ice_agent, pair1, req, nil)
 
       # assert a response has been sent, pair_id1 is still in state succeeded and agent is still in state completed
-      pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
+      new_pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
       assert Transport.Mock.recv(socket) != nil
       assert new_ice_agent.state == :completed
       assert new_ice_agent.selected_pair_id == pair_id1
-      assert pair1.state == :succeeded
-      assert pair1.valid? == true
+      assert new_pair1.state == :succeeded
+      assert new_pair1.valid? == true
+      assert new_pair1.requests_received == pair1.requests_received + 1
+      assert new_pair1.responses_sent == pair1.responses_sent + 1
     end
 
     test "on succeeded pair in connected state", %{ice_agent: ice_agent, req: req} do
@@ -172,12 +200,14 @@ defmodule ExICE.Priv.ConnCheckHandler.ControllingTest do
       new_ice_agent = Controlling.handle_conn_check_request(ice_agent, pair1, req, nil)
 
       # assert a response has been sent, pair_id1 is still in state succeeded and agent is still in state connected
-      pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
+      new_pair1 = Map.fetch!(new_ice_agent.checklist, pair_id1)
       assert Transport.Mock.recv(socket) != nil
       assert new_ice_agent.state == :connected
       assert new_ice_agent.selected_pair_id == nil
-      assert pair1.state == :succeeded
-      assert pair1.valid? == true
+      assert new_pair1.state == :succeeded
+      assert new_pair1.valid? == true
+      assert new_pair1.requests_received == pair1.requests_received + 1
+      assert new_pair1.responses_sent == pair1.responses_sent + 1
     end
 
     test "on unknown pair in connected state", %{ice_agent: ice_agent, req: req} do
@@ -201,12 +231,14 @@ defmodule ExICE.Priv.ConnCheckHandler.ControllingTest do
       new_ice_agent = Controlling.handle_conn_check_request(ice_agent, pair2, req, nil)
 
       # assert a response has been sent, and we have a new pair in the checklist
-      pair2 = Map.fetch!(new_ice_agent.checklist, pair_id2)
+      new_pair2 = Map.fetch!(new_ice_agent.checklist, pair_id2)
       assert Transport.Mock.recv(socket) != nil
       assert new_ice_agent.state == :connected
-      assert pair2.state == :waiting
-      assert pair2.valid? == false
-      assert pair2.nominate? == false
+      assert new_pair2.state == :waiting
+      assert new_pair2.valid? == false
+      assert new_pair2.nominate? == false
+      assert new_pair2.requests_received == pair2.requests_received + 1
+      assert new_pair2.responses_sent == pair2.responses_sent + 1
     end
 
     defp binding_request(

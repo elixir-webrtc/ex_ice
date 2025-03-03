@@ -1553,7 +1553,11 @@ defmodule ExICE.Priv.ICEAgent do
       Pair failed: #{conn_check_pair.id}
       """)
 
-      conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+      conn_check_pair = %CandidatePair{
+        conn_check_pair
+        | state: :failed,
+          non_symmetric_responses_received: 1
+      }
 
       checklist = Map.put(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
       %__MODULE__{ice_agent | checklist: checklist}
@@ -1575,7 +1579,13 @@ defmodule ExICE.Priv.ICEAgent do
         add_valid_pair(ice_agent, valid_pair, conn_check_pair, checklist_pair)
 
       pair = CandidatePair.schedule_keepalive(ice_agent.checklist[pair_id])
-      pair = %CandidatePair{pair | last_seen: now()}
+
+      pair = %CandidatePair{
+        pair
+        | last_seen: now(),
+          responses_received: pair.responses_received + 1
+      }
+
       checklist = Map.put(ice_agent.checklist, pair_id, pair)
       ice_agent = %__MODULE__{ice_agent | checklist: checklist}
 
@@ -1613,7 +1623,12 @@ defmodule ExICE.Priv.ICEAgent do
           "Conn check failed due to error response from the peer, error: #{inspect(other)}"
         )
 
-        conn_check_pair = %CandidatePair{conn_check_pair | state: :failed}
+        conn_check_pair = %CandidatePair{
+          conn_check_pair
+          | state: :failed,
+            responses_received: conn_check_pair.responses_received + 1
+        }
+
         checklist = Map.put(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
         %__MODULE__{ice_agent | checklist: checklist}
     end
@@ -1629,7 +1644,12 @@ defmodule ExICE.Priv.ICEAgent do
         recomputing pair priorities, regenerating tiebreaker and rescheduling conn check \
         """)
 
-        conn_check_pair = %CandidatePair{conn_check_pair | state: :waiting}
+        conn_check_pair = %CandidatePair{
+          conn_check_pair
+          | state: :waiting,
+            responses_received: conn_check_pair.responses_received + 1
+        }
+
         checklist = Map.replace!(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
         tiebreaker = generate_tiebreaker()
         %__MODULE__{ice_agent | role: new_role, checklist: checklist, tiebreaker: tiebreaker}
@@ -1713,12 +1733,25 @@ defmodule ExICE.Priv.ICEAgent do
     with true <- symmetric?(ice_agent, local_cand.base.socket, {src_ip, src_port}, pair),
          :ok <- authenticate_msg(msg, ice_agent.remote_pwd) do
       Logger.debug("Received keepalive success response on: #{pair_info(ice_agent, pair)}")
-      pair = %CandidatePair{pair | last_seen: now()}
+
+      pair = %CandidatePair{
+        pair
+        | last_seen: now(),
+          responses_received: pair.responses_received + 1
+      }
+
       put_in(ice_agent.checklist[pair.id], pair)
     else
       false ->
         ka_local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
         ka_remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
+
+        pair = %CandidatePair{
+          pair
+          | non_symmetric_responses_received: pair.non_symmetric_responses_received + 1
+        }
+
+        ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
         Logger.debug("""
         Ignoring keepalive success response, non-symmetric src and dst addresses.
@@ -1749,6 +1782,8 @@ defmodule ExICE.Priv.ICEAgent do
        ) do
     {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
     pair = Map.fetch!(ice_agent.checklist, pair_id)
+    pair = %CandidatePair{pair | responses_received: pair.responses_received + 1}
+    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     Logger.debug("""
     Received keepalive error response from #{inspect({src_ip, src_port})}, \
@@ -1868,8 +1903,14 @@ defmodule ExICE.Priv.ICEAgent do
       |> Message.with_fingerprint()
       |> Message.encode()
 
-    {_result, ice_agent} = do_send(ice_agent, local_cand, {src_ip, src_port}, resp)
-    ice_agent
+    case do_send(ice_agent, local_cand, {src_ip, src_port}, resp) do
+      {:ok, ice_agent} ->
+        pair = %CandidatePair{pair | responses_sent: pair.responses_sent + 1}
+        put_in(ice_agent.checklist[pair.id], pair)
+
+      {:error, ice_agent} ->
+        ice_agent
+    end
   end
 
   @doc false
@@ -2614,6 +2655,8 @@ defmodule ExICE.Priv.ICEAgent do
 
     case do_send(ice_agent, local_cand, dst, Message.encode(req)) do
       {:ok, ice_agent} ->
+        pair = %CandidatePair{pair | requests_sent: pair.requests_sent + 1}
+        ice_agent = put_in(ice_agent.checklist[pair.id], pair)
         keepalives = Map.put(ice_agent.keepalives, req.transaction_id, pair.id)
         %__MODULE__{ice_agent | keepalives: keepalives}
 
@@ -2639,7 +2682,7 @@ defmodule ExICE.Priv.ICEAgent do
       {:ok, ice_agent} ->
         Process.send_after(self(), {:tr_rtx_timeout, req.transaction_id}, @tr_rtx_timeout)
 
-        pair = %CandidatePair{pair | state: :in_progress}
+        pair = %CandidatePair{pair | state: :in_progress, requests_sent: pair.requests_sent + 1}
 
         conn_check = %{
           pair_id: pair.id,

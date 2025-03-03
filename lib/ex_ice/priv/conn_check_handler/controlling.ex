@@ -36,32 +36,59 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
 
       nil when ice_agent.state in [:new, :checking, :connected] ->
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
+        pair = %CandidatePair{pair | requests_received: 1}
         checklist = Map.put(ice_agent.checklist, pair.id, pair)
         ice_agent = %ICEAgent{ice_agent | checklist: checklist}
         ICEAgent.send_binding_success_response(ice_agent, pair, msg)
 
       %CandidatePair{} = checklist_pair ->
         cond do
-          checklist_pair.state == :failed and ice_agent.state in [:failed, :completed] ->
-            # update last seen so we can observe that something is received but don't reply
-            # as we are in the failed state
-            checklist_pair = %CandidatePair{checklist_pair | last_seen: pair.last_seen}
-            put_in(ice_agent.checklist[checklist_pair.id], checklist_pair)
+          ice_agent.state == :failed ->
+            r_pair = resolve_pair(ice_agent, checklist_pair)
 
-          checklist_pair.state == :failed ->
-            checklist_pair = %CandidatePair{
-              checklist_pair
-              | state: :waiting,
-                last_seen: pair.last_seen
+            r_pair = %CandidatePair{
+              r_pair
+              | last_seen: pair.last_seen,
+                requests_received: r_pair.requests_received + 1
             }
 
-            ice_agent = put_in(ice_agent.checklist[checklist_pair.id], checklist_pair)
-            ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
+            put_in(ice_agent.checklist[r_pair.id], r_pair)
+
+          checklist_pair.state == :failed and ice_agent.state == :completed ->
+            r_pair = resolve_pair(ice_agent, checklist_pair)
+
+            r_pair = %CandidatePair{
+              r_pair
+              | last_seen: pair.last_seen,
+                requests_received: r_pair.requests_received + 1
+            }
+
+            put_in(ice_agent.checklist[r_pair.id], r_pair)
+
+          checklist_pair.state == :failed ->
+            r_pair = resolve_pair(ice_agent, checklist_pair)
+
+            r_pair = %CandidatePair{
+              r_pair
+              | state: :waiting,
+                last_seen: pair.last_seen,
+                requests_received: r_pair.requests_received + 1
+            }
+
+            ice_agent = put_in(ice_agent.checklist[r_pair.id], r_pair)
+            ICEAgent.send_binding_success_response(ice_agent, r_pair, msg)
 
           true ->
-            checklist_pair = %CandidatePair{checklist_pair | last_seen: pair.last_seen}
-            ice_agent = put_in(ice_agent.checklist[checklist_pair.id], checklist_pair)
-            ICEAgent.send_binding_success_response(ice_agent, checklist_pair, msg)
+            r_pair = resolve_pair(ice_agent, checklist_pair)
+
+            r_pair = %CandidatePair{
+              r_pair
+              | last_seen: pair.last_seen,
+                requests_received: r_pair.requests_received + 1
+            }
+
+            ice_agent = put_in(ice_agent.checklist[r_pair.id], r_pair)
+            ICEAgent.send_binding_success_response(ice_agent, r_pair, msg)
         end
     end
   end
@@ -85,5 +112,9 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
 
     ice_agent = %ICEAgent{ice_agent | nominating?: {false, nil}, selected_pair_id: pair.id}
     ICEAgent.change_connection_state(ice_agent, :completed)
+  end
+
+  defp resolve_pair(ice_agent, pair) do
+    (pair.discovered_pair_id && Map.fetch!(ice_agent.checklist, pair.discovered_pair_id)) || pair
   end
 end
