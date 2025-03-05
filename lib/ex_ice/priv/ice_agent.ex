@@ -435,7 +435,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   def send_data(%__MODULE__{state: state} = ice_agent, _data) do
-    Logger.warning("""
+    Logger.debug("""
     Cannot send data in ICE state: #{inspect(state)}. \
     Data can only be sent in state :connected or :completed. Ignoring.\
     """)
@@ -1295,7 +1295,7 @@ defmodule ExICE.Priv.ICEAgent do
         handle_keepalive_response(ice_agent, local_cand, src_ip, src_port, msg)
 
       %Type{class: class, method: :binding} when is_response(class) ->
-        Logger.warning("""
+        Logger.debug("""
         Ignoring binding response with unknown t_id: #{msg.transaction_id}.
         Is it retransmission or we called ICE restart?
         """)
