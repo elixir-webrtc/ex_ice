@@ -63,6 +63,7 @@ defmodule ExICE.Priv.ICEAgentTest do
   end
 
   @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+  @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
 
   describe "unmarshal_remote_candidate/1" do
     test "with correct candidate" do
@@ -644,6 +645,62 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert_bad_request_error_response(socket, request)
     end
 
+    test "with role conflict", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [socket] = ice_agent.sockets
+
+      binding_request = fn tiebreaker ->
+        Message.new(%Type{class: :request, method: :binding}, [
+          %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+          %Priority{priority: 1234},
+          %ICEControlling{tiebreaker: tiebreaker},
+          %UseCandidate{}
+        ])
+        |> Message.with_integrity(ice_agent.local_pwd)
+        |> Message.with_fingerprint()
+      end
+
+      # feed binding request with higher tiebreaker
+      request = binding_request.(ice_agent.tiebreaker + 1)
+      raw_request = Message.encode(request)
+
+      new_ice_agent =
+        ICEAgent.handle_udp(
+          ice_agent,
+          socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      # agent should switch its role and send success response
+      assert new_ice_agent.role == :controlled
+      assert new_ice_agent.tiebreaker == ice_agent.tiebreaker
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, msg} = ExSTUN.Message.decode(packet)
+      assert msg.type == %ExSTUN.Message.Type{class: :success_response, method: :binding}
+
+      # feed binding request with smaller tiebreaker
+      request = binding_request.(ice_agent.tiebreaker - 1)
+      raw_request = Message.encode(request)
+
+      new_ice_agent =
+        ICEAgent.handle_udp(
+          ice_agent,
+          socket,
+          remote_cand.address,
+          remote_cand.port,
+          raw_request
+        )
+
+      # agent shouldn't switch its role and should send 487 error response
+      assert new_ice_agent.role == :controlling
+      assert new_ice_agent.tiebreaker == ice_agent.tiebreaker
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, msg} = ExSTUN.Message.decode(packet)
+      assert msg.type == %ExSTUN.Message.Type{class: :error_response, method: :binding}
+      assert {:ok, %ErrorCode{code: 487, reason: ""}} = Message.get_attribute(msg, ErrorCode)
+    end
+
     test "without username", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
 
@@ -1155,6 +1212,80 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :failed
       assert new_pair.responses_received == pair.responses_received + 1
+    end
+
+    test "role conflict error response" do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+
+      [socket] = ice_agent.sockets
+
+      # trigger check
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      [pair1] = Map.values(ice_agent.checklist)
+      req1 = read_binding_request(socket, ice_agent.remote_pwd)
+
+      # Add the second candidate and trigger another check.
+      # We add candidate after generating the first check to be sure
+      # it is related to @remote_cand2.
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand2)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      [pair2] = Map.values(ice_agent.checklist) |> Enum.reject(&(&1.id == pair1.id))
+      req2 = read_binding_request(socket, ice_agent.remote_pwd)
+
+      # reply to the first check with role conflict error response
+      resp =
+        Message.new(req1.transaction_id, %Type{class: :error_response, method: :binding}, [
+          %ErrorCode{code: 487}
+        ])
+        |> Message.with_integrity(ice_agent.remote_pwd)
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      new_ice_agent =
+        ICEAgent.handle_udp(
+          ice_agent,
+          socket,
+          @remote_cand.address,
+          @remote_cand.port,
+          resp
+        )
+
+      # assert that the agent changed its role and tiebreaker
+      assert new_ice_agent.role != ice_agent.role
+      assert new_ice_agent.tiebreaker != ice_agent.tiebreaker
+      assert Map.fetch!(new_ice_agent.checklist, pair1.id).state == :waiting
+
+      # reply to the second check with role conflict error response
+      resp =
+        Message.new(req2.transaction_id, %Type{class: :error_response, method: :binding}, [
+          %ErrorCode{code: 487}
+        ])
+        |> Message.with_integrity(new_ice_agent.remote_pwd)
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      new_ice_agent2 =
+        ICEAgent.handle_udp(
+          new_ice_agent,
+          socket,
+          @remote_cand2.address,
+          @remote_cand2.port,
+          resp
+        )
+
+      # assert that agent didn't switch its role and tiebreaker
+      assert new_ice_agent2.role == new_ice_agent.role
+      assert new_ice_agent2.tiebreaker == new_ice_agent.tiebreaker
+      assert Map.fetch!(new_ice_agent2.checklist, pair2.id).state == :waiting
     end
 
     test "unauthenticated error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do

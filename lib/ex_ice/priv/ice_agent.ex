@@ -1521,7 +1521,10 @@ defmodule ExICE.Priv.ICEAgent do
 
   ## BINDING RESPONSE HANDLING ##
   defp handle_conn_check_response(ice_agent, local_cand, src_ip, src_port, msg) do
-    {%{pair_id: pair_id}, conn_checks} = Map.pop!(ice_agent.conn_checks, msg.transaction_id)
+    {%{pair_id: pair_id, raw_req: raw_req}, conn_checks} =
+      Map.pop!(ice_agent.conn_checks, msg.transaction_id)
+
+    {:ok, req} = Message.decode(raw_req)
     ice_agent = %__MODULE__{ice_agent | conn_checks: conn_checks}
     conn_check_pair = Map.fetch!(ice_agent.checklist, pair_id)
 
@@ -1539,7 +1542,7 @@ defmodule ExICE.Priv.ICEAgent do
     if symmetric?(ice_agent, local_cand.base.socket, {src_ip, src_port}, conn_check_pair) do
       case msg.type.class do
         :success_response -> handle_conn_check_success_response(ice_agent, conn_check_pair, msg)
-        :error_response -> handle_conn_check_error_response(ice_agent, conn_check_pair, msg)
+        :error_response -> handle_conn_check_error_response(ice_agent, conn_check_pair, req, msg)
       end
     else
       cc_local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
@@ -1609,14 +1612,14 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp handle_conn_check_error_response(ice_agent, conn_check_pair, msg) do
+  defp handle_conn_check_error_response(ice_agent, conn_check_pair, req, resp) do
     # We only authenticate role conflict as it changes our state.
     # We don't add message-integrity to bad request and unauthenticated errors
     # so we also don't expect to receive it.
     # In the worst case scenario, we won't allow for the connection.
-    case Message.get_attribute(msg, ErrorCode) do
+    case Message.get_attribute(resp, ErrorCode) do
       {:ok, %ErrorCode{code: 487}} ->
-        handle_role_conflict_error_response(ice_agent, conn_check_pair, msg)
+        handle_role_conflict_error_response(ice_agent, conn_check_pair, req, resp)
 
       other ->
         Logger.debug(
@@ -1634,15 +1637,39 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp handle_role_conflict_error_response(ice_agent, conn_check_pair, msg) do
-    case authenticate_msg(msg, ice_agent.remote_pwd) do
+  defp handle_role_conflict_error_response(ice_agent, conn_check_pair, req, resp) do
+    case authenticate_msg(resp, ice_agent.remote_pwd) do
       :ok ->
-        new_role = if ice_agent.role == :controlling, do: :controlled, else: :controlling
+        {:ok, role} = get_role_attribute(req)
 
-        Logger.debug("""
-        Conn check failed due to role conflict. Changing our role to: #{new_role}, \
-        recomputing pair priorities, regenerating tiebreaker and rescheduling conn check \
-        """)
+        ice_agent =
+          case {role, ice_agent.role} do
+            {%ICEControlled{}, :controlling} ->
+              # seems that we've already switched
+              ice_agent
+
+            {%ICEControlling{}, :controlled} ->
+              # seems that we've already switched
+              ice_agent
+
+            _ ->
+              new_role = if ice_agent.role == :controlling, do: :controlled, else: :controlling
+
+              Logger.debug("""
+              Conn check failed due to role conflict. Changing our role to: #{new_role}, \
+              recomputing pair priorities, regenerating tiebreaker and rescheduling conn check \
+              """)
+
+              tiebreaker = generate_tiebreaker()
+              checklist = recompute_pair_prios(ice_agent)
+
+              %__MODULE__{
+                ice_agent
+                | role: new_role,
+                  checklist: checklist,
+                  tiebreaker: tiebreaker
+              }
+          end
 
         conn_check_pair = %CandidatePair{
           conn_check_pair
@@ -1651,8 +1678,8 @@ defmodule ExICE.Priv.ICEAgent do
         }
 
         checklist = Map.replace!(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
-        tiebreaker = generate_tiebreaker()
-        %__MODULE__{ice_agent | role: new_role, checklist: checklist, tiebreaker: tiebreaker}
+
+        %__MODULE__{ice_agent | checklist: checklist}
 
       {:error, reason} ->
         Logger.debug(
