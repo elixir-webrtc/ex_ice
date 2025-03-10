@@ -52,6 +52,9 @@ defmodule ExICE.ICEAgent do
   All notifications are by default sent to a process that spawns `ExICE`.
   This behavior can be overwritten using the following options.
 
+  * `role` - agent's role. If not set, it can be later choosen with `set_role/2`. Please note, that
+    until role is set, adding remote candidates or gathering local candidates won't possible, and calls to these
+    functions will be ignored. Defaults to `nil`.
   * `ip_filter` - filter applied when gathering host candidates
   * `ports` - ports that will be used when gathering host candidates, otherwise the ports are chosen by the OS
   * `ice_servers` - list of STUN/TURN servers
@@ -64,6 +67,7 @@ defmodule ExICE.ICEAgent do
   * `on_new_candidate` - where to send new candidates. Defaults to a process that spawns `ExICE`.
   """
   @type opts() :: [
+          role: role() | nil,
           ip_filter: ip_filter(),
           ports: Enumerable.t(non_neg_integer()),
           ice_servers: [
@@ -86,9 +90,9 @@ defmodule ExICE.ICEAgent do
   Process calling this function is called a `controlling process` and
   has to be prepared for receiving ExICE messages described by `t:signal/0`.
   """
-  @spec start_link(role(), opts()) :: GenServer.on_start()
-  def start_link(role, opts \\ []) do
-    GenServer.start_link(__MODULE__, opts ++ [role: role, controlling_process: self()])
+  @spec start_link(opts()) :: GenServer.on_start()
+  def start_link(opts \\ []) when is_list(opts) do
+    GenServer.start_link(__MODULE__, opts ++ [controlling_process: self()])
   end
 
   @doc """
@@ -124,6 +128,14 @@ defmodule ExICE.ICEAgent do
   end
 
   @doc """
+  Gets agent's role.
+  """
+  @spec get_role(pid()) :: ExICE.Agent.t() | nil
+  def get_role(ice_agent) do
+    GenServer.call(ice_agent, :get_role)
+  end
+
+  @doc """
   Gets local credentials.
 
   They remain unchanged until ICE restart.
@@ -150,6 +162,20 @@ defmodule ExICE.ICEAgent do
   @spec get_remote_candidates(pid()) :: [String.t()]
   def get_remote_candidates(ice_agent) do
     GenServer.call(ice_agent, :get_remote_candidates)
+  end
+
+  @doc """
+  Sets agent's role.
+
+  In case of WebRTC, agent's role depends on who sends the first offer.
+  Since an agent has to be initialized at the very beginning, there is no
+  possibility to set its role in the constructor.
+
+  This function can only be called once. Subsequent calls will be ignored.
+  """
+  @spec set_role(pid(), role()) :: :ok
+  def set_role(ice_agent, role) do
+    GenServer.cast(ice_agent, {:set_role, role})
   end
 
   @doc """
@@ -284,6 +310,12 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
+  def handle_call(:get_role, _from, state) do
+    role = ExICE.Priv.ICEAgent.get_role(state.ice_agent)
+    {:reply, role, state}
+  end
+
+  @impl true
   def handle_call(:get_local_credentials, _from, state) do
     {local_ufrag, local_pwd} = ExICE.Priv.ICEAgent.get_local_credentials(state.ice_agent)
     {:reply, {:ok, local_ufrag, local_pwd}, state}
@@ -305,6 +337,12 @@ defmodule ExICE.ICEAgent do
   def handle_call(:get_stats, _from, state) do
     stats = ExICE.Priv.ICEAgent.get_stats(state.ice_agent)
     {:reply, stats, state}
+  end
+
+  @impl true
+  def handle_cast({:set_role, role}, state) do
+    ice_agent = ExICE.Priv.ICEAgent.set_role(state.ice_agent, role)
+    {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true

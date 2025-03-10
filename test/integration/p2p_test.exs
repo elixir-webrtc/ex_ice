@@ -17,9 +17,9 @@ defmodule ExICE.Integration.P2PTest do
     end
 
     {:ok, agent1} =
-      ICEAgent.start_link(:controlling, ip_filter: ip_filter, ice_servers: ice_servers)
+      ICEAgent.start_link(role: :controlling, ip_filter: ip_filter, ice_servers: ice_servers)
 
-    {:ok, agent2} = ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: [])
+    {:ok, agent2} = ICEAgent.start_link(role: :controlled, ip_filter: ip_filter, ice_servers: [])
 
     {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
     {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
@@ -94,10 +94,10 @@ defmodule ExICE.Integration.P2PTest do
     end
 
     {:ok, agent1} =
-      ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: ice_servers)
+      ICEAgent.start_link(role: :controlled, ip_filter: ip_filter, ice_servers: ice_servers)
 
     {:ok, agent2} =
-      ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: ice_servers)
+      ICEAgent.start_link(role: :controlled, ip_filter: ip_filter, ice_servers: ice_servers)
 
     {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
     {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
@@ -144,14 +144,15 @@ defmodule ExICE.Integration.P2PTest do
     end
 
     {:ok, agent1} =
-      ICEAgent.start_link(:controlling,
+      ICEAgent.start_link(
+        role: :controlling,
         ip_filter: ip_filter,
         ice_servers: ice_servers,
         ice_transport_policy: :relay
       )
 
     {:ok, agent2} =
-      ICEAgent.start_link(:controlled, ip_filter: ip_filter, ice_servers: [])
+      ICEAgent.start_link(role: :controlled, ip_filter: ip_filter, ice_servers: [])
 
     {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
     {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
