@@ -143,6 +143,12 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert %{} == ice_agent.remote_cands
     end
 
+    test "without role", %{ice_agent: ice_agent} do
+      ice_agent = %{ice_agent | role: nil}
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+      assert %{} == ice_agent.remote_cands
+    end
+
     test "after setting end-of-candidates", %{ice_agent: ice_agent} do
       ice_agent = ICEAgent.end_of_candidates(ice_agent)
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
@@ -150,29 +156,62 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
-  test "gather_candidates/1 creates pairs if there already are any remote candidates" do
+  test "set_role/2" do
     ice_agent =
       ICEAgent.new(
         controlling_process: self(),
-        role: :controlling,
+        role: nil,
         if_discovery_module: IfDiscovery.Mock,
         transport_module: Transport.Mock
       )
       |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
 
-    ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+    ice_agent = ICEAgent.set_role(ice_agent, :controlling)
+    assert ice_agent.role == :controlling
 
-    # assert that there are no pairs and no local cands
-    assert [] == Map.values(ice_agent.checklist)
-    assert [] == Map.values(ice_agent.local_cands)
+    # role shouldn't change as we don't allow for changing the role once it has been initialized
+    ice_agent = ICEAgent.set_role(ice_agent, :controlled)
+    assert ice_agent.role == :controlling
 
-    # gather candidates
-    ice_agent = ICEAgent.gather_candidates(ice_agent)
-    [host_cand] = Map.values(ice_agent.local_cands)
+    # assert that timer has not been fired as there is no work to do
+    refute_receive :ta_timeout
+  end
 
-    # assert that a new pair has been created
-    assert [%CandidatePair{} = cand_pair] = Map.values(ice_agent.checklist)
-    assert cand_pair.local_cand_id == host_cand.base.id
+  describe "gather_candidates/1" do
+    setup do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "when there already are remote candidates", %{ice_agent: ice_agent} do
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+
+      # assert that there are no pairs and no local cands
+      assert [] == Map.values(ice_agent.checklist)
+      assert [] == Map.values(ice_agent.local_cands)
+
+      # gather candidates
+      ice_agent = ICEAgent.gather_candidates(ice_agent)
+      [host_cand] = Map.values(ice_agent.local_cands)
+
+      # assert that a new pair has been created
+      assert [%CandidatePair{} = cand_pair] = Map.values(ice_agent.checklist)
+      assert cand_pair.local_cand_id == host_cand.base.id
+    end
+
+    test "without role", %{ice_agent: ice_agent} do
+      ice_agent = %{ice_agent | role: nil}
+      ice_agent = ICEAgent.gather_candidates(ice_agent)
+      assert %{} == ice_agent.local_cands
+    end
   end
 
   test "handle_udp/5" do

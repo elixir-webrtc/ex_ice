@@ -153,7 +153,7 @@ defmodule ExICE.Priv.ICEAgent do
       transport_module: transport_module,
       gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter, ports),
       ice_transport_policy: opts[:ice_transport_policy] || :all,
-      role: Keyword.fetch!(opts, :role),
+      role: opts[:role],
       tiebreaker: generate_tiebreaker(),
       local_ufrag: local_ufrag,
       local_pwd: local_pwd,
@@ -181,6 +181,9 @@ defmodule ExICE.Priv.ICEAgent do
   def on_new_candidate(ice_agent, send_to) do
     %__MODULE__{ice_agent | on_new_candidate: send_to}
   end
+
+  @spec get_role(t()) :: ExICE.Agent.role() | nil
+  def get_role(ice_agent), do: ice_agent.role
 
   @spec get_local_credentials(t()) :: {binary(), binary()}
   def get_local_credentials(ice_agent) do
@@ -227,6 +230,16 @@ defmodule ExICE.Priv.ICEAgent do
     }
   end
 
+  @spec set_role(t(), ExICE.ICEAgent.role()) :: t()
+  def set_role(%__MODULE__{role: nil} = ice_agent, role) do
+    %__MODULE__{ice_agent | role: role}
+  end
+
+  def set_role(%__MODULE__{} = ice_agent, _role) do
+    Logger.warning("Can't set role. Role already set. Ignoring.")
+    ice_agent
+  end
+
   @spec set_remote_credentials(t(), binary(), binary()) :: t()
   def set_remote_credentials(%__MODULE__{state: :failed} = ice_agent, _, _) do
     Logger.debug("Tried to set remote credentials in failed state. ICE restart needed. Ignoring.")
@@ -266,6 +279,11 @@ defmodule ExICE.Priv.ICEAgent do
   @spec gather_candidates(t()) :: t()
   def gather_candidates(%__MODULE__{state: :failed} = ice_agent) do
     Logger.warning("Can't gather candidates in state failed. ICE restart needed. Ignoring.")
+    ice_agent
+  end
+
+  def gather_candidates(%__MODULE__{role: nil} = ice_agent) do
+    Logger.warning("Can't gather candidates without role. Set the role with `set_role/2`.")
     ice_agent
   end
 
@@ -341,8 +359,18 @@ defmodule ExICE.Priv.ICEAgent do
 
   def add_remote_candidate(%__MODULE__{eoc: true} = ice_agent, remote_cand) do
     Logger.warning("""
-    Received remote candidate after end-of-candidates. Ignoring.
+    Can't add remote candidate after end-of-candidates. Ignoring. \
     Candidate: #{inspect(remote_cand)}\
+    """)
+
+    ice_agent
+  end
+
+  def add_remote_candidate(%__MODULE__{role: nil} = ice_agent, remote_cand) do
+    Logger.warning("""
+    Can't add remote candidate without role. \
+    Set the role with `set_role/2`. Ignoring. \
+    Candidate: #{inspect(remote_cand)}
     """)
 
     ice_agent
@@ -353,7 +381,8 @@ defmodule ExICE.Priv.ICEAgent do
         remote_cand
       ) do
     Logger.warning("""
-    Received remote candidate but there are no remote credentials. Ignoring.
+    Can't add remote candidate without remote credentials. \
+    Set remote credentials with `set_remote_credentials/3`. Ignoring. \
     Candidate: #{inspect(remote_cand)}\
     """)
 

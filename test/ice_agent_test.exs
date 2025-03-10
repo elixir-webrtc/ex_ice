@@ -3,8 +3,20 @@ defmodule ExICE.ICEAgentTest do
 
   alias ExICE.ICEAgent
 
+  test "get_role/1" do
+    {:ok, agent} = ICEAgent.start_link(role: :controlling)
+    assert ICEAgent.get_role(agent) == :controlling
+  end
+
+  test "set_role/2" do
+    {:ok, agent} = ICEAgent.start_link()
+    assert ICEAgent.get_role(agent) == nil
+    assert :ok == ICEAgent.set_role(agent, :controlling)
+    assert ICEAgent.get_role(agent) == :controlling
+  end
+
   test "gather_candidates/1" do
-    {:ok, agent} = ICEAgent.start_link(:controlling)
+    {:ok, agent} = ICEAgent.start_link(role: :controlling)
     :ok = ICEAgent.gather_candidates(agent)
 
     assert_receive {:ex_ice, ^agent, {:gathering_state_change, :gathering}}
@@ -19,7 +31,7 @@ defmodule ExICE.ICEAgentTest do
   end
 
   test "get_stats/1" do
-    {:ok, agent} = ICEAgent.start_link(:controlling)
+    {:ok, agent} = ICEAgent.start_link(role: :controlling)
 
     assert %{
              bytes_sent: 0,
