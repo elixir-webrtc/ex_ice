@@ -59,6 +59,7 @@ defmodule ExICE.Priv.ICEAgent do
     :on_gathering_state_change,
     :on_data,
     :on_new_candidate,
+    :aggressive_nomination,
     :if_discovery_module,
     :transport_module,
     :gatherer,
@@ -149,6 +150,7 @@ defmodule ExICE.Priv.ICEAgent do
       on_gathering_state_change: opts[:on_gathering_state_change] || controlling_process,
       on_data: opts[:on_data] || controlling_process,
       on_new_candidate: opts[:on_new_candidate] || controlling_process,
+      aggressive_nomination: Keyword.get(opts, :aggressive_nomination, true),
       if_discovery_module: if_discovery_module,
       transport_module: transport_module,
       gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter, ports),
@@ -425,6 +427,13 @@ defmodule ExICE.Priv.ICEAgent do
 
   def end_of_candidates(%__MODULE__{role: :controlled} = ice_agent) do
     Logger.debug("Setting end-of-candidates flag.")
+    ice_agent = %{ice_agent | eoc: true}
+    # we might need to move to the completed state
+    update_connection_state(ice_agent)
+  end
+
+  def end_of_candidates(%__MODULE__{role: :controlling, aggressive_nomination: true} = ice_agent) do
+    Logger.debug("Setting end-of-candidates flag")
     ice_agent = %{ice_agent | eoc: true}
     # we might need to move to the completed state
     update_connection_state(ice_agent)
@@ -2189,7 +2198,11 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp time_to_nominate?(%__MODULE__{state: :connected} = ice_agent) do
+  # In aggressive nomination, there is no additional connectivity check.
+  # Instead, every connectivity check includes UseCandidate flag.
+  defp time_to_nominate?(%__MODULE__{aggressive_nomination: true}), do: false
+
+  defp time_to_nominate?(%__MODULE__{aggressive_nomination: false, state: :connected} = ice_agent) do
     {nominating?, _} = ice_agent.nominating?
     # if we are not during nomination and we know there won't be further candidates,
     # there are no checks waiting or in-progress,
@@ -2515,8 +2528,19 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp update_connection_state(%__MODULE__{state: :checking} = ice_agent) do
     cond do
+      # in aggressive nomination, we might move directly from checking to completed
+      ice_agent.selected_pair_id != nil and ice_agent.eoc == true and
+        ice_agent.gathering_state == :complete and Checklist.finished?(ice_agent.checklist) ->
+        Logger.debug("""
+        Found a valid pair, there won't be any further local or remote candidates. \
+        Changing connection state to complete.\
+        """)
+
+        change_connection_state(ice_agent, :completed)
+
       Checklist.get_valid_pair(ice_agent.checklist) != nil ->
         Logger.debug("Found a valid pair. Changing connection state to connected")
         change_connection_state(ice_agent, :connected)
@@ -2550,7 +2574,7 @@ defmodule ExICE.Priv.ICEAgent do
           Checklist.finished?(ice_agent.checklist) ->
         change_connection_state(ice_agent, :failed)
 
-      # Assuming the controlling side uses regulard nomination,
+      # Assuming the controlling side uses regular nomination,
       # the controlled side could move to the completed
       # state as soon as it receives nomination request (or after
       # successful triggered check caused by nomination request).
@@ -2570,9 +2594,12 @@ defmodule ExICE.Priv.ICEAgent do
 
         change_connection_state(ice_agent, :completed)
 
-      ice_agent.role == :controlling and ice_agent.selected_pair_id != nil ->
+      ice_agent.role == :controlling and ice_agent.selected_pair_id != nil and
+        ice_agent.eoc == true and ice_agent.gathering_state == :complete and
+          Checklist.finished?(ice_agent.checklist) ->
         Logger.debug("""
-        We have selected pair and we are the controlling agent. Changing state to completed.\
+        Finished all conn checks, there won't be any further local or remote candidates
+        and we have selected pair. Changing connection state to completed.\
         """)
 
         change_connection_state(ice_agent, :completed)
@@ -2727,7 +2754,14 @@ defmodule ExICE.Priv.ICEAgent do
 
     # we can nominate only when being the controlling agent
     # the controlled agent uses nominate? flag according to 7.3.1.5
-    nominate = pair.nominate? and ice_agent.role == :controlling
+    nominate =
+      ice_agent.role == :controlling and (pair.nominate? or ice_agent.aggressive_nomination)
+
+    # set nominate? flag in case we are running aggressive nomination
+    # but don't override it if we are controlled agent and it was already set to true
+    pair = %CandidatePair{pair | nominate?: pair.nominate? || nominate}
+    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+
     req = binding_request(ice_agent, nominate)
 
     raw_req = Message.encode(req)

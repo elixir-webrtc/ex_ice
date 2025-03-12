@@ -61,6 +61,12 @@ defmodule ExICE.ICEAgent do
   * `ice_transport_policy` - candidate types to be used.
     * `all` - all ICE candidates will be considered (default).
     * `relay` - only relay candidates will be considered.
+  * `aggressive_nomination` - whether to use aggressive nomination from RFC 5245.
+  ExICE aims to implement RFC 8445, which removes aggressive nomination.
+  In particular, RFC 8445 assumes that data can be sent on any valid pair (no need for nomination).
+  While this behavior is supported by most of the implementations, some of them still require
+  a pair to be nominated by the controlling agent before they start sending data.
+  Defaults to true.
   * `on_gathering_state_change` - where to send gathering state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_connection_state_change` - where to send connection state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.
@@ -78,6 +84,7 @@ defmodule ExICE.ICEAgent do
             }
           ],
           ice_transport_policy: :all | :relay,
+          aggressive_nomination: boolean(),
           on_gathering_state_change: pid() | nil,
           on_connection_state_change: pid() | nil,
           on_data: pid() | nil,
