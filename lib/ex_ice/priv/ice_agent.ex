@@ -2079,11 +2079,17 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp get_or_create_remote_cand(ice_agent, src_ip, src_port, _prio_attr) do
+  defp get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr) do
     case find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port) do
       nil ->
         # TODO calculate correct prio using prio_attr
-        cand = ExICE.Candidate.new(:prflx, address: src_ip, port: src_port)
+        cand =
+          ExICE.Candidate.new(:prflx,
+            address: src_ip,
+            port: src_port,
+            priority: prio_attr.priority
+          )
+
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
         ice_agent = put_in(ice_agent.remote_cands[cand.id], cand)
         {cand, ice_agent}
