@@ -94,7 +94,14 @@ defmodule ExICE.Candidate do
   def new(type, config) when type in [:host, :srflx, :prflx, :relay] do
     transport = Keyword.get(config, :transport, :udp)
 
-    priority = config[:priority] || ExICE.Priv.Candidate.priority(type)
+    priority =
+      if config[:priority] do
+        config[:priority]
+      else
+        base_address = Keyword.fetch!(config, :base_address)
+        ExICE.Priv.Candidate.priority(base_address, type)
+      end
+
     address = Keyword.fetch!(config, :address)
 
     %__MODULE__{

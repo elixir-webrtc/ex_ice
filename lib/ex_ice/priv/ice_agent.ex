@@ -2732,7 +2732,7 @@ defmodule ExICE.Priv.ICEAgent do
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
-    req = binding_request(ice_agent, false)
+    req = binding_request(ice_agent, local_cand, false)
 
     dst = {remote_cand.address, remote_cand.port}
 
@@ -2762,7 +2762,7 @@ defmodule ExICE.Priv.ICEAgent do
     pair = %CandidatePair{pair | nominate?: pair.nominate? || nominate}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
-    req = binding_request(ice_agent, nominate)
+    req = binding_request(ice_agent, local_cand, nominate)
 
     raw_req = Message.encode(req)
 
@@ -2789,7 +2789,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp binding_request(ice_agent, nominate) do
+  defp binding_request(ice_agent, local_candidate, nominate) do
     type = %Type{class: :request, method: :binding}
 
     role_attr =
@@ -2802,7 +2802,7 @@ defmodule ExICE.Priv.ICEAgent do
     # priority sent to the other side has to be
     # computed with the candidate type preference of
     # peer-reflexive; refer to sec 7.1.1
-    priority = Candidate.priority(:prflx)
+    priority = Candidate.priority(local_candidate.base.base_address, :prflx)
 
     attrs = [
       %Username{value: "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"},

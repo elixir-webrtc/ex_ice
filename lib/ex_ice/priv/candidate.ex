@@ -27,8 +27,8 @@ defmodule ExICE.Priv.Candidate do
   @callback send_data(t(), :inet.ip_address(), :inet.port_number(), binary()) ::
               {:ok, t()} | {:error, term(), t()}
 
-  @spec priority(type()) :: integer()
-  def priority(type) do
+  @spec priority(:inet.ip_address(), type()) :: integer()
+  def priority(address, type) do
     type_preference =
       case type do
         :host -> 126
@@ -40,7 +40,10 @@ defmodule ExICE.Priv.Candidate do
     # That's not fully correct as according to RFC 8445 sec. 5.1.2.1 we should:
     # * use value of 65535 when there is only one IP address
     # * use different values when there are multiple IP addresses
-    local_preference = 65_535
+    # local_preference = 65_535
+
+    # just make sure that for different ip addresses, we have different local preference
+    local_preference = :erlang.phash2(address, 65535)
 
     2 ** 24 * type_preference + 2 ** 8 * local_preference + 2 ** 0 * (256 - 1)
   end
