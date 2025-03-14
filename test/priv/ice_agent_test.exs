@@ -1900,7 +1900,6 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert failed_ice_agent == new_ice_agent
   end
 
-  @tag :debug
   test "agent state and behavior after it completes" do
     r_cand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 123)
     r_cand2 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 4}, port: 8445, priority: 120)
@@ -2396,7 +2395,6 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert [%{state: :failed}] = Map.values(ice_agent.checklist)
   end
 
-  @tag :debug
   test "relay connection" do
     remote_cand_ip = @remote_cand.address
     remote_cand_port = @remote_cand.port

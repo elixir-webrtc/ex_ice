@@ -93,15 +93,6 @@ defmodule ExICE.Candidate do
   @spec new(type(), Keyword.t()) :: t()
   def new(type, config) when type in [:host, :srflx, :prflx, :relay] do
     transport = Keyword.get(config, :transport, :udp)
-
-    priority = Keyword.fetch!(config, :priority)
-    # if config[:priority] do
-    #   config[:priority]
-    # else
-    #   base_address = config[:base_address] || config[:address] || raise "no address"
-    #   ExICE.Priv.Candidate.priority(base_address, type)
-    # end
-
     address = Keyword.fetch!(config, :address)
 
     %__MODULE__{
@@ -111,7 +102,7 @@ defmodule ExICE.Candidate do
       base_port: config[:base_port],
       foundation: ExICE.Priv.Candidate.foundation(type, address, nil, transport),
       port: Keyword.fetch!(config, :port),
-      priority: priority,
+      priority: Keyword.fetch!(config, :priority),
       transport: transport,
       type: type
     }
