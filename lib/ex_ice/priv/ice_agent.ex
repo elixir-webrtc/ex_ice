@@ -1080,7 +1080,7 @@ defmodule ExICE.Priv.ICEAgent do
         ]
 
         # Use sock_addr for calculating priority.
-        # In other case, we might duplicate priority.
+        # In other case, we might get duplicates.
         {:ok, {sock_addr, _sock_port}} = ice_agent.transport_module.sockname(tr.socket)
 
         {local_preferences, priority} =
@@ -1758,10 +1758,7 @@ defmodule ExICE.Priv.ICEAgent do
       nil ->
         {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
 
-        {local_preferences, priority} =
-          Candidate.priority(ice_agent.local_preferences, base_addr, :srflx)
-
-        ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
+        priority = Candidate.priority!(ice_agent.local_preferences, base_addr, :srflx)
 
         cand =
           Candidate.Srflx.new(
@@ -2109,7 +2106,6 @@ defmodule ExICE.Priv.ICEAgent do
   defp get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr) do
     case find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port) do
       nil ->
-        # TODO calculate correct prio using prio_attr
         cand =
           ExICE.Candidate.new(:prflx,
             address: src_ip,
