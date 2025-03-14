@@ -35,14 +35,6 @@ defmodule ExICE.Priv.CandidateBase do
     transport = :udp
     address = Keyword.fetch!(config, :address)
 
-    priority =
-      if config[:priority] do
-        config[:priority]
-      else
-        base_address = Keyword.fetch!(config, :base_address)
-        ExICE.Priv.Candidate.priority(base_address, type)
-      end
-
     %__MODULE__{
       id: Utils.id(),
       address: address,
@@ -50,7 +42,7 @@ defmodule ExICE.Priv.CandidateBase do
       base_port: config[:base_port],
       foundation: Candidate.foundation(type, address, nil, transport),
       port: Keyword.fetch!(config, :port),
-      priority: priority,
+      priority: Keyword.fetch!(config, :priority),
       transport: transport,
       transport_module: Keyword.get(config, :transport_module, ExICE.Priv.Transport.UDP),
       socket: Keyword.fetch!(config, :socket),

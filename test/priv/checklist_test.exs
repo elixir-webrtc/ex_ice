@@ -17,6 +17,7 @@ defmodule ExICE.Priv.ChecklistTest do
         port: local_port,
         base_address: local_addr,
         base_port: local_port,
+        priority: 123,
         socket: nil
       )
 
@@ -25,7 +26,8 @@ defmodule ExICE.Priv.ChecklistTest do
         address: local_addr,
         port: local_port,
         base_address: local_addr,
-        base_port: local_port
+        base_port: local_port,
+        priority: 123
       )
 
     remote_srflx_cand =
@@ -33,7 +35,8 @@ defmodule ExICE.Priv.ChecklistTest do
         address: remote_srflx_addr,
         port: remote_srflx_port,
         base_address: remote_addr,
-        base_port: remote_port
+        base_port: remote_port,
+        priority: 122
       )
 
     host_pair =

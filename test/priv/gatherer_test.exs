@@ -42,7 +42,11 @@ defmodule ExICE.Priv.GathererTest do
     assert {:ok, sockets} = Gatherer.open_sockets(gatherer)
 
     # there should only be one candidate
-    assert [%Candidate.Host{} = c] = Gatherer.gather_host_candidates(gatherer, sockets)
+    assert {local_preferences, [%Candidate.Host{} = c]} =
+             Gatherer.gather_host_candidates(gatherer, %{}, sockets)
+
+    assert Map.has_key?(local_preferences, c.base.address)
+    assert map_size(local_preferences) == 1
     assert c.base.address == {192, 168, 0, 1}
     assert c.base.base_address == {192, 168, 0, 1}
     assert c.base.port == c.base.base_port
@@ -65,7 +69,8 @@ defmodule ExICE.Priv.GathererTest do
 
     {:ok, sockets} = Gatherer.open_sockets(gatherer)
 
-    [%Candidate.Host{} = c] = Gatherer.gather_host_candidates(gatherer, sockets)
+    {_local_preferences, [%Candidate.Host{} = c]} =
+      Gatherer.gather_host_candidates(gatherer, %{}, sockets)
 
     assert :ok = Gatherer.gather_srflx_candidate(gatherer, 1234, c.base.socket, stun_server)
     assert packet = Transport.Mock.recv(c.base.socket)

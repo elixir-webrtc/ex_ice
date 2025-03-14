@@ -86,6 +86,7 @@ defmodule ExICE.Priv.ICEAgent do
     sockets: [],
     local_cands: %{},
     remote_cands: %{},
+    local_preferences: %{},
     stun_servers: [],
     turn_servers: [],
     resolved_turn_servers: [],
@@ -305,7 +306,11 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent = change_gathering_state(ice_agent, :gathering)
 
     {:ok, sockets} = Gatherer.open_sockets(ice_agent.gatherer)
-    host_cands = Gatherer.gather_host_candidates(ice_agent.gatherer, sockets)
+
+    {local_preferences, host_cands} =
+      Gatherer.gather_host_candidates(ice_agent.gatherer, ice_agent.local_preferences, sockets)
+
+    ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
 
     ice_agent =
       Enum.reduce(host_cands, ice_agent, fn host_cand, ice_agent ->
@@ -1074,7 +1079,18 @@ defmodule ExICE.Priv.ICEAgent do
           {client.turn_ip, client.turn_port} | ice_agent.resolved_turn_servers
         ]
 
-        ice_agent = %{ice_agent | resolved_turn_servers: resolved_turn_servers}
+        # Use sock_addr for calculating priority.
+        # In other case, we might duplicate priority.
+        {:ok, {sock_addr, _sock_port}} = ice_agent.transport_module.sockname(tr.socket)
+
+        {local_preferences, priority} =
+          Candidate.priority(ice_agent.local_preferences, sock_addr, :relay)
+
+        ice_agent = %{
+          ice_agent
+          | resolved_turn_servers: resolved_turn_servers,
+            local_preferences: local_preferences
+        }
 
         relay_cand =
           Candidate.Relay.new(
@@ -1082,6 +1098,7 @@ defmodule ExICE.Priv.ICEAgent do
             port: alloc_port,
             base_address: alloc_ip,
             base_port: alloc_port,
+            priority: priority,
             transport_module: ice_agent.transport_module,
             socket: tr.socket,
             client: client
@@ -1741,12 +1758,18 @@ defmodule ExICE.Priv.ICEAgent do
       nil ->
         {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
 
+        {local_preferences, priority} =
+          Candidate.priority(ice_agent.local_preferences, base_addr, :srflx)
+
+        ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
+
         cand =
           Candidate.Srflx.new(
             address: xor_addr,
             port: xor_port,
             base_address: base_addr,
             base_port: base_port,
+            priority: priority,
             transport_module: ice_agent.transport_module,
             socket: tr.socket
           )
@@ -2058,12 +2081,16 @@ defmodule ExICE.Priv.ICEAgent do
       # TODO calculate correct prio and foundation
       local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
 
+      priority =
+        Candidate.priority!(ice_agent.local_preferences, local_cand.base.base_address, :prflx)
+
       cand =
         Candidate.Prflx.new(
           address: xor_addr.address,
           port: xor_addr.port,
           base_address: local_cand.base.base_address,
           base_port: local_cand.base.base_port,
+          priority: priority,
           transport_module: ice_agent.transport_module,
           socket: local_cand.base.socket
         )
@@ -2808,7 +2835,19 @@ defmodule ExICE.Priv.ICEAgent do
     # priority sent to the other side has to be
     # computed with the candidate type preference of
     # peer-reflexive; refer to sec 7.1.1
-    priority = Candidate.priority(local_candidate.base.base_address, :prflx)
+    priority =
+      if local_candidate.base.type == :relay do
+        {:ok, {sock_addr, _sock_port}} =
+          ice_agent.transport_module.sockname(local_candidate.base.socket)
+
+        Candidate.priority!(ice_agent.local_preferences, sock_addr, :prflx)
+      else
+        Candidate.priority!(
+          ice_agent.local_preferences,
+          local_candidate.base.base_address,
+          :prflx
+        )
+      end
 
     attrs = [
       %Username{value: "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"},

@@ -62,8 +62,8 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
-  @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-  @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+  @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+  @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 122)
 
   describe "unmarshal_remote_candidate/1" do
     test "with correct candidate" do
@@ -294,6 +294,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         port: 1234,
         base_address: host_cand.base.base_address,
         base_port: host_cand.base.base_port,
+        priority: host_cand.base.priority - 1,
         transport_module: ice_agent.transport_module,
         socket: socket
       )
@@ -1451,7 +1452,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "request", %{ice_agent: ice_agent} do
-      rcand1 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 2}, port: 8445)
+      rcand1 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 2}, port: 8445, priority: 123)
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, rcand1)
 
       [socket] = ice_agent.sockets
@@ -1480,8 +1481,8 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "success response", %{ice_agent: ice_agent} do
-      rcand1 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 2}, port: 8445)
-      rcand2 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+      rcand1 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 2}, port: 8445, priority: 122)
+      rcand2 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 123)
 
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, rcand1)
 
@@ -1543,7 +1544,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       # this test checks if we move from checking directly to complete
       # when eoc is set and local candidates gathering has finished
 
-      rcand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+      rcand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
 
       ice_agent =
         ice_agent
@@ -1570,7 +1571,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "concluding", %{ice_agent: ice_agent} do
-      rcand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
+      rcand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
 
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, rcand1)
 
@@ -1901,9 +1902,9 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   @tag :debug
   test "agent state and behavior after it completes" do
-    r_cand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
-    r_cand2 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 4}, port: 8445)
-    r_cand3 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 5}, port: 8445)
+    r_cand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 123)
+    r_cand2 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 4}, port: 8445, priority: 120)
+    r_cand3 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 5}, port: 8445, priority: 119)
 
     ice_agent =
       ICEAgent.new(
@@ -2027,7 +2028,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert nil == Transport.Mock.recv(socket)
 
     # try to handle binding request from unknown remote candidate
-    prflx_cand = ExICE.Candidate.new(:prflx, address: {192, 168, 0, 6}, port: 8445)
+    prflx_cand = ExICE.Candidate.new(:prflx, address: {192, 168, 0, 6}, port: 8445, priority: 122)
 
     new_ice_agent =
       ICEAgent.handle_udp(ice_agent, socket, prflx_cand.address, prflx_cand.port, req)
@@ -2395,6 +2396,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert [%{state: :failed}] = Map.values(ice_agent.checklist)
   end
 
+  @tag :debug
   test "relay connection" do
     remote_cand_ip = @remote_cand.address
     remote_cand_port = @remote_cand.port

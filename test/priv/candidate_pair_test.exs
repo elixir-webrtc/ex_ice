@@ -13,10 +13,9 @@ defmodule ExICE.Priv.CandidatePairTest do
         port: port1,
         base_address: addr1,
         base_port: port1,
+        priority: 100,
         socket: nil
       )
-
-    c1 = %Candidate.Host{c1 | base: %{c1.base | priority: 100}}
 
     addr2 = {192, 168, 1, 2}
     port2 = 23_456
@@ -26,10 +25,9 @@ defmodule ExICE.Priv.CandidatePairTest do
         address: addr2,
         port: port2,
         base_address: addr2,
-        base_port: port2
+        base_port: port2,
+        priority: 200
       )
-
-    c2 = %ExICE.Candidate{c2 | priority: 200}
 
     c1c2 = CandidatePair.new(c1, c2, :controlling, :frozen)
     assert c1c2.priority == 429_496_730_000
