@@ -97,21 +97,51 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
   def update_nominated_flag(ice_agent, _pair_id, false), do: ice_agent
 
   @impl true
-  def update_nominated_flag(%ICEAgent{eoc: true} = ice_agent, pair_id, true) do
+  def update_nominated_flag(
+        %ICEAgent{eoc: eoc, aggressive_nomination: aggressive_nomination} = ice_agent,
+        pair_id,
+        true
+      )
+      when (aggressive_nomination == false and eoc == true) or aggressive_nomination == true do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
 
     pair = Map.fetch!(ice_agent.checklist, pair_id)
     pair = %CandidatePair{pair | nominate?: false, nominated?: true}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
+    ice_agent =
+      cond do
+        ice_agent.selected_pair_id == nil ->
+          Logger.debug("Selecting pair: #{pair_id}")
+          %ICEAgent{ice_agent | selected_pair_id: pair.id}
+
+        ice_agent.selected_pair_id != nil and pair.id != ice_agent.selected_pair_id ->
+          selected_pair = Map.fetch!(ice_agent.checklist, ice_agent.selected_pair_id)
+
+          if pair.priority >= selected_pair.priority do
+            Logger.debug("""
+            Selecting new pair with higher priority. \
+            New pair: #{pair_id}, old pair: #{ice_agent.selected_pair_id}.\
+            """)
+
+            %ICEAgent{ice_agent | selected_pair_id: pair.id}
+          else
+            Logger.debug("Not selecting a new pair as it has lower priority.")
+            ice_agent
+          end
+
+        true ->
+          Logger.debug("Not selecting a new pair as it has the same id")
+          ice_agent
+      end
+
     # the controlling agent could nominate only when eoc was set
     # and checklist finished
-    unless Checklist.finished?(ice_agent.checklist) do
+    if not ice_agent.aggressive_nomination and not Checklist.finished?(ice_agent.checklist) do
       Logger.warning("Nomination succeeded but checklist hasn't finished.")
     end
 
-    ice_agent = %ICEAgent{ice_agent | nominating?: {false, nil}, selected_pair_id: pair.id}
-    ICEAgent.change_connection_state(ice_agent, :completed)
+    %ICEAgent{ice_agent | nominating?: {false, nil}}
   end
 
   defp resolve_pair(ice_agent, pair) do

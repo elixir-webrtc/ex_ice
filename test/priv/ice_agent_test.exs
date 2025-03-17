@@ -62,8 +62,8 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
-  @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-  @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+  @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+  @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 122)
 
   describe "unmarshal_remote_candidate/1" do
     test "with correct candidate" do
@@ -294,6 +294,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         port: 1234,
         base_address: host_cand.base.base_address,
         base_port: host_cand.base.base_port,
+        priority: host_cand.base.priority - 1,
         transport_module: ice_agent.transport_module,
         socket: socket
       )
@@ -1120,6 +1121,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
+          aggressive_nomination: false,
           role: :controlling,
           if_discovery_module: IfDiscovery.Mock,
           transport_module: Transport.Mock
@@ -1184,6 +1186,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :succeeded
       assert new_pair.responses_received == pair.responses_received + 1
+      assert ice_agent.state == :connected
     end
 
     test "success response with non-matching message integrity", %{
@@ -1392,12 +1395,217 @@ defmodule ExICE.Priv.ICEAgentTest do
                pair.non_symmetric_responses_received + 1
     end
 
-    defp read_binding_request(socket, remote_pwd) do
-      packet = Transport.Mock.recv(socket)
-      {:ok, req} = ExSTUN.Message.decode(packet)
-      :ok = ExSTUN.Message.authenticate(req, remote_pwd)
-      req
+    test "concluding", %{ice_agent: ice_agent, remote_cand: remote_cand} do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
+
+      assert ice_agent.state == :connected
+
+      # assert that setting end-of-candidates triggers nomination check and concludes ICE
+      ice_agent = ICEAgent.end_of_candidates(ice_agent)
+      assert ice_agent.state == :connected
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
+
+      assert ice_agent.state == :completed
     end
+  end
+
+  describe "connectivity check with aggressive nomination" do
+    setup do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          aggressive_nomination: true,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "request", %{ice_agent: ice_agent} do
+      rcand1 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, rcand1)
+
+      [socket] = ice_agent.sockets
+
+      [pair] = Map.values(ice_agent.checklist)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      assert packet = Transport.Mock.recv(socket)
+      assert is_binary(packet)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert :ok == ExSTUN.Message.check_fingerprint(req)
+      assert :ok == ExSTUN.Message.authenticate(req, ice_agent.remote_pwd)
+
+      assert length(req.attributes) == 6
+
+      assert {:ok, %Username{value: "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"}} ==
+               ExSTUN.Message.get_attribute(req, Username)
+
+      assert {:ok, %ICEControlling{}} = ExSTUN.Message.get_attribute(req, ICEControlling)
+      assert {:ok, %Priority{}} = ExSTUN.Message.get_attribute(req, Priority)
+      assert {:ok, %UseCandidate{}} = ExSTUN.Message.get_attribute(req, UseCandidate)
+
+      assert [new_pair] = Map.values(ice_agent.checklist)
+      assert new_pair.state == :in_progress
+      assert new_pair.requests_sent == pair.requests_sent + 1
+    end
+
+    test "success response", %{ice_agent: ice_agent} do
+      rcand1 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 2}, port: 8445, priority: 122)
+      rcand2 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 123)
+
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, rcand1)
+
+      [socket] = ice_agent.sockets
+
+      # execute cc on srflx cand
+      [srflx_pair] = Map.values(ice_agent.checklist)
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, rcand1.address, rcand1.port, resp)
+
+      # make sure that ICE has not moved to the completed state
+      assert ice_agent.state == :connected
+      assert [new_srflx_pair] = Map.values(ice_agent.checklist)
+      assert new_srflx_pair.state == :succeeded
+      assert new_srflx_pair.nominated? == true
+      assert new_srflx_pair.responses_received == srflx_pair.responses_received + 1
+      assert ice_agent.selected_pair_id == new_srflx_pair.id
+
+      # execut cc on host cand
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, rcand2)
+      [host_pair] = Map.values(ice_agent.checklist) |> Enum.filter(&(&1.id != srflx_pair.id))
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, rcand2.address, rcand2.port, resp)
+
+      assert [new_host_pair] =
+               Map.values(ice_agent.checklist) |> Enum.filter(&(&1.id != srflx_pair.id))
+
+      assert new_host_pair.state == :succeeded
+      assert new_host_pair.nominated? == true
+      assert new_host_pair.responses_received == host_pair.responses_received + 1
+      assert ice_agent.selected_pair_id == new_host_pair.id
+    end
+
+    test "success response after setting eoc and finishing candidate gathering", %{
+      ice_agent: ice_agent
+    } do
+      # this test checks if we move from checking directly to complete
+      # when eoc is set and local candidates gathering has finished
+
+      rcand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+
+      ice_agent =
+        ice_agent
+        |> ICEAgent.add_remote_candidate(rcand1)
+        |> ICEAgent.end_of_candidates()
+
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      assert ice_agent.state == :checking
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, rcand1.address, rcand1.port, resp)
+      assert ice_agent.state == :completed
+    end
+
+    test "concluding", %{ice_agent: ice_agent} do
+      rcand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, rcand1)
+
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, rcand1.address, rcand1.port, resp)
+
+      assert ice_agent.state == :connected
+
+      # assert that setting end-of-candidates flag concludes ice
+      # and there is no additional conn check sent (as we use aggressive nomination)
+      ice_agent = ICEAgent.end_of_candidates(ice_agent)
+      assert ice_agent.state == :completed
+      assert Transport.Mock.recv(socket) == nil
+    end
+  end
+
+  defp read_binding_request(socket, remote_pwd) do
+    packet = Transport.Mock.recv(socket)
+    {:ok, req} = ExSTUN.Message.decode(packet)
+    :ok = ExSTUN.Message.authenticate(req, remote_pwd)
+    req
   end
 
   describe "connectivity check rtx" do
@@ -1693,9 +1901,9 @@ defmodule ExICE.Priv.ICEAgentTest do
   end
 
   test "agent state and behavior after it completes" do
-    r_cand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
-    r_cand2 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 4}, port: 8445)
-    r_cand3 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 5}, port: 8445)
+    r_cand1 = ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 123)
+    r_cand2 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 4}, port: 8445, priority: 120)
+    r_cand3 = ExICE.Candidate.new(:srflx, address: {192, 168, 0, 5}, port: 8445, priority: 119)
 
     ice_agent =
       ICEAgent.new(
@@ -1819,7 +2027,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert nil == Transport.Mock.recv(socket)
 
     # try to handle binding request from unknown remote candidate
-    prflx_cand = ExICE.Candidate.new(:prflx, address: {192, 168, 0, 6}, port: 8445)
+    prflx_cand = ExICE.Candidate.new(:prflx, address: {192, 168, 0, 6}, port: 8445, priority: 122)
 
     new_ice_agent =
       ICEAgent.handle_udp(ice_agent, socket, prflx_cand.address, prflx_cand.port, req)

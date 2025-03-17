@@ -84,9 +84,17 @@ defmodule ExICE.Priv.Gatherer do
     end)
   end
 
-  @spec gather_host_candidates(t(), [Transport.socket()]) :: [Candidate.t()]
-  def gather_host_candidates(gatherer, sockets) do
-    Enum.map(sockets, &create_new_host_candidate(gatherer, &1))
+  @spec gather_host_candidates(t(), %{:inet.ip_address() => non_neg_integer()}, [
+          Transport.socket()
+        ]) :: [Candidate.t()]
+  def gather_host_candidates(gatherer, local_preferences, sockets) do
+    {local_preferences, cands} =
+      Enum.reduce(sockets, {local_preferences, []}, fn socket, {local_preferences, cands} ->
+        {local_preferences, cand} = create_new_host_candidate(gatherer, local_preferences, socket)
+        {local_preferences, [cand | cands]}
+      end)
+
+    {local_preferences, Enum.reverse(cands)}
   end
 
   @spec gather_srflx_candidate(t(), integer(), Transport.socket(), ExSTUN.URI.t()) ::
@@ -155,8 +163,10 @@ defmodule ExICE.Priv.Gatherer do
     Keyword.get_values(int, :addr)
   end
 
-  defp create_new_host_candidate(gatherer, socket) do
+  defp create_new_host_candidate(gatherer, local_preferences, socket) do
     {:ok, {sock_ip, sock_port}} = gatherer.transport_module.sockname(socket)
+
+    {local_preferences, priority} = Candidate.priority(local_preferences, sock_ip, :host)
 
     cand =
       Candidate.Host.new(
@@ -164,12 +174,13 @@ defmodule ExICE.Priv.Gatherer do
         port: sock_port,
         base_address: sock_ip,
         base_port: sock_port,
+        priority: priority,
         transport_module: gatherer.transport_module,
         socket: socket
       )
 
     Logger.debug("New candidate: #{inspect(cand)}")
 
-    cand
+    {local_preferences, cand}
   end
 end

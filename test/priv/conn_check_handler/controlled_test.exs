@@ -20,8 +20,8 @@ defmodule ExICE.Priv.ConnCheckHandler.ControlledTest do
     end
   end
 
-  @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445)
-  @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445)
+  @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+  @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 122)
 
   describe "incoming binding request" do
     setup do

@@ -8,10 +8,22 @@ defmodule ExICE.CandidateTest do
     port = 12_345
 
     %Candidate{foundation: f1} =
-      Candidate.new(:host, address: ip, port: port, base_address: ip, base_port: port)
+      Candidate.new(:host,
+        address: ip,
+        port: port,
+        base_address: ip,
+        base_port: port,
+        priority: 123
+      )
 
     %Candidate{foundation: f2} =
-      Candidate.new(:host, address: ip, port: port, base_address: ip, base_port: port)
+      Candidate.new(:host,
+        address: ip,
+        port: port,
+        base_address: ip,
+        base_port: port,
+        priority: 123
+      )
 
     assert f1 == f2
 
@@ -19,10 +31,22 @@ defmodule ExICE.CandidateTest do
     port2 = 23_456
 
     %Candidate{foundation: f1} =
-      Candidate.new(:host, address: ip, port: port, base_address: ip, base_port: port)
+      Candidate.new(:host,
+        address: ip,
+        port: port,
+        base_address: ip,
+        base_port: port,
+        priority: 123
+      )
 
     %Candidate{foundation: f2} =
-      Candidate.new(:host, address: ip2, port: port2, base_address: ip2, base_port: port2)
+      Candidate.new(:host,
+        address: ip2,
+        port: port2,
+        base_address: ip2,
+        base_port: port2,
+        priority: 122
+      )
 
     assert f1 != f2
   end

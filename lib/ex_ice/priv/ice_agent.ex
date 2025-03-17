@@ -59,6 +59,7 @@ defmodule ExICE.Priv.ICEAgent do
     :on_gathering_state_change,
     :on_data,
     :on_new_candidate,
+    :aggressive_nomination,
     :if_discovery_module,
     :transport_module,
     :gatherer,
@@ -85,6 +86,7 @@ defmodule ExICE.Priv.ICEAgent do
     sockets: [],
     local_cands: %{},
     remote_cands: %{},
+    local_preferences: %{},
     stun_servers: [],
     turn_servers: [],
     resolved_turn_servers: [],
@@ -149,6 +151,7 @@ defmodule ExICE.Priv.ICEAgent do
       on_gathering_state_change: opts[:on_gathering_state_change] || controlling_process,
       on_data: opts[:on_data] || controlling_process,
       on_new_candidate: opts[:on_new_candidate] || controlling_process,
+      aggressive_nomination: Keyword.get(opts, :aggressive_nomination, false),
       if_discovery_module: if_discovery_module,
       transport_module: transport_module,
       gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter, ports),
@@ -303,7 +306,11 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent = change_gathering_state(ice_agent, :gathering)
 
     {:ok, sockets} = Gatherer.open_sockets(ice_agent.gatherer)
-    host_cands = Gatherer.gather_host_candidates(ice_agent.gatherer, sockets)
+
+    {local_preferences, host_cands} =
+      Gatherer.gather_host_candidates(ice_agent.gatherer, ice_agent.local_preferences, sockets)
+
+    ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
 
     ice_agent =
       Enum.reduce(host_cands, ice_agent, fn host_cand, ice_agent ->
@@ -425,6 +432,13 @@ defmodule ExICE.Priv.ICEAgent do
 
   def end_of_candidates(%__MODULE__{role: :controlled} = ice_agent) do
     Logger.debug("Setting end-of-candidates flag.")
+    ice_agent = %{ice_agent | eoc: true}
+    # we might need to move to the completed state
+    update_connection_state(ice_agent)
+  end
+
+  def end_of_candidates(%__MODULE__{role: :controlling, aggressive_nomination: true} = ice_agent) do
+    Logger.debug("Setting end-of-candidates flag")
     ice_agent = %{ice_agent | eoc: true}
     # we might need to move to the completed state
     update_connection_state(ice_agent)
@@ -1065,7 +1079,18 @@ defmodule ExICE.Priv.ICEAgent do
           {client.turn_ip, client.turn_port} | ice_agent.resolved_turn_servers
         ]
 
-        ice_agent = %{ice_agent | resolved_turn_servers: resolved_turn_servers}
+        # Use sock_addr for calculating priority.
+        # In other case, we might get duplicates.
+        {:ok, {sock_addr, _sock_port}} = ice_agent.transport_module.sockname(tr.socket)
+
+        {local_preferences, priority} =
+          Candidate.priority(ice_agent.local_preferences, sock_addr, :relay)
+
+        ice_agent = %{
+          ice_agent
+          | resolved_turn_servers: resolved_turn_servers,
+            local_preferences: local_preferences
+        }
 
         relay_cand =
           Candidate.Relay.new(
@@ -1073,6 +1098,7 @@ defmodule ExICE.Priv.ICEAgent do
             port: alloc_port,
             base_address: alloc_ip,
             base_port: alloc_port,
+            priority: priority,
             transport_module: ice_agent.transport_module,
             socket: tr.socket,
             client: client
@@ -1732,12 +1758,15 @@ defmodule ExICE.Priv.ICEAgent do
       nil ->
         {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
 
+        priority = Candidate.priority!(ice_agent.local_preferences, base_addr, :srflx)
+
         cand =
           Candidate.Srflx.new(
             address: xor_addr,
             port: xor_port,
             base_address: base_addr,
             base_port: base_port,
+            priority: priority,
             transport_module: ice_agent.transport_module,
             socket: tr.socket
           )
@@ -2049,12 +2078,16 @@ defmodule ExICE.Priv.ICEAgent do
       # TODO calculate correct prio and foundation
       local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
 
+      priority =
+        Candidate.priority!(ice_agent.local_preferences, local_cand.base.base_address, :prflx)
+
       cand =
         Candidate.Prflx.new(
           address: xor_addr.address,
           port: xor_addr.port,
           base_address: local_cand.base.base_address,
           base_port: local_cand.base.base_port,
+          priority: priority,
           transport_module: ice_agent.transport_module,
           socket: local_cand.base.socket
         )
@@ -2070,11 +2103,16 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp get_or_create_remote_cand(ice_agent, src_ip, src_port, _prio_attr) do
+  defp get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr) do
     case find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port) do
       nil ->
-        # TODO calculate correct prio using prio_attr
-        cand = ExICE.Candidate.new(:prflx, address: src_ip, port: src_port)
+        cand =
+          ExICE.Candidate.new(:prflx,
+            address: src_ip,
+            port: src_port,
+            priority: prio_attr.priority
+          )
+
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
         ice_agent = put_in(ice_agent.remote_cands[cand.id], cand)
         {cand, ice_agent}
@@ -2189,7 +2227,11 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp time_to_nominate?(%__MODULE__{state: :connected} = ice_agent) do
+  # In aggressive nomination, there is no additional connectivity check.
+  # Instead, every connectivity check includes UseCandidate flag.
+  defp time_to_nominate?(%__MODULE__{aggressive_nomination: true}), do: false
+
+  defp time_to_nominate?(%__MODULE__{aggressive_nomination: false, state: :connected} = ice_agent) do
     {nominating?, _} = ice_agent.nominating?
     # if we are not during nomination and we know there won't be further candidates,
     # there are no checks waiting or in-progress,
@@ -2515,8 +2557,19 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
+  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
   defp update_connection_state(%__MODULE__{state: :checking} = ice_agent) do
     cond do
+      # in aggressive nomination, we might move directly from checking to completed
+      ice_agent.selected_pair_id != nil and ice_agent.eoc == true and
+        ice_agent.gathering_state == :complete and Checklist.finished?(ice_agent.checklist) ->
+        Logger.debug("""
+        Found a valid pair, there won't be any further local or remote candidates. \
+        Changing connection state to complete.\
+        """)
+
+        change_connection_state(ice_agent, :completed)
+
       Checklist.get_valid_pair(ice_agent.checklist) != nil ->
         Logger.debug("Found a valid pair. Changing connection state to connected")
         change_connection_state(ice_agent, :connected)
@@ -2550,7 +2603,7 @@ defmodule ExICE.Priv.ICEAgent do
           Checklist.finished?(ice_agent.checklist) ->
         change_connection_state(ice_agent, :failed)
 
-      # Assuming the controlling side uses regulard nomination,
+      # Assuming the controlling side uses regular nomination,
       # the controlled side could move to the completed
       # state as soon as it receives nomination request (or after
       # successful triggered check caused by nomination request).
@@ -2570,9 +2623,12 @@ defmodule ExICE.Priv.ICEAgent do
 
         change_connection_state(ice_agent, :completed)
 
-      ice_agent.role == :controlling and ice_agent.selected_pair_id != nil ->
+      ice_agent.role == :controlling and ice_agent.selected_pair_id != nil and
+        ice_agent.eoc == true and ice_agent.gathering_state == :complete and
+          Checklist.finished?(ice_agent.checklist) ->
         Logger.debug("""
-        We have selected pair and we are the controlling agent. Changing state to completed.\
+        Finished all conn checks, there won't be any further local or remote candidates
+        and we have selected pair. Changing connection state to completed.\
         """)
 
         change_connection_state(ice_agent, :completed)
@@ -2705,7 +2761,7 @@ defmodule ExICE.Priv.ICEAgent do
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
-    req = binding_request(ice_agent, false)
+    req = binding_request(ice_agent, local_cand, false)
 
     dst = {remote_cand.address, remote_cand.port}
 
@@ -2727,8 +2783,15 @@ defmodule ExICE.Priv.ICEAgent do
 
     # we can nominate only when being the controlling agent
     # the controlled agent uses nominate? flag according to 7.3.1.5
-    nominate = pair.nominate? and ice_agent.role == :controlling
-    req = binding_request(ice_agent, nominate)
+    nominate =
+      ice_agent.role == :controlling and (pair.nominate? or ice_agent.aggressive_nomination)
+
+    # set nominate? flag in case we are running aggressive nomination
+    # but don't override it if we are controlled agent and it was already set to true
+    pair = %CandidatePair{pair | nominate?: pair.nominate? || nominate}
+    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+
+    req = binding_request(ice_agent, local_cand, nominate)
 
     raw_req = Message.encode(req)
 
@@ -2755,7 +2818,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp binding_request(ice_agent, nominate) do
+  defp binding_request(ice_agent, local_candidate, nominate) do
     type = %Type{class: :request, method: :binding}
 
     role_attr =
@@ -2768,7 +2831,19 @@ defmodule ExICE.Priv.ICEAgent do
     # priority sent to the other side has to be
     # computed with the candidate type preference of
     # peer-reflexive; refer to sec 7.1.1
-    priority = Candidate.priority(:prflx)
+    priority =
+      if local_candidate.base.type == :relay do
+        {:ok, {sock_addr, _sock_port}} =
+          ice_agent.transport_module.sockname(local_candidate.base.socket)
+
+        Candidate.priority!(ice_agent.local_preferences, sock_addr, :prflx)
+      else
+        Candidate.priority!(
+          ice_agent.local_preferences,
+          local_candidate.base.base_address,
+          :prflx
+        )
+      end
 
     attrs = [
       %Username{value: "#{ice_agent.remote_ufrag}:#{ice_agent.local_ufrag}"},

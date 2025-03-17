@@ -203,11 +203,12 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlled do
 
           %ICEAgent{ice_agent | selected_pair_id: pair.id}
         else
+          Logger.debug("Not selecting a new pair as it has lower priority.")
           ice_agent
         end
 
       true ->
-        Logger.debug("Not selecting a new pair as it has lower priority or has the same id")
+        Logger.debug("Not selecting a new pair as it has the same id")
         ice_agent
     end
   end
