@@ -66,7 +66,7 @@ defmodule ExICE.ICEAgent do
   In particular, RFC 8445 assumes that data can be sent on any valid pair (there is no need for nomination).
   While this behavior is supported by most of the implementations, some of them still require
   a pair to be nominated by the controlling agent before they can start sending data.
-  Defaults to true.
+  Defaults to false.
   * `on_gathering_state_change` - where to send gathering state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_connection_state_change` - where to send connection state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.

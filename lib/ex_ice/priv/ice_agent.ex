@@ -151,7 +151,7 @@ defmodule ExICE.Priv.ICEAgent do
       on_gathering_state_change: opts[:on_gathering_state_change] || controlling_process,
       on_data: opts[:on_data] || controlling_process,
       on_new_candidate: opts[:on_new_candidate] || controlling_process,
-      aggressive_nomination: Keyword.get(opts, :aggressive_nomination, true),
+      aggressive_nomination: Keyword.get(opts, :aggressive_nomination, false),
       if_discovery_module: if_discovery_module,
       transport_module: transport_module,
       gatherer: Gatherer.new(if_discovery_module, transport_module, ip_filter, ports),
