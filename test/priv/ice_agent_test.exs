@@ -128,6 +128,77 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert cand_pair.remote_cand_id == r_cand.id
     end
 
+    test "with duplicated prflx candidate", %{ice_agent: ice_agent} do
+      # Try to add a remote host candidate that has already been discovered as prflx candidate.
+      # This should result in updating candidate's type and priority and pair's priority.
+      # Also, selected_pair_id should change.
+      assert %{} == ice_agent.remote_cands
+      assert %{} == ice_agent.checklist
+
+      # prepare candiadtes
+      remote_cand1 =
+        ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+
+      remote_cand2 =
+        ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 122)
+
+      [socket] = ice_agent.sockets
+
+      # discover prflx candidate
+      req =
+        binding_request(
+          ice_agent.role,
+          ice_agent.tiebreaker,
+          ice_agent.remote_ufrag,
+          ice_agent.local_ufrag,
+          ice_agent.local_pwd,
+          priority: 120
+        )
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand1.address, remote_cand1.port, req)
+
+      assert [prflx_cand] = Map.values(ice_agent.remote_cands)
+      assert [prflx_pair] = Map.values(ice_agent.checklist)
+      assert prflx_cand.type == :prflx
+      prflx_pair = %CandidatePair{prflx_pair | state: :succeeded, valid?: true}
+      ice_agent = put_in(ice_agent.checklist[prflx_pair.id], prflx_pair)
+
+      # add another remote candidate that will result in higher pair priority
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand2)
+
+      host_pair =
+        Enum.find(Map.values(ice_agent.checklist), fn pair ->
+          pair.remote_cand_id == remote_cand2.id
+        end)
+
+      assert host_pair.priority > prflx_pair.priority
+      host_pair = %CandidatePair{host_pair | state: :succeeded, valid?: true}
+      ice_agent = put_in(ice_agent.checklist[host_pair.id], host_pair)
+      ice_agent = %ICEAgent{ice_agent | selected_pair_id: host_pair.id}
+
+      # try to add host candidate that is the same as prflx candidate
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand1)
+
+      host_pair2 =
+        Enum.find(Map.values(ice_agent.checklist), fn pair ->
+          pair.remote_cand_id == prflx_cand.id
+        end)
+
+      # assert that prflx candidate change its type and priority, and the relevant pair
+      # also changed its priority and became a new selected pair
+      host_cand =
+        Enum.find(Map.values(ice_agent.remote_cands), fn cand ->
+          cand.id == prflx_cand.id
+        end)
+
+      assert host_cand.type == :host
+      assert host_cand.priority > prflx_cand.priority
+      assert host_pair2.priority > prflx_pair.priority
+      assert host_pair2.priority > host_pair.priority
+      assert ice_agent.selected_pair_id == host_pair2.id
+    end
+
     test "with duplicated remote candidate", %{ice_agent: ice_agent} do
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
@@ -2566,7 +2637,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     Message.new(%Type{class: :indication, method: :binding}) |> Message.encode()
   end
 
-  defp binding_request(role, tiebreaker, local_ufrag, remote_ufrag, remote_pwd) do
+  defp binding_request(role, tiebreaker, local_ufrag, remote_ufrag, remote_pwd, opts \\ []) do
     ice_attrs =
       if role == :controlled do
         [%ICEControlling{tiebreaker: tiebreaker + 1}, %UseCandidate{}]
@@ -2577,7 +2648,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     attrs =
       [
         %Username{value: "#{remote_ufrag}:#{local_ufrag}"},
-        %Priority{priority: 1234}
+        %Priority{priority: opts[:priority] || 1234}
       ] ++ ice_attrs
 
     request =

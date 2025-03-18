@@ -399,28 +399,47 @@ defmodule ExICE.Priv.ICEAgent do
   def add_remote_candidate(ice_agent, remote_cand) do
     Logger.debug("Trying to add a new remote candidate: #{inspect(remote_cand)}")
 
-    uniq? = fn remote_cands, remote_cand ->
-      not Enum.any?(remote_cands, fn cand ->
-        cand.address == remote_cand.address and cand.port == remote_cand.port
-      end)
-    end
+    found_cand =
+      find_remote_cand(Map.values(ice_agent.remote_cands), remote_cand.address, remote_cand.port)
 
-    if uniq?.(Map.values(ice_agent.remote_cands), remote_cand) do
-      ice_agent = do_add_remote_candidate(ice_agent, remote_cand)
-      Logger.debug("Successfully added remote candidate.")
+    case found_cand do
+      nil ->
+        ice_agent = do_add_remote_candidate(ice_agent, remote_cand)
+        Logger.debug("Successfully added remote candidate.")
 
-      ice_agent
-      |> update_connection_state()
-      |> update_ta_timer()
-    else
-      # This is pretty common case (we can get conn-check
-      # before getting a remote candidate), hence debug.
-      Logger.debug("""
-      Duplicated remote candidate. Ignoring.
-      Candidate: #{inspect(remote_cand)}\
-      """)
+        ice_agent
+        |> update_connection_state()
+        |> update_ta_timer()
 
-      ice_agent
+      %ExICE.Candidate{type: :prflx} ->
+        # if there already is such candidate but discovered via received
+        # binding request (i.e. this is prflx candidate), update its type
+        # and priority, and update also pairs and potentially selected pair
+        Logger.debug(
+          "Remote candidate already discovered as prflx. Updating its type and priority. Recomputing pair prios."
+        )
+
+        found_cand = %ExICE.Candidate{found_cand | type: :host, priority: remote_cand.priority}
+        ice_agent = put_in(ice_agent.remote_cands[found_cand.id], found_cand)
+        checklist = recompute_pair_prios(ice_agent)
+        ice_agent = %__MODULE__{ice_agent | checklist: checklist}
+
+        if ice_agent.selected_pair_id != nil do
+          %CandidatePair{} = best_valid_pair = Checklist.get_valid_pair(ice_agent.checklist)
+
+          if best_valid_pair.id != ice_agent.selected_pair_id do
+            Logger.debug("New best valid pair: #{best_valid_pair.id}. Selecting.")
+            %__MODULE__{ice_agent | selected_pair_id: best_valid_pair.id}
+          else
+            ice_agent
+          end
+        else
+          ice_agent
+        end
+
+      %ExICE.Candidate{} ->
+        Logger.debug("Duplicated remote candidate. Ignoring. Candidate: #{inspect(remote_cand)}")
+        ice_agent
     end
   end
 
