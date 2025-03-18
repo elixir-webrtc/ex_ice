@@ -94,7 +94,11 @@ defmodule ExICE.Priv.ICEAgent do
     bytes_sent: 0,
     bytes_received: 0,
     packets_sent: 0,
-    packets_received: 0
+    packets_received: 0,
+    selected_candidate_pair_changes: 0,
+    # binding requests that failed to pass checks required to assign them to specific candidate pair
+    # e.g. missing required attributes, role conflict, authentication, etc.
+    unmatched_requests: 0
   ]
 
   @spec unmarshal_remote_candidate(String.t()) :: {:ok, Candidate.t()} | {:error, term()}
@@ -224,6 +228,8 @@ defmodule ExICE.Priv.ICEAgent do
       bytes_received: ice_agent.bytes_received,
       packets_sent: ice_agent.packets_sent,
       packets_received: ice_agent.packets_received,
+      unmatched_requests: ice_agent.unmatched_requests,
+      selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes,
       state: ice_agent.state,
       role: ice_agent.role,
       local_ufrag: ice_agent.local_ufrag,
@@ -429,7 +435,12 @@ defmodule ExICE.Priv.ICEAgent do
 
           if best_valid_pair.id != ice_agent.selected_pair_id do
             Logger.debug("New best valid pair: #{best_valid_pair.id}. Selecting.")
-            %__MODULE__{ice_agent | selected_pair_id: best_valid_pair.id}
+
+            %__MODULE__{
+              ice_agent
+              | selected_pair_id: best_valid_pair.id,
+                selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes + 1
+            }
           else
             ice_agent
           end
@@ -482,17 +493,37 @@ defmodule ExICE.Priv.ICEAgent do
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
     dst = {remote_cand.address, remote_cand.port}
+    data_size = byte_size(data)
 
     case do_send(ice_agent, local_cand, dst, data) do
       {:ok, ice_agent} ->
-        %{
-          ice_agent
-          | bytes_sent: ice_agent.bytes_sent + byte_size(data),
-            packets_sent: ice_agent.packets_sent + 1
+        pair = Map.fetch!(ice_agent.checklist, pair.id)
+
+        pair = %CandidatePair{
+          pair
+          | packets_sent: pair.packets_sent + 1,
+            bytes_sent: pair.bytes_sent + data_size
         }
 
+        ice_agent =
+          %{
+            ice_agent
+            | bytes_sent: ice_agent.bytes_sent + data_size,
+              packets_sent: ice_agent.packets_sent + 1
+          }
+
+        put_in(ice_agent.checklist[pair.id], pair)
+
       {:error, ice_agent} ->
-        ice_agent
+        pair = Map.fetch!(ice_agent.checklist, pair.id)
+
+        pair = %CandidatePair{
+          pair
+          | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
+            bytes_discarded_on_send: pair.bytes_discarded_on_send + data_size
+        }
+
+        put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 
@@ -635,11 +666,20 @@ defmodule ExICE.Priv.ICEAgent do
 
     case do_send(ice_agent, local_cand, dst, conn_check.raw_req) do
       {:ok, ice_agent} ->
+        # retransmissions are not counted in requests sent
         Process.send_after(self(), {:tr_rtx_timeout, t_id}, @tr_rtx_timeout)
         ice_agent
 
       {:error, ice_agent} ->
-        ice_agent
+        pair = Map.fetch!(ice_agent.checklist, pair.id)
+
+        pair = %CandidatePair{
+          pair
+          | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
+            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(conn_check.raw_req)
+        }
+
+        put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 
@@ -736,7 +776,11 @@ defmodule ExICE.Priv.ICEAgent do
 
       ice_agent =
         if ice_agent.selected_pair_id == pair.id do
-          %{ice_agent | selected_pair_id: nil}
+          %{
+            ice_agent
+            | selected_pair_id: nil,
+              selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes + 1
+          }
         else
           ice_agent
         end
@@ -1284,14 +1328,22 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp do_handle_data_message(ice_agent, pair, packet) do
-    pair = %CandidatePair{pair | last_seen: now()}
+    data_size = byte_size(packet)
+
+    pair = %CandidatePair{
+      pair
+      | last_seen: now(),
+        packets_received: pair.packets_received + 1,
+        bytes_received: pair.bytes_received + data_size
+    }
+
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     notify(ice_agent.on_data, {:data, packet})
 
     %{
       ice_agent
-      | bytes_received: ice_agent.bytes_received + byte_size(packet),
+      | bytes_received: ice_agent.bytes_received + data_size,
         packets_received: ice_agent.packets_received + 1
     }
   end
@@ -1451,6 +1503,14 @@ defmodule ExICE.Priv.ICEAgent do
       # Hence, we have to update ta timer.
       |> update_ta_timer()
     else
+      error ->
+        ice_agent = %__MODULE__{ice_agent | unmatched_requests: ice_agent.unmatched_requests + 1}
+        handle_binding_request_error(ice_agent, local_cand, src_ip, src_port, msg, error)
+    end
+  end
+
+  defp handle_binding_request_error(ice_agent, local_cand, src_ip, src_port, msg, error) do
+    case error do
       {:error, reason}
       when reason in [
              :invalid_username,
@@ -1623,21 +1683,20 @@ defmodule ExICE.Priv.ICEAgent do
       cc_remote_cand = Map.fetch!(ice_agent.remote_cands, conn_check_pair.remote_cand_id)
 
       Logger.debug("""
-      Ignoring conn check response, non-symmetric src and dst addresses.
+      Ignoring conn check response, non-symmetric src and dst addresses. \
       Sent from: #{inspect({cc_local_cand.base.base_address, cc_local_cand.base.base_port})}, \
-      to: #{inspect({cc_remote_cand.address, cc_remote_cand.port})}
-      Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})}
-      Pair failed: #{conn_check_pair.id}
+      to: #{inspect({cc_remote_cand.address, cc_remote_cand.port})} \
+      Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
+      Pair failed: #{conn_check_pair.id}\
       """)
 
       conn_check_pair = %CandidatePair{
         conn_check_pair
         | state: :failed,
-          non_symmetric_responses_received: 1
+          non_symmetric_responses_received: conn_check_pair.non_symmetric_responses_received + 1
       }
 
-      checklist = Map.put(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
-      %__MODULE__{ice_agent | checklist: checklist}
+      put_in(ice_agent.checklist[conn_check_pair.id], conn_check_pair)
     end
   end
 
@@ -1663,8 +1722,7 @@ defmodule ExICE.Priv.ICEAgent do
           responses_received: pair.responses_received + 1
       }
 
-      checklist = Map.put(ice_agent.checklist, pair_id, pair)
-      ice_agent = %__MODULE__{ice_agent | checklist: checklist}
+      ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
       # get new conn check pair as it will have updated
       # discovered and succeeded pair fields
@@ -1677,12 +1735,17 @@ defmodule ExICE.Priv.ICEAgent do
     else
       {:error, reason} ->
         Logger.debug("""
-        Ignoring conn check response, reason: #{reason}.
-        Conn check tid: #{inspect(msg.transaction_id)},
-        Conn check pair: #{inspect(conn_check_pair.id)}.
+        Ignoring conn check response, reason: #{reason}. \
+        Conn check tid: #{inspect(msg.transaction_id)}, \
+        Conn check pair: #{inspect(conn_check_pair.id)}.\
         """)
 
-        ice_agent
+        conn_check_pair = %CandidatePair{
+          conn_check_pair
+          | responses_received: conn_check_pair.responses_received + 1
+        }
+
+        put_in(ice_agent.checklist[conn_check_pair.id], conn_check_pair)
     end
   end
 
@@ -1873,7 +1936,8 @@ defmodule ExICE.Priv.ICEAgent do
         Not refreshing last_seen time.\
         """)
 
-        ice_agent
+        pair = %CandidatePair{pair | responses_received: pair.responses_received + 1}
+        put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 
@@ -2013,7 +2077,15 @@ defmodule ExICE.Priv.ICEAgent do
         put_in(ice_agent.checklist[pair.id], pair)
 
       {:error, ice_agent} ->
-        ice_agent
+        pair = Map.fetch!(ice_agent.checklist, pair.id)
+
+        pair = %CandidatePair{
+          pair
+          | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
+            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(resp)
+        }
+
+        put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 
@@ -2156,18 +2228,18 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent = put_in(ice_agent.local_cands[local_cand.base.id].base.closed?, true)
 
     # clear selected pair if needed
-    selected_pair_id =
+    {pair_changes_diff, selected_pair_id} =
       if ice_agent.selected_pair_id != nil do
         selected_pair = Map.fetch!(ice_agent.checklist, ice_agent.selected_pair_id)
 
         if selected_pair.local_cand_id == local_cand.base.id do
           Logger.debug("Clearing selected pair: #{selected_pair.id}")
-          nil
+          {1, nil}
         else
-          ice_agent.selected_pair_id
+          {0, ice_agent.selected_pair_id}
         end
       else
-        ice_agent.selected_pair_id
+        {0, ice_agent.selected_pair_id}
       end
 
     # clear pair that's during nomination if needed
@@ -2207,6 +2279,8 @@ defmodule ExICE.Priv.ICEAgent do
     %{
       ice_agent
       | selected_pair_id: selected_pair_id,
+        selected_candidate_pair_changes:
+          ice_agent.selected_candidate_pair_changes + pair_changes_diff,
         conn_checks: conn_checks,
         keepalives: keepalives,
         tr_rtx: tr_rtx,
@@ -2317,11 +2391,15 @@ defmodule ExICE.Priv.ICEAgent do
       |> cancel_eoc_timer()
       |> start_eoc_timer()
 
+    pair_changes_diff = if ice_agent.selected_pair_id != nil, do: 1, else: 0
+
     %__MODULE__{
       ice_agent
       | sockets: [],
         gathering_transactions: %{},
         selected_pair_id: nil,
+        selected_candidate_pair_changes:
+          ice_agent.selected_candidate_pair_changes + pair_changes_diff,
         conn_checks: %{},
         checklist: %{},
         tr_rtx: [],
@@ -2507,10 +2585,14 @@ defmodule ExICE.Priv.ICEAgent do
       )
     end
 
+    pair_changes_diff = if ice_agent.selected_pair_id != nil, do: 1, else: 0
+
     %{
       ice_agent
       | gathering_transactions: %{},
         selected_pair_id: nil,
+        selected_candidate_pair_changes:
+          ice_agent.selected_candidate_pair_changes + pair_changes_diff,
         conn_checks: %{},
         keepalives: %{},
         tr_rtx: [],
@@ -2781,10 +2863,11 @@ defmodule ExICE.Priv.ICEAgent do
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
     req = binding_request(ice_agent, local_cand, false)
+    raw_req = Message.encode(req)
 
     dst = {remote_cand.address, remote_cand.port}
 
-    case do_send(ice_agent, local_cand, dst, Message.encode(req)) do
+    case do_send(ice_agent, local_cand, dst, raw_req) do
       {:ok, ice_agent} ->
         pair = %CandidatePair{pair | requests_sent: pair.requests_sent + 1}
         ice_agent = put_in(ice_agent.checklist[pair.id], pair)
@@ -2792,7 +2875,15 @@ defmodule ExICE.Priv.ICEAgent do
         %__MODULE__{ice_agent | keepalives: keepalives}
 
       {:error, ice_agent} ->
-        ice_agent
+        pair = Map.fetch!(ice_agent.checklist, pair.id)
+
+        pair = %CandidatePair{
+          pair
+          | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
+            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req)
+        }
+
+        put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 
@@ -2833,7 +2924,15 @@ defmodule ExICE.Priv.ICEAgent do
         %__MODULE__{ice_agent | conn_checks: conn_checks, checklist: checklist}
 
       {:error, ice_agent} ->
-        ice_agent
+        pair = Map.fetch!(ice_agent.checklist, pair.id)
+
+        pair = %CandidatePair{
+          pair
+          | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
+            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req)
+        }
+
+        put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 

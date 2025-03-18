@@ -610,7 +610,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
-      assert new_pair.responses_received == pair.responses_received
+      assert new_pair.responses_received == pair.responses_received + 1
     end
 
     test "non-symmetric success response", %{ice_agent: ice_agent} do
@@ -1292,10 +1292,11 @@ defmodule ExICE.Priv.ICEAgentTest do
         )
 
       # Unauthenticated response is ignored as it was never received.
-      # Hence, no impact on pair's state.
+      # Hence, no impact on pair's state but we count it in the stats
+      # to be able to observe that something is received.
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :in_progress
-      assert new_pair.responses_received == pair.responses_received
+      assert new_pair.responses_received == pair.responses_received + 1
     end
 
     test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
