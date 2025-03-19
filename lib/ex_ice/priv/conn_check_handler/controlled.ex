@@ -190,7 +190,12 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlled do
     cond do
       ice_agent.selected_pair_id == nil ->
         Logger.debug("Selecting pair: #{pair_id}")
-        %ICEAgent{ice_agent | selected_pair_id: pair.id}
+
+        %ICEAgent{
+          ice_agent
+          | selected_pair_id: pair.id,
+            selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes + 1
+        }
 
       ice_agent.selected_pair_id != nil and pair.id != ice_agent.selected_pair_id ->
         selected_pair = Map.fetch!(ice_agent.checklist, ice_agent.selected_pair_id)
@@ -201,7 +206,11 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlled do
           New pair: #{pair_id}, old pair: #{ice_agent.selected_pair_id}.\
           """)
 
-          %ICEAgent{ice_agent | selected_pair_id: pair.id}
+          %ICEAgent{
+            ice_agent
+            | selected_pair_id: pair.id,
+              selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes + 1
+          }
         else
           Logger.debug("Not selecting a new pair as it has lower priority.")
           ice_agent
