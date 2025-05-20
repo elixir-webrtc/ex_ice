@@ -2014,6 +2014,11 @@ defmodule ExICE.Priv.ICEAgent do
         valid?: true
     }
 
+    checklist_local_cand = Map.fetch!(ice_agent.local_cands, checklist_pair.local_cand_id)
+    checklist_local_cand = put_in(checklist_local_cand.base.closed?, true)
+
+    ice_agent = put_in(ice_agent.local_cands[checklist_local_cand.base.id], checklist_local_cand)
+
     checklist =
       ice_agent.checklist
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
@@ -2617,10 +2622,14 @@ defmodule ExICE.Priv.ICEAgent do
     sel_local_cand = Map.fetch!(ice_agent.local_cands, selected_pair.local_cand_id)
 
     if succ_local_cand.base.socket != sel_local_cand.base.socket do
-      raise """
+      # raise """
+      # Selected local candidate's socket is different than succeeded local candidate's socket. \
+      # This should never happen as we check against symmetric response.\
+      # """
+      Logger.error("""
       Selected local candidate's socket is different than succeeded local candidate's socket. \
       This should never happen as we check against symmetric response.\
-      """
+      """)
     end
 
     ice_agent =
