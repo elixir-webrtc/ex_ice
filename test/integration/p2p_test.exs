@@ -79,6 +79,12 @@ defmodule ExICE.Integration.P2PTest do
 
     assert File.read!(Path.join([tmp_dir, "a2_restart_recv_data"])) ==
              File.read!("./test/fixtures/lotr.txt")
+
+    assert :ok = ICEAgent.close(agent1)
+    assert :ok = ICEAgent.close(agent2)
+
+    assert :ok = ICEAgent.stop(agent1)
+    assert :ok = ICEAgent.stop(agent2)
   end
 
   @tag :tmp_dir

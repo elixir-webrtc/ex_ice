@@ -30,7 +30,7 @@ defmodule ExICE.ICEAgent do
   For exact meaning refer to the W3C WebRTC standard, sec. 5.6.4.
   """
   @type connection_state_change() ::
-          {:connection_state_change, :checking | :connected | :completed | :failed}
+          {:connection_state_change, :checking | :connected | :completed | :failed | :closed}
 
   @typedoc """
   Messages sent by the ExICE.
@@ -277,7 +277,21 @@ defmodule ExICE.ICEAgent do
   end
 
   @doc """
-  Stops ICE agent and all of its sockets.
+  Irreversibly closes ICE agent and all of its sockets but does not terminate its process.
+
+  The only practical thing that you can do after closing an agent,
+  is to get its stats using `get_stats/1`.
+  Most of the other functions have no effect.
+
+  To terminate ICE agent process, see `stop/1`.
+  """
+  @spec close(pid()) :: :ok
+  def close(ice_agent) do
+    GenServer.call(ice_agent, :close)
+  end
+
+  @doc """
+  Stops ICE agent process.
   """
   @spec stop(pid()) :: :ok
   def stop(ice_agent) do
@@ -344,6 +358,12 @@ defmodule ExICE.ICEAgent do
   def handle_call(:get_stats, _from, state) do
     stats = ExICE.Priv.ICEAgent.get_stats(state.ice_agent)
     {:reply, stats, state}
+  end
+
+  @impl true
+  def handle_call(:close, _from, state) do
+    ice_agent = ExICE.Priv.ICEAgent.close(state.ice_agent)
+    {:reply, :ok, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
