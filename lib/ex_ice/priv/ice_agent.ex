@@ -463,7 +463,7 @@ defmodule ExICE.Priv.ICEAgent do
 
   @spec end_of_candidates(t()) :: t()
   def end_of_candidates(%__MODULE__{state: state} = ice_agent) when state in [:failed, :closed] do
-    Logger.debug("Can't set end-of-candidates flag in state failed. Ignoring.")
+    Logger.debug("Can't set end-of-candidates flag in state #{state}. Ignoring.")
     ice_agent
   end
 

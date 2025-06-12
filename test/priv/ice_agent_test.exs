@@ -363,11 +363,11 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     assert ice_agent.state == :closed
     assert ice_agent.gathering_state == :complete
-    assert [%{state: :failed}] = Map.values(ice_agent.checklist)
+    assert [%{state: :failed} = pair] = Map.values(ice_agent.checklist)
     assert [%{base: %{closed?: true}}] = Map.values(ice_agent.local_cands)
     # make sure that sockets and remote cands were not cleared
     assert [_remote_cand] = Map.values(ice_agent.remote_cands)
-    assert ice_agent.sockets != []
+    assert [socket] = ice_agent.sockets
 
     # check stats
     stats = ICEAgent.get_stats(ice_agent)
@@ -379,8 +379,28 @@ defmodule ExICE.Priv.ICEAgentTest do
     refute_received {:ex_ice, _pid, {:connection_state_change, :closed}}
     refute_received {:ex_ice, _pid, {:gathering_state_change, :complete}}
 
-    # try to restart ICE, this should be ignored
-    %{state: :closed, gathering_state: :complete} = ICEAgent.restart(ice_agent)
+    # assert these functions are ignored
+    assert ice_agent == ICEAgent.set_role(ice_agent, :controlled)
+    assert ice_agent == ICEAgent.set_remote_credentials(ice_agent, "remoteufrag2", "remotepwd2")
+    assert ice_agent == ICEAgent.gather_candidates(ice_agent)
+    assert ice_agent == ICEAgent.add_remote_candidate(ice_agent, @remote_cand2)
+    assert ice_agent == ICEAgent.end_of_candidates(ice_agent)
+    assert ice_agent == ICEAgent.send_data(ice_agent, <<0, 1, 2>>)
+    assert ice_agent == ICEAgent.restart(ice_agent)
+    assert ice_agent == ICEAgent.handle_ta_timeout(ice_agent)
+    # only eoc_timer should change to nil
+    assert %{ice_agent | eoc_timer: nil} == ICEAgent.handle_eoc_timeout(ice_agent)
+    assert ice_agent == ICEAgent.handle_pair_timeout(ice_agent)
+    assert ice_agent == ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+
+    assert ice_agent ==
+             ICEAgent.handle_udp(
+               ice_agent,
+               socket,
+               @remote_cand.address,
+               @remote_cand.port,
+               "some data"
+             )
   end
 
   test "doesn't add pairs with srflx local candidate to the checklist" do
