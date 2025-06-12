@@ -345,6 +345,64 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert new_ice_agent == ice_agent
   end
 
+  test "close/1" do
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.Mock,
+        transport_module: Transport.Mock
+      )
+      |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(@remote_cand)
+
+    assert_receive {:ex_ice, _pid, {:gathering_state_change, :complete}}
+
+    ice_agent = ICEAgent.close(ice_agent)
+
+    assert ice_agent.state == :closed
+    assert ice_agent.gathering_state == :complete
+    assert [%{state: :failed} = pair] = Map.values(ice_agent.checklist)
+    assert [%{base: %{closed?: true}}] = Map.values(ice_agent.local_cands)
+    # make sure that sockets and remote cands were not cleared
+    assert [_remote_cand] = Map.values(ice_agent.remote_cands)
+    assert [socket] = ice_agent.sockets
+
+    # check stats
+    stats = ICEAgent.get_stats(ice_agent)
+    assert stats.local_candidates != %{}
+    assert stats.remote_candidates != %{}
+    assert stats.candidate_pairs != %{}
+    assert stats.state == :closed
+
+    refute_received {:ex_ice, _pid, {:connection_state_change, :closed}}
+    refute_received {:ex_ice, _pid, {:gathering_state_change, :complete}}
+
+    # assert these functions are ignored
+    assert ice_agent == ICEAgent.set_role(ice_agent, :controlled)
+    assert ice_agent == ICEAgent.set_remote_credentials(ice_agent, "remoteufrag2", "remotepwd2")
+    assert ice_agent == ICEAgent.gather_candidates(ice_agent)
+    assert ice_agent == ICEAgent.add_remote_candidate(ice_agent, @remote_cand2)
+    assert ice_agent == ICEAgent.end_of_candidates(ice_agent)
+    assert ice_agent == ICEAgent.send_data(ice_agent, <<0, 1, 2>>)
+    assert ice_agent == ICEAgent.restart(ice_agent)
+    assert ice_agent == ICEAgent.handle_ta_timeout(ice_agent)
+    # only eoc_timer should change to nil
+    assert %{ice_agent | eoc_timer: nil} == ICEAgent.handle_eoc_timeout(ice_agent)
+    assert ice_agent == ICEAgent.handle_pair_timeout(ice_agent)
+    assert ice_agent == ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+
+    assert ice_agent ==
+             ICEAgent.handle_udp(
+               ice_agent,
+               socket,
+               @remote_cand.address,
+               @remote_cand.port,
+               "some data"
+             )
+  end
+
   test "doesn't add pairs with srflx local candidate to the checklist" do
     ice_agent =
       ICEAgent.new(
