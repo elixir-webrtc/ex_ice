@@ -11,12 +11,26 @@ defmodule ExICE.Priv.ICEAgentTest do
 
   alias ExTURN.Attribute.{Data, Lifetime, XORRelayedAddress, XORPeerAddress}
 
-  defmodule IfDiscovery.Mock do
+  defmodule IfDiscovery.MockSingle do
     @behaviour ExICE.Priv.IfDiscovery
 
     @impl true
     def getifaddrs() do
       ifs = [{~c"mockif", [{:flags, [:up, :running]}, {:addr, {192, 168, 0, 1}}]}]
+      {:ok, ifs}
+    end
+  end
+
+  defmodule IfDiscovery.MockMulti do
+    @behaviour ExICE.Priv.IfDiscovery
+
+    @impl true
+    def getifaddrs() do
+      ifs = [
+        {~c"mockif1", [{:flags, [:up, :running]}, {:addr, {192, 168, 0, 1}}]},
+        {~c"mockif2", [{:flags, [:up, :running]}, {:addr, {192, 168, 0, 2}}]}
+      ]
+
       {:ok, ifs}
     end
   end
@@ -102,7 +116,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
@@ -232,7 +246,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ICEAgent.new(
         controlling_process: self(),
         role: nil,
-        if_discovery_module: IfDiscovery.Mock,
+        if_discovery_module: IfDiscovery.MockSingle,
         transport_module: Transport.Mock
       )
       |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
@@ -254,7 +268,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
@@ -290,7 +304,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ICEAgent.new(
         controlling_process: self(),
         role: :controlling,
-        if_discovery_module: IfDiscovery.Mock,
+        if_discovery_module: IfDiscovery.MockSingle,
         transport_module: Transport.Mock
       )
       |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
@@ -350,7 +364,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ICEAgent.new(
         controlling_process: self(),
         role: :controlling,
-        if_discovery_module: IfDiscovery.Mock,
+        if_discovery_module: IfDiscovery.MockSingle,
         transport_module: Transport.Mock
       )
       |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
@@ -409,7 +423,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         controlling_process: self(),
         role: :controlling,
         transport_module: Transport.Mock,
-        if_discovery_module: IfDiscovery.Mock
+        if_discovery_module: IfDiscovery.MockSingle
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
       |> ICEAgent.gather_candidates()
@@ -444,7 +458,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         controlling_process: self(),
         role: :controlling,
         transport_module: Transport.Mock,
-        if_discovery_module: IfDiscovery.Mock
+        if_discovery_module: IfDiscovery.MockSingle
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
       |> ICEAgent.gather_candidates()
@@ -480,7 +494,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           controlling_process: self(),
           role: :controlling,
           transport_module: Transport.Mock,
-          if_discovery_module: IfDiscovery.Mock
+          if_discovery_module: IfDiscovery.MockSingle
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
@@ -495,7 +509,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           controlling_process: self(),
           role: :controlled,
           transport_module: Transport.Mock,
-          if_discovery_module: IfDiscovery.Mock
+          if_discovery_module: IfDiscovery.MockSingle
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
         |> ICEAgent.gather_candidates()
@@ -555,7 +569,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -742,7 +756,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
 
@@ -1164,7 +1178,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -1252,7 +1266,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           controlling_process: self(),
           aggressive_nomination: false,
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -1357,6 +1371,68 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
+    test "success response with the xor address of a local candidate with a different socket." do
+      # 1. L sends a binding request using the {LC1, RC1} pair.
+      # 2. L receives a binding response with an XOR address LC2, which utilizes a different socket.
+      # 3. L selects the {LC1, RC2} pair as the discovered pair.
+
+      # Setup ice_agent to have two local candidates
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          aggressive_nomination: false,
+          role: :controlling,
+          if_discovery_module: IfDiscovery.MockMulti,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+
+      # send connectivity check
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      # find candidate pair on which connectivity check was sent
+      [{_pair_id, pair}] =
+        Enum.filter(ice_agent.checklist, fn {_pair_id, pair} -> pair.state == :in_progress end)
+
+      local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
+
+      # create a response that includes the address of the second local candidate and its corresponding socket
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          Enum.find(ice_agent.sockets, &(&1 != local_cand.base.socket)),
+          ice_agent.remote_pwd
+        )
+
+      ice_agent =
+        ICEAgent.handle_udp(
+          ice_agent,
+          local_cand.base.socket,
+          @remote_cand.address,
+          @remote_cand.port,
+          resp
+        )
+
+      assert [pair_1, pair_2] =
+               ice_agent.checklist
+               |> Map.values()
+               |> Enum.sort(&(&1.priority > &2.priority))
+
+      # verify that because these two paris use local candidates with different sockets,
+      # they are not linked together via succeeded/discovered pair ids
+      assert pair_1.state == :succeeded
+      assert pair_1.id == pair_1.succeeded_pair_id
+      assert pair_1.succeeded_pair_id == pair_1.discovered_pair_id
+
+      assert pair_2.state == :waiting
+      assert pair_2.succeeded_pair_id == nil
+      assert pair_2.discovered_pair_id == nil
+    end
+
     test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
       [socket] = ice_agent.sockets
       [pair] = Map.values(ice_agent.checklist)
@@ -1391,7 +1467,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -1572,7 +1648,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           controlling_process: self(),
           role: :controlling,
           aggressive_nomination: true,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -1744,7 +1820,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -1833,7 +1909,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.new(
           controlling_process: self(),
           role: :controlling,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           transport_module: Transport.Mock,
           ice_servers: [%{urls: ["stun:192.168.0.10:8445"]}]
         )
@@ -1919,7 +1995,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ICEAgent.new(
         controlling_process: self(),
         role: :controlling,
-        if_discovery_module: IfDiscovery.Mock,
+        if_discovery_module: IfDiscovery.MockSingle,
         transport_module: Transport.Mock
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -1958,7 +2034,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         controlling_process: self(),
         role: :controlling,
         transport_module: Transport.Mock,
-        if_discovery_module: IfDiscovery.Mock
+        if_discovery_module: IfDiscovery.MockSingle
       )
       |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
       |> ICEAgent.gather_candidates()
@@ -2040,7 +2116,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         controlling_process: self(),
         role: :controlled,
         transport_module: Transport.Mock,
-        if_discovery_module: IfDiscovery.Mock
+        if_discovery_module: IfDiscovery.MockSingle
       )
       |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
       |> ICEAgent.gather_candidates()
@@ -2182,7 +2258,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           controlling_process: self(),
           role: :controlling,
           transport_module: Transport.Mock,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           ice_servers: [%{urls: "stun:#{@stun_ip_str}:#{@stun_port}"}]
         )
         |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -2274,7 +2350,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           controlling_process: self(),
           role: :controlling,
           transport_module: Transport.Mock,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           ice_transport_policy: :relay,
           ice_servers: [
             %{
@@ -2435,7 +2511,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           controlling_process: self(),
           role: :controlling,
           transport_module: Transport.Mock,
-          if_discovery_module: IfDiscovery.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
           ice_servers: [
             %{
               urls: "turn:invalid.turn.url:#{@turn_port}?transport=udp",
@@ -2476,7 +2552,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         controlling_process: self(),
         role: :controlling,
         transport_module: Transport.Mock,
-        if_discovery_module: IfDiscovery.Mock,
+        if_discovery_module: IfDiscovery.MockSingle,
         ice_servers: [%{urls: "stun:192.168.0.3:19302"}],
         ice_transport_policy: :relay
       )
@@ -2499,7 +2575,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ICEAgent.new(
         controlling_process: self(),
         role: :controlling,
-        if_discovery_module: IfDiscovery.Mock,
+        if_discovery_module: IfDiscovery.MockSingle,
         transport_module: Transport.Mock
       )
       |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
@@ -2533,7 +2609,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ICEAgent.new(
         controlling_process: self(),
         role: :controlling,
-        if_discovery_module: IfDiscovery.Mock,
+        if_discovery_module: IfDiscovery.MockSingle,
         transport_module: Transport.Mock,
         ice_servers: [
           %{

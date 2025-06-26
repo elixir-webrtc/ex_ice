@@ -2210,38 +2210,70 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp get_or_create_local_cand(ice_agent, xor_addr, conn_check_pair) do
+    conn_check_local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
+
     local_cand =
       find_local_cand(Map.values(ice_agent.local_cands), xor_addr.address, xor_addr.port)
 
-    if local_cand do
-      {local_cand, ice_agent}
-    else
-      # prflx candidate sec 7.2.5.3.1
-      # TODO calculate correct prio and foundation
-      local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
+    cond do
+      # When we try to send UDP datagram from bridge interfaces, that can be used to create local candidates,
+      # our source IP address is translated from bridge one to our physical network interface card address.
 
-      priority =
-        Candidate.priority!(ice_agent.local_preferences, local_cand.base.base_address, :prflx)
+      # This behavior can cause specific scenarios to arise:
 
-      cand =
-        Candidate.Prflx.new(
-          address: xor_addr.address,
-          port: xor_addr.port,
-          base_address: local_cand.base.base_address,
-          base_port: local_cand.base.base_port,
-          priority: priority,
-          transport_module: ice_agent.transport_module,
-          socket: local_cand.base.socket
-        )
+      # L - local side
+      # R - remote side
+      # RC1 - remote candidate
 
-      Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
+      # 1. L opens socket on interface 1 (I1), port 5000 - first local candidate (LC1)
+      # 2. L opens socket on interface 2 (I2), port 5000 - second local candidate (LC2)
+      # 3. L sends a connectivity check from LC1 to RC1.
+      #    Given LC1 operates via I1, which is a bridge interface, its source address is rewritten to I2.
+      #    This also creates a mapping in host's NAT from I1:5000 to I2:5000.
+      # 4. R perceives the request from L as originating from I2, port 5000, and responds successfully to I2, port 5000
+      # 5. This response arrives to the I1 port 5000 (because of the mapping in host's NAT).
+      #    L notices that R recognized its check as one coming from I2, port 5000.
 
-      ice_agent = %__MODULE__{
-        ice_agent
-        | local_cands: Map.put(ice_agent.local_cands, cand.base.id, cand)
-      }
+      # At this moment, sending anything from I2:5000 would require OS to create another mapping in its NAT table from I2:5000 to I2:5000.
+      # However, because there is already an existing NAT mapping from I1:5000 to I2:5000 this send operation will fail and return an EPERM error.
 
-      {cand, ice_agent}
+      # We consistently use the discovered pair socket for sending.
+      # Therefore, we cannot use LC2-RC1 as a valid pair discovered through a check on LC1-RC1.
+      # Attempting to send anything from LC1-RC1 would actually involve using the LC2 socket.
+      # This action is not possible while the mapping from I1:5000 to I2:5000 exists.
+      local_cand && local_cand.base.socket == conn_check_local_cand.base.socket ->
+        {local_cand, ice_agent}
+
+      local_cand ->
+        {conn_check_local_cand, ice_agent}
+
+      true ->
+        # prflx candidate sec 7.2.5.3.1
+        # TODO calculate correct prio and foundation
+        local_cand = conn_check_local_cand
+
+        priority =
+          Candidate.priority!(ice_agent.local_preferences, local_cand.base.base_address, :prflx)
+
+        cand =
+          Candidate.Prflx.new(
+            address: xor_addr.address,
+            port: xor_addr.port,
+            base_address: local_cand.base.base_address,
+            base_port: local_cand.base.base_port,
+            priority: priority,
+            transport_module: ice_agent.transport_module,
+            socket: local_cand.base.socket
+          )
+
+        Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
+
+        ice_agent = %__MODULE__{
+          ice_agent
+          | local_cands: Map.put(ice_agent.local_cands, cand.base.id, cand)
+        }
+
+        {cand, ice_agent}
     end
   end
 
