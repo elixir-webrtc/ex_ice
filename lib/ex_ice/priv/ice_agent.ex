@@ -2210,38 +2210,48 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp get_or_create_local_cand(ice_agent, xor_addr, conn_check_pair) do
+    conn_check_local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
+
     local_cand =
       find_local_cand(Map.values(ice_agent.local_cands), xor_addr.address, xor_addr.port)
 
-    if local_cand do
-      {local_cand, ice_agent}
-    else
-      # prflx candidate sec 7.2.5.3.1
-      # TODO calculate correct prio and foundation
-      local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
+    cond do
+      local_cand && local_cand.base.socket == conn_check_local_cand.base.socket ->
+        {local_cand, ice_agent}
 
-      priority =
-        Candidate.priority!(ice_agent.local_preferences, local_cand.base.base_address, :prflx)
+      local_cand ->
+        # If selected local candidate uses different socket than received the response
+        # Take local candidate from connection check
+        # See https://github.com/elixir-webrtc/ex_ice/issues/77
+        {conn_check_local_cand, ice_agent}
 
-      cand =
-        Candidate.Prflx.new(
-          address: xor_addr.address,
-          port: xor_addr.port,
-          base_address: local_cand.base.base_address,
-          base_port: local_cand.base.base_port,
-          priority: priority,
-          transport_module: ice_agent.transport_module,
-          socket: local_cand.base.socket
-        )
+      true ->
+        # prflx candidate sec 7.2.5.3.1
+        # TODO calculate correct prio and foundation
+        local_cand = conn_check_local_cand
 
-      Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
+        priority =
+          Candidate.priority!(ice_agent.local_preferences, local_cand.base.base_address, :prflx)
 
-      ice_agent = %__MODULE__{
-        ice_agent
-        | local_cands: Map.put(ice_agent.local_cands, cand.base.id, cand)
-      }
+        cand =
+          Candidate.Prflx.new(
+            address: xor_addr.address,
+            port: xor_addr.port,
+            base_address: local_cand.base.base_address,
+            base_port: local_cand.base.base_port,
+            priority: priority,
+            transport_module: ice_agent.transport_module,
+            socket: local_cand.base.socket
+          )
 
-      {cand, ice_agent}
+        Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
+
+        ice_agent = %__MODULE__{
+          ice_agent
+          | local_cands: Map.put(ice_agent.local_cands, cand.base.id, cand)
+        }
+
+        {cand, ice_agent}
     end
   end
 
