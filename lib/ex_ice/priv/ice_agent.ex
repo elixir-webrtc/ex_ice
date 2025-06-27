@@ -3085,7 +3085,7 @@ defmodule ExICE.Priv.ICEAgent do
           """)
 
           ice_agent = put_in(ice_agent.local_cands[local_cand.base.id], local_cand)
-          ice_agent = close_candidate(ice_agent, local_cand)
+
           {:error, ice_agent}
         end
     end

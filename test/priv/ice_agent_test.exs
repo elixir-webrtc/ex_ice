@@ -2492,8 +2492,8 @@ defmodule ExICE.Priv.ICEAgentTest do
   test "candidate fails to send data when ice is connected" do
     # 1. make ice agent connected
     # 2. replace candidate with the mock one that always fails to send  data
-    # 3. assert that after unsuccessful data sending, ice_agent moves to the failed state
-    # as there are no other pairs
+    # 3. assert that after unsuccessful data sending, ice_agent doesn't move to the failed state
+    # even when there is only one pair
 
     ice_agent =
       ICEAgent.new(
@@ -2519,10 +2519,18 @@ defmodule ExICE.Priv.ICEAgentTest do
     # try to send some data
     ice_agent = ICEAgent.send_data(ice_agent, "somedata")
 
-    # assert that local cand has been closed and the agent moved to the failed state
-    assert [%{base: %{closed?: true}}] = Map.values(ice_agent.local_cands)
-    assert ice_agent.state == :failed
-    assert [%{state: :failed}] = Map.values(ice_agent.checklist)
+    # assert that the local candidate hasn't been closed and that the agent hasn't moved to a failed state
+    assert [%{base: %{closed?: false}}] = Map.values(ice_agent.local_cands)
+    assert ice_agent.state == :connected
+
+    # assert that the local candidate's state was updated after the packet was discarded
+    assert [
+             %{
+               state: :succeeded,
+               packets_discarded_on_send: 1,
+               bytes_discarded_on_send: 8
+             }
+           ] = Map.values(ice_agent.checklist)
   end
 
   test "relay connection" do
