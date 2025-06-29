@@ -1371,7 +1371,24 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
-    test "Success response with the address of a local candidate from a different socket." do
+    test "success response with the xor address of a local candidate with a different socket." do
+      # This test checks a specific scenario where one of the local candidates uses a socket opened on a bridge interface:
+
+      # L - local side
+      # R - remote side
+      # RC1 - remote candidate
+
+      # 1. L opens socket on interface 1 (I1), port 5000 - first local candidate (LC1)
+      # 2. L opens socket on interface 2 (I2), port 5000 - second local candidate (LC2)
+      # 3. L sends a connection check from LC1 to RC1. Given LC1 operates via I1, which is a bridge interface, its source address is rewritten to I2
+      # 4. R perceives the request from L as originating from I2, port 5000, and responds successfully to I2, port 5000
+      # 5. This response arrives to the I1 port 5000. L notices that R recognized it as coming from I2, port 5000
+      # 6. L chooses to use LC1 and RC1 as the discovered pair because we know that I1 is a bridge interface.
+
+      # Note: If we were to use LC2 and RC1 as the discovered pair
+      # we would have different sockets between the succeeded and discovered pairs, which would cause a runtime error.
+
+      # Setup ice_agent to have two local candidates
       ice_agent =
         ICEAgent.new(
           controlling_process: self(),
@@ -1384,25 +1401,29 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> ICEAgent.gather_candidates()
         |> ICEAgent.add_remote_candidate(@remote_cand)
 
-      sockets = ice_agent.sockets
-
+      # send connectivity check
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
-      {req, req_socket} = find_binding_request(sockets, ice_agent.remote_pwd)
 
+      # find candidate pair on which connectivity check was sent
+      {_pair_id, pair} =
+        Enum.find(ice_agent.checklist, fn {_pair_id, pair} -> pair.state == :in_progress end)
+
+      local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
+      req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
+
+      # create a response that includes the address of the second local candidate and its corresponding socket
       resp =
         binding_response(
           req.transaction_id,
           ice_agent.transport_module,
-          # Send response with other socket address
-          # See: https://github.com/elixir-webrtc/ex_ice/issues/77
-          Enum.find(sockets, &(&1 != req_socket)),
+          Enum.find(ice_agent.sockets, &(&1 != local_cand.base.socket)),
           ice_agent.remote_pwd
         )
 
       ice_agent =
         ICEAgent.handle_udp(
           ice_agent,
-          req_socket,
+          local_cand.base.socket,
           @remote_cand.address,
           @remote_cand.port,
           resp
@@ -1413,10 +1434,14 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Map.values()
                |> Enum.sort(&(&1.priority > &2.priority))
 
+      # verify that discovered pair is the same as succeeded
       assert pair_1.state == :succeeded
+      assert pair_1.id == pair_1.succeeded_pair_id
       assert pair_1.succeeded_pair_id == pair_1.discovered_pair_id
 
       assert pair_2.state == :waiting
+      assert pair_2.succeeded_pair_id == nil
+      assert pair_2.discovered_pair_id == nil
     end
 
     test "bad request error response", %{ice_agent: ice_agent, remote_cand: remote_cand} do
@@ -1791,22 +1816,6 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert ice_agent.state == :completed
       assert Transport.Mock.recv(socket) == nil
     end
-  end
-
-  defp find_binding_request(sockets, remote_pwd) do
-    {_req, _socket} =
-      Enum.find_value(sockets, fn socket ->
-        packet = Transport.Mock.recv(socket)
-
-        case ExSTUN.Message.decode(packet) do
-          {:ok, req} ->
-            :ok = ExSTUN.Message.authenticate(req, remote_pwd)
-            {req, socket}
-
-          _other ->
-            nil
-        end
-      end)
   end
 
   defp read_binding_request(socket, remote_pwd) do

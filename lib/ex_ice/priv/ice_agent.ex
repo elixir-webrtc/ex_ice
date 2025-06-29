@@ -2220,9 +2220,24 @@ defmodule ExICE.Priv.ICEAgent do
         {local_cand, ice_agent}
 
       local_cand ->
-        # If selected local candidate uses different socket than received the response
-        # Take local candidate from connection check
-        # See https://github.com/elixir-webrtc/ex_ice/issues/77
+        # When we try to send UDP datagram from bridge interfaces, that can be used to create local candidates,
+        # our source IP address is translated from bridge one to our physical network interface card address.
+
+        # This behavior can cause specific scenarios to arise:
+
+        # L - local side
+        # R - remote side
+        # RC1 - remote candidate
+
+        # 1. L opens socket on interface 1 (I1), port 5000 - first local candidate (LC1)
+        # 2. L opens socket on interface 2 (I2), port 5000 - second local candidate (LC2)
+        # 3. L sends a connection check from LC1 to RC1. Given LC1 operates via I1, which is a bridge interface, its source address is rewritten to I2
+        # 4. R perceives the request from L as originating from I2, port 5000, and responds successfully to I2, port 5000
+        # 5. This response arrives to the I1 port 5000. L notices that R recognized it as coming from I2, port 5000
+
+        # Consequently, LC2 cannot be used to establish a discovered pair
+        # As this would lead to a mismatch between the successful and discovered pair sockets.
+        # In this case we choose to use LC1 as we are aware that this is bridge interface.
         {conn_check_local_cand, ice_agent}
 
       true ->
