@@ -1372,21 +1372,9 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
 
     test "success response with the xor address of a local candidate with a different socket." do
-      # This test checks a specific scenario where one of the local candidates uses a socket opened on a bridge interface:
-
-      # L - local side
-      # R - remote side
-      # RC1 - remote candidate
-
-      # 1. L opens socket on interface 1 (I1), port 5000 - first local candidate (LC1)
-      # 2. L opens socket on interface 2 (I2), port 5000 - second local candidate (LC2)
-      # 3. L sends a connection check from LC1 to RC1. Given LC1 operates via I1, which is a bridge interface, its source address is rewritten to I2
-      # 4. R perceives the request from L as originating from I2, port 5000, and responds successfully to I2, port 5000
-      # 5. This response arrives to the I1 port 5000. L notices that R recognized it as coming from I2, port 5000
-      # 6. L chooses to use LC1 and RC1 as the discovered pair because we know that I1 is a bridge interface.
-
-      # Note: If we were to use LC2 and RC1 as the discovered pair
-      # we would have different sockets between the succeeded and discovered pairs, which would cause a runtime error.
+      # 1. L sends a binding request using the {LC1, RC1} pair.
+      # 2. L receives a binding response with an XOR address LC2, which utilizes a different socket.
+      # 3. L selects the {LC1, RC2} pair as the discovered pair.
 
       # Setup ice_agent to have two local candidates
       ice_agent =
@@ -1406,7 +1394,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # find candidate pair on which connectivity check was sent
       {_pair_id, pair} =
-        Enum.find(ice_agent.checklist, fn {_pair_id, pair} -> pair.state == :in_progress end)
+        Enum.filter(ice_agent.checklist, fn {_pair_id, pair} -> pair.state == :in_progress end)
 
       local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
       req = read_binding_request(local_cand.base.socket, ice_agent.remote_pwd)
@@ -1434,7 +1422,8 @@ defmodule ExICE.Priv.ICEAgentTest do
                |> Map.values()
                |> Enum.sort(&(&1.priority > &2.priority))
 
-      # verify that discovered pair is the same as succeeded
+      # verify that because these two paris use local candidates with different sockets,
+      # they are not linked together via succeeded/discovered pair ids
       assert pair_1.state == :succeeded
       assert pair_1.id == pair_1.succeeded_pair_id
       assert pair_1.succeeded_pair_id == pair_1.discovered_pair_id

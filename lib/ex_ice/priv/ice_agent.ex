@@ -2231,13 +2231,20 @@ defmodule ExICE.Priv.ICEAgent do
 
         # 1. L opens socket on interface 1 (I1), port 5000 - first local candidate (LC1)
         # 2. L opens socket on interface 2 (I2), port 5000 - second local candidate (LC2)
-        # 3. L sends a connection check from LC1 to RC1. Given LC1 operates via I1, which is a bridge interface, its source address is rewritten to I2
+        # 3. L sends a connectivity check from LC1 to RC1.
+        #    Given LC1 operates via I1, which is a bridge interface, its source address is rewritten to I2.
+        #    This also creates a mapping in host's NAT from I1:5000 to I2:5000.
         # 4. R perceives the request from L as originating from I2, port 5000, and responds successfully to I2, port 5000
-        # 5. This response arrives to the I1 port 5000. L notices that R recognized it as coming from I2, port 5000
+        # 5. This response arrives to the I1 port 5000 (because of the mapping in host's NAT).
+        #    L notices that R recognized its check as one coming from I2, port 5000.
 
-        # Consequently, LC2 cannot be used to establish a discovered pair
-        # As this would lead to a mismatch between the successful and discovered pair sockets.
-        # In this case we choose to use LC1 as we are aware that this is bridge interface.
+        # At this moment, sending anything from I2:5000 would require OS to create another mapping in its NAT table from I2:5000 to I2:5000.
+        # However, because there is already an existing NAT mapping from I1:5000 to I2:5000 this send operation will fail and return an EPERM error.
+
+        # We consistently use the discovered pair socket for sending.
+        # Therefore, we cannot use LC2-RC1 as a valid pair discovered through a check on LC1-RC1.
+        # Attempting to send anything from LC1-RC1 would actually involve using the LC2 socket.
+        # This action is not possible while the mapping from I1:5000 to I2:5000 exists.
         {conn_check_local_cand, ice_agent}
 
       true ->
