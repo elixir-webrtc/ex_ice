@@ -1393,7 +1393,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       # find candidate pair on which connectivity check was sent
-      {_pair_id, pair} =
+      [{_pair_id, pair}] =
         Enum.filter(ice_agent.checklist, fn {_pair_id, pair} -> pair.state == :in_progress end)
 
       local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
