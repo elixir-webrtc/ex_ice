@@ -36,8 +36,7 @@ jobs:
           otp-version: ${{matrix.otp}}
           elixir-version: ${{matrix.elixir}}
       - run: mix deps.get
-      - run: mix test test/integration/p2p_test.exs:10
-      # - run: mix coveralls.json
-      # - uses: codecov/codecov-action@v4
-      #   with:
-      #     token: ${{ secrets.CODECOV_TOKEN }}
+      - run: mix coveralls.json
+      - uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
