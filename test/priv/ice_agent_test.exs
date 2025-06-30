@@ -1566,9 +1566,9 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert ice_agent.state == :completed
     end
 
-    test "candidate fails to send conn check" do
+    test "failure on send" do
       # 1. replace candidate with the mock one that always fails to send data
-      # 2. assert that after unsuccessful conn check sending, ice_agent move conn pair to the failed state
+      # 2. assert that after unsuccessful conn check sending, ice_agent moves conn pair to the failed state
 
       ice_agent =
         ICEAgent.new(

@@ -1744,6 +1744,7 @@ defmodule ExICE.Priv.ICEAgent do
       conn_check_pair = %CandidatePair{
         conn_check_pair
         | state: :failed,
+          valid?: false,
           non_symmetric_responses_received: conn_check_pair.non_symmetric_responses_received + 1
       }
 
@@ -1817,6 +1818,7 @@ defmodule ExICE.Priv.ICEAgent do
         conn_check_pair = %CandidatePair{
           conn_check_pair
           | state: :failed,
+            valid?: false,
             responses_received: conn_check_pair.responses_received + 1
         }
 
@@ -3014,7 +3016,8 @@ defmodule ExICE.Priv.ICEAgent do
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
             bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req),
-            state: :failed
+            state: :failed,
+            valid?: false
         }
 
         put_in(ice_agent.checklist[pair.id], pair)
