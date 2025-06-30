@@ -1245,6 +1245,8 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  @conn_check_byte_size 92
+
   describe "connectivity check" do
     setup do
       ice_agent =
@@ -1562,6 +1564,50 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
 
       assert ice_agent.state == :completed
+    end
+
+    test "candidate fails to send conn check" do
+      # 1. replace candidate with the mock one that always fails to send data
+      # 2. assert that after unsuccessful conn check sending, ice_agent move conn pair to the failed state
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.Mock,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> ICEAgent.end_of_candidates()
+
+      assert ice_agent.gathering_state == :complete
+
+      # replace candidate with the mock one
+      [local_cand] = Map.values(ice_agent.local_cands)
+      mock_cand = %Candidate.Mock{base: local_cand.base}
+      ice_agent = %{ice_agent | local_cands: %{mock_cand.base.id => mock_cand}}
+
+      # try to send conn check
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      assert ice_agent.state == :checking
+
+      # assert that the candidate pair has moved to a failed state
+      # and that the state was updated after the packet was discarded
+      assert [
+               %{
+                 state: :failed,
+                 valid?: false,
+                 packets_discarded_on_send: 1,
+                 bytes_discarded_on_send: @conn_check_byte_size
+               }
+             ] = Map.values(ice_agent.checklist)
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      assert ice_agent.state == :failed
     end
   end
 
