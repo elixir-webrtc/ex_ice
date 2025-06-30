@@ -3013,7 +3013,8 @@ defmodule ExICE.Priv.ICEAgent do
         pair = %CandidatePair{
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
-            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req)
+            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req),
+            state: :failed
         }
 
         put_in(ice_agent.checklist[pair.id], pair)
