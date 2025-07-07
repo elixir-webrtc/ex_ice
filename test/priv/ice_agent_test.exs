@@ -1592,8 +1592,6 @@ defmodule ExICE.Priv.ICEAgentTest do
       # try to send conn check
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
-      assert ice_agent.state == :checking
-
       # assert that the candidate pair has moved to a failed state
       # and that the state was updated after the packet was discarded
       assert [
@@ -1604,8 +1602,6 @@ defmodule ExICE.Priv.ICEAgentTest do
                  bytes_discarded_on_send: @conn_check_byte_size
                }
              ] = Map.values(ice_agent.checklist)
-
-      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       assert ice_agent.state == :failed
     end
@@ -1649,10 +1645,6 @@ defmodule ExICE.Priv.ICEAgentTest do
                  bytes_discarded_on_send: @conn_check_with_nomination_byte_size
                }
              ] = Map.values(ice_agent.checklist)
-
-      assert ice_agent.state == :connected
-
-      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
 
       assert ice_agent.state == :failed
     end

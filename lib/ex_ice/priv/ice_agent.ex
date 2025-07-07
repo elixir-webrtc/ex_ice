@@ -485,7 +485,9 @@ defmodule ExICE.Priv.ICEAgent do
     Logger.debug("Setting end-of-candidates flag.")
     ice_agent = %{ice_agent | eoc: true}
     # check whether it's time to nominate and if yes, try noimnate
-    maybe_nominate(ice_agent)
+    ice_agent
+    |> maybe_nominate()
+    |> update_connection_state()
   end
 
   @spec send_data(t(), binary()) :: t()
@@ -580,6 +582,7 @@ defmodule ExICE.Priv.ICEAgent do
       |> update_gathering_state()
       |> update_connection_state()
       |> maybe_nominate()
+      |> update_connection_state()
 
     if ice_agent.state in [:completed, :failed] do
       update_ta_timer(ice_agent)
@@ -591,7 +594,9 @@ defmodule ExICE.Priv.ICEAgent do
             ice_agent
 
           {type, tr} ->
-            execute_transaction(ice_agent, type, tr)
+            ice_agent
+            |> execute_transaction(type, tr)
+            |> update_connection_state()
         end
 
       # schedule next check and call update_ta_timer
