@@ -485,7 +485,9 @@ defmodule ExICE.Priv.ICEAgent do
     Logger.debug("Setting end-of-candidates flag.")
     ice_agent = %{ice_agent | eoc: true}
     # check whether it's time to nominate and if yes, try noimnate
-    maybe_nominate(ice_agent)
+    ice_agent
+    |> maybe_nominate()
+    |> update_connection_state()
   end
 
   @spec send_data(t(), binary()) :: t()
@@ -580,6 +582,7 @@ defmodule ExICE.Priv.ICEAgent do
       |> update_gathering_state()
       |> update_connection_state()
       |> maybe_nominate()
+      |> update_connection_state()
 
     if ice_agent.state in [:completed, :failed] do
       update_ta_timer(ice_agent)
@@ -591,7 +594,9 @@ defmodule ExICE.Priv.ICEAgent do
             ice_agent
 
           {type, tr} ->
-            execute_transaction(ice_agent, type, tr)
+            ice_agent
+            |> execute_transaction(type, tr)
+            |> update_connection_state()
         end
 
       # schedule next check and call update_ta_timer
@@ -1744,6 +1749,7 @@ defmodule ExICE.Priv.ICEAgent do
       conn_check_pair = %CandidatePair{
         conn_check_pair
         | state: :failed,
+          valid?: false,
           non_symmetric_responses_received: conn_check_pair.non_symmetric_responses_received + 1
       }
 
@@ -1817,6 +1823,7 @@ defmodule ExICE.Priv.ICEAgent do
         conn_check_pair = %CandidatePair{
           conn_check_pair
           | state: :failed,
+            valid?: false,
             responses_received: conn_check_pair.responses_received + 1
         }
 
@@ -3045,7 +3052,9 @@ defmodule ExICE.Priv.ICEAgent do
         pair = %CandidatePair{
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
-            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req)
+            bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req),
+            state: :failed,
+            valid?: false
         }
 
         put_in(ice_agent.checklist[pair.id], pair)
@@ -3117,7 +3126,7 @@ defmodule ExICE.Priv.ICEAgent do
           """)
 
           ice_agent = put_in(ice_agent.local_cands[local_cand.base.id], local_cand)
-          ice_agent = close_candidate(ice_agent, local_cand)
+
           {:error, ice_agent}
         end
     end

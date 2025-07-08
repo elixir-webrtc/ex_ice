@@ -317,7 +317,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
 
     [pair] = Map.values(ice_agent.checklist)
-    pair = %{pair | state: :failed}
+    pair = %{pair | state: :failed, valid?: false}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     # try to feed data on closed candidate, it should be ignored
@@ -377,7 +377,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     assert ice_agent.state == :closed
     assert ice_agent.gathering_state == :complete
-    assert [%{state: :failed} = pair] = Map.values(ice_agent.checklist)
+    assert [%{state: :failed, valid?: false} = pair] = Map.values(ice_agent.checklist)
     assert [%{base: %{closed?: true}}] = Map.values(ice_agent.local_cands)
     # make sure that sockets and remote cands were not cleared
     assert [_remote_cand] = Map.values(ice_agent.remote_cands)
@@ -468,7 +468,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # mark pair as failed
     [pair] = Map.values(ice_agent.checklist)
-    ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
+    ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed, valid?: false})
 
     # clear ta_timer, ignore outgoing binding request that has been generated
     ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
@@ -526,8 +526,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # mark pair as failed
       [pair] = Map.values(ice_agent.checklist)
-      ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
-
+      ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed, valid?: false})
       # clear ta_timer, ignore outgoing binding request that has been generated
       ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
       assert ice_agent.ta_timer == nil
@@ -1259,6 +1258,9 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  @conn_check_byte_size 92
+  @conn_check_with_nomination_byte_size 96
+
   describe "connectivity check" do
     setup do
       ice_agent =
@@ -1592,7 +1594,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           resp
         )
 
-      assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+      assert [%CandidatePair{state: :failed, valid?: false}] = Map.values(ice_agent.checklist)
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :failed
       assert new_pair.responses_received == pair.responses_received
@@ -1638,6 +1640,89 @@ defmodule ExICE.Priv.ICEAgentTest do
         ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
 
       assert ice_agent.state == :completed
+    end
+
+    test "failure on send" do
+      # 1. replace candidate with the mock one that always fails to send data
+      # 2. assert that after unsuccessful conn check sending, ice_agent moves conn pair to the failed state
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.MockSingle,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> ICEAgent.end_of_candidates()
+
+      assert ice_agent.gathering_state == :complete
+
+      # replace candidate with the mock one
+      [local_cand] = Map.values(ice_agent.local_cands)
+      mock_cand = %Candidate.Mock{base: local_cand.base}
+      ice_agent = %{ice_agent | local_cands: %{mock_cand.base.id => mock_cand}}
+
+      # try to send conn check
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+
+      # assert that the candidate pair has moved to a failed state
+      # and that the state was updated after the packet was discarded
+      assert [
+               %{
+                 state: :failed,
+                 valid?: false,
+                 packets_discarded_on_send: 1,
+                 bytes_discarded_on_send: @conn_check_byte_size
+               }
+             ] = Map.values(ice_agent.checklist)
+
+      assert ice_agent.state == :failed
+    end
+
+    test "failure on send, when nominating" do
+      # 1. make ice agent connected
+      # 2. replace candidate with the mock one that always fails to send data
+      # 3. assert that after unsuccessful nomination sending, ice_agent moves conn pair to the failed state
+
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.MockSingle,
+          transport_module: Transport.Mock
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+
+      assert ice_agent.gathering_state == :complete
+
+      # make ice_agent connected
+      ice_agent = connect(ice_agent)
+
+      # replace candidate with the mock one
+      [local_cand] = Map.values(ice_agent.local_cands)
+      mock_cand = %Candidate.Mock{base: local_cand.base}
+      ice_agent = %{ice_agent | local_cands: %{mock_cand.base.id => mock_cand}}
+
+      # trigger pair nomination
+      ice_agent = ICEAgent.end_of_candidates(ice_agent)
+
+      # assert that the candidate pair has moved to a failed state
+      # and that the state was updated after the packet was discarded
+      assert [
+               %{
+                 state: :failed,
+                 valid?: false,
+                 packets_discarded_on_send: 1,
+                 bytes_discarded_on_send: @conn_check_with_nomination_byte_size
+               }
+             ] = Map.values(ice_agent.checklist)
+
+      assert ice_agent.state == :failed
     end
   end
 
@@ -2019,7 +2104,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
 
     # assert that the pair is marked as failed
-    assert [%CandidatePair{state: :failed}] = Map.values(ice_agent.checklist)
+    assert [%CandidatePair{state: :failed, valid?: false}] = Map.values(ice_agent.checklist)
 
     # trigger eoc timeout
     ice_agent = ICEAgent.handle_eoc_timeout(ice_agent)
@@ -2049,7 +2134,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # mark pair as failed
     [pair] = Map.values(ice_agent.checklist)
-    ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed})
+    ice_agent = put_in(ice_agent.checklist[pair.id], %{pair | state: :failed, valid?: false})
 
     # set eoc flag
     failed_ice_agent = ICEAgent.end_of_candidates(ice_agent)
@@ -2568,8 +2653,8 @@ defmodule ExICE.Priv.ICEAgentTest do
   test "candidate fails to send data when ice is connected" do
     # 1. make ice agent connected
     # 2. replace candidate with the mock one that always fails to send  data
-    # 3. assert that after unsuccessful data sending, ice_agent moves to the failed state
-    # as there are no other pairs
+    # 3. assert that after unsuccessful data sending, ice_agent doesn't move to the failed state
+    # even when there is only one pair
 
     ice_agent =
       ICEAgent.new(
@@ -2595,10 +2680,18 @@ defmodule ExICE.Priv.ICEAgentTest do
     # try to send some data
     ice_agent = ICEAgent.send_data(ice_agent, "somedata")
 
-    # assert that local cand has been closed and the agent moved to the failed state
-    assert [%{base: %{closed?: true}}] = Map.values(ice_agent.local_cands)
-    assert ice_agent.state == :failed
-    assert [%{state: :failed}] = Map.values(ice_agent.checklist)
+    # assert that the local candidate hasn't been closed and that the agent hasn't moved to a failed state
+    assert [%{base: %{closed?: false}}] = Map.values(ice_agent.local_cands)
+    assert ice_agent.state == :connected
+
+    # assert that the local candidate's state was updated after the packet was discarded
+    assert [
+             %{
+               state: :succeeded,
+               packets_discarded_on_send: 1,
+               bytes_discarded_on_send: 8
+             }
+           ] = Map.values(ice_agent.checklist)
   end
 
   test "relay connection" do
