@@ -10,7 +10,6 @@ defmodule ExICE.Priv.ICEAgent do
     ConnCheckHandler,
     Gatherer,
     IfDiscovery,
-    NATMapper,
     Transport,
     Utils
   }
@@ -91,6 +90,7 @@ defmodule ExICE.Priv.ICEAgent do
     stun_servers: [],
     turn_servers: [],
     resolved_turn_servers: [],
+    host_to_srflx_ip_mapper: nil,
     # stats
     bytes_sent: 0,
     bytes_received: 0,
@@ -99,8 +99,7 @@ defmodule ExICE.Priv.ICEAgent do
     selected_candidate_pair_changes: 0,
     # binding requests that failed to pass checks required to assign them to specific candidate pair
     # e.g. missing required attributes, role conflict, authentication, etc.
-    unmatched_requests: 0,
-    map_to_nat_ip: nil
+    unmatched_requests: 0
   ]
 
   @spec unmarshal_remote_candidate(String.t()) :: {:ok, Candidate.t()} | {:error, term()}
@@ -168,7 +167,7 @@ defmodule ExICE.Priv.ICEAgent do
       local_pwd: local_pwd,
       stun_servers: stun_servers,
       turn_servers: turn_servers,
-      map_to_nat_ip: opts[:map_to_nat_ip]
+      host_to_srflx_ip_mapper: opts[:host_to_srflx_ip_mapper]
     }
   end
 
@@ -328,9 +327,9 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
 
     srflx_cands =
-      NATMapper.create_srflx_candidates(
+      Gatherer.fabricate_srflx_candidates(
         host_cands,
-        ice_agent.map_to_nat_ip,
+        ice_agent.host_to_srflx_ip_mapper,
         ice_agent.local_preferences
       )
 

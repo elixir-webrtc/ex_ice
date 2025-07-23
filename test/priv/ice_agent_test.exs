@@ -2631,11 +2631,11 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
-  describe "NAT mapping" do
+  describe "host to prefabricated srflx mapper" do
     alias ExICE.Priv.Candidate
 
     @ipv4 {10, 10, 10, 10}
-    @ipv6 {0, 0, 0, 0, 0, 0, 0, 1}
+    @ipv6 {64_512, 0, 0, 0, 0, 0, 0, 1}
     @invalid_ip :invalid_ip
 
     test "adds srflx candidate" do
@@ -2650,7 +2650,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert srflx_cand =~ "typ srflx"
     end
 
-    test "creates only one candidate if external ip repeats itself" do
+    test "creates only one candidate if external ip is repeated" do
       ice_agent = spawn_ice_agent(IfDiscovery.MockMulti, fn _ip -> @ipv4 end)
 
       assert [%Candidate.Srflx{base: %{address: @ipv4}}] = srflx_candidates(ice_agent)
@@ -2701,7 +2701,7 @@ defmodule ExICE.Priv.ICEAgentTest do
           transport_module: Transport.Mock,
           if_discovery_module: IfDiscovery.MockSingle,
           ice_servers: [%{urls: "stun:192.168.0.3:19302"}],
-          map_to_nat_ip: fn _ip -> @ipv4 end
+          host_to_srflx_ip_mapper: fn _ip -> @ipv4 end
         )
         |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
         |> ICEAgent.gather_candidates()
@@ -2732,14 +2732,14 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [%Candidate.Srflx{}] = srflx_candidates(ice_agent)
     end
 
-    defp spawn_ice_agent(discovery_module, map_to_nat_ip) do
+    defp spawn_ice_agent(discovery_module, host_to_srflx_ip_mapper) do
       %ICEAgent{gathering_state: :complete} =
         ICEAgent.new(
           controlling_process: self(),
           role: :controlled,
           transport_module: Transport.Mock,
           if_discovery_module: discovery_module,
-          map_to_nat_ip: map_to_nat_ip
+          host_to_srflx_ip_mapper: host_to_srflx_ip_mapper
         )
         |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
         |> ICEAgent.gather_candidates()
