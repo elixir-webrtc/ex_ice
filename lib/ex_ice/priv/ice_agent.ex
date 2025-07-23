@@ -10,6 +10,7 @@ defmodule ExICE.Priv.ICEAgent do
     ConnCheckHandler,
     Gatherer,
     IfDiscovery,
+    NATMapper,
     Transport,
     Utils
   }
@@ -98,7 +99,8 @@ defmodule ExICE.Priv.ICEAgent do
     selected_candidate_pair_changes: 0,
     # binding requests that failed to pass checks required to assign them to specific candidate pair
     # e.g. missing required attributes, role conflict, authentication, etc.
-    unmatched_requests: 0
+    unmatched_requests: 0,
+    map_to_nat_ip: nil
   ]
 
   @spec unmarshal_remote_candidate(String.t()) :: {:ok, Candidate.t()} | {:error, term()}
@@ -165,7 +167,8 @@ defmodule ExICE.Priv.ICEAgent do
       local_ufrag: local_ufrag,
       local_pwd: local_pwd,
       stun_servers: stun_servers,
-      turn_servers: turn_servers
+      turn_servers: turn_servers,
+      map_to_nat_ip: opts[:map_to_nat_ip]
     }
   end
 
@@ -324,12 +327,25 @@ defmodule ExICE.Priv.ICEAgent do
 
     ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
 
+    srflx_cands =
+      NATMapper.create_srflx_candidates(
+        host_cands,
+        ice_agent.map_to_nat_ip,
+        ice_agent.local_preferences
+      )
+
     ice_agent =
       Enum.reduce(host_cands, ice_agent, fn host_cand, ice_agent ->
         add_local_cand(ice_agent, host_cand)
       end)
 
-    for %cand_mod{} = cand <- host_cands do
+    ice_agent =
+      Enum.reduce(srflx_cands, ice_agent, fn cand, ice_agent ->
+        # don't pair reflexive candidate, it should be pruned anyway - see sec. 6.1.2.4
+        put_in(ice_agent.local_cands[cand.base.id], cand)
+      end)
+
+    for %cand_mod{} = cand <- host_cands ++ srflx_cands do
       notify(ice_agent.on_new_candidate, {:new_candidate, cand_mod.marshal(cand)})
     end
 

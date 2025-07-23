@@ -48,6 +48,19 @@ defmodule ExICE.ICEAgent do
   @type ip_filter() :: (:inet.ip_address() -> boolean)
 
   @typedoc """
+  Mapping function used instead of STUN server. Maps local ip addresses into public ones.
+  These public addresses are then used to create server reflexive candidates.
+
+  Note that each returned IP address must be unique.
+  If the mapping function repeatedly returns the same address,
+  it will be ignored, and only one server reflexive candidate will be created.
+
+  This function is meant to be used for server implementations where the public addresses are well known
+  and NAT use 1 to 1 port mapping.
+  """
+  @type map_to_nat_ip() :: (:inet.ip_address() -> :inet.ip_address() | nil)
+
+  @typedoc """
   ICE Agent configuration options.
   All notifications are by default sent to a process that spawns `ExICE`.
   This behavior can be overwritten using the following options.
@@ -71,6 +84,16 @@ defmodule ExICE.ICEAgent do
   * `on_connection_state_change` - where to send connection state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.
   * `on_new_candidate` - where to send new candidates. Defaults to a process that spawns `ExICE`.
+  * `map_to_nat_ip` - Mapping function used instead of STUN server. Maps
+  local ip addresses into public ones.
+  These public addresses are then used to create server reflexive candidates.
+
+  Note that each returned IP address must be unique.
+  If the mapping function repeatedly returns the same address,
+  it will be ignored, and only one server reflexive candidate will be created.
+
+  This function is meant to be used for server implementations where the public addresses are well known
+  and NAT use 1 to 1 port mapping.
   """
   @type opts() :: [
           role: role() | nil,
@@ -88,7 +111,8 @@ defmodule ExICE.ICEAgent do
           on_gathering_state_change: pid() | nil,
           on_connection_state_change: pid() | nil,
           on_data: pid() | nil,
-          on_new_candidate: pid() | nil
+          on_new_candidate: pid() | nil,
+          map_to_nat_ip: map_to_nat_ip() | nil
         ]
 
   @doc """

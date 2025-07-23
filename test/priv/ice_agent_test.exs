@@ -2631,6 +2631,127 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "NAT mapping" do
+    alias ExICE.Priv.Candidate
+
+    @ipv4 {10, 10, 10, 10}
+    @ipv6 {0, 0, 0, 0, 0, 0, 0, 1}
+    @invalid_ip :invalid_ip
+
+    test "adds srflx candidate" do
+      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> @ipv4 end)
+
+      assert [%Candidate.Srflx{base: %{address: @ipv4}}] = srflx_candidates(ice_agent)
+
+      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand}}
+      assert_receive {:ex_ice, _pid, {:new_candidate, srflx_cand}}
+
+      assert host_cand =~ "typ host"
+      assert srflx_cand =~ "typ srflx"
+    end
+
+    test "creates only one candidate if external ip repeats itself" do
+      ice_agent = spawn_ice_agent(IfDiscovery.MockMulti, fn _ip -> @ipv4 end)
+
+      assert [%Candidate.Srflx{base: %{address: @ipv4}}] = srflx_candidates(ice_agent)
+
+      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand}}
+      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand_2}}
+      assert_receive {:ex_ice, _pid, {:new_candidate, srflx_cand}}
+
+      assert host_cand =~ "typ host"
+      assert host_cand_2 =~ "typ host"
+      assert srflx_cand =~ "typ srflx"
+    end
+
+    test "ignores one to one mapping" do
+      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn ip -> ip end)
+
+      assert [] == srflx_candidates(ice_agent)
+
+      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand}}
+      refute_receive {:ex_ice, _pid, {:new_candidate, _srflx_cand}}
+
+      assert host_cand =~ "typ host"
+    end
+
+    test "ignores if ip types is not the same" do
+      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> @ipv6 end)
+
+      assert [] == srflx_candidates(ice_agent)
+    end
+
+    test "ignores when function returns nil value" do
+      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> nil end)
+
+      assert [] == srflx_candidates(ice_agent)
+    end
+
+    test "ignores when function returns invalid value" do
+      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> @invalid_ip end)
+
+      assert [] == srflx_candidates(ice_agent)
+    end
+
+    test "works with STUN enabled" do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlled,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
+          ice_servers: [%{urls: "stun:192.168.0.3:19302"}],
+          map_to_nat_ip: fn _ip -> @ipv4 end
+        )
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+        |> ICEAgent.gather_candidates()
+
+      [%Candidate.Srflx{base: %{address: @ipv4, port: srflx_port}}] = srflx_candidates(ice_agent)
+
+      [socket] = ice_agent.sockets
+
+      # assert no transactions are started until handle_ta_timeout is called
+      assert nil == Transport.Mock.recv(socket)
+
+      # assert ice agent started gathering transaction by sending a binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :binding
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: @ipv4, port: srflx_port}
+        ])
+        |> Message.encode()
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @stun_ip, @stun_port, resp)
+
+      # assert there isn't new srflx candidate
+      assert [%Candidate.Srflx{}] = srflx_candidates(ice_agent)
+    end
+
+    defp spawn_ice_agent(discovery_module, map_to_nat_ip) do
+      %ICEAgent{gathering_state: :complete} =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlled,
+          transport_module: Transport.Mock,
+          if_discovery_module: discovery_module,
+          map_to_nat_ip: map_to_nat_ip
+        )
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+        |> ICEAgent.gather_candidates()
+    end
+
+    defp srflx_candidates(ice_agent) do
+      ice_agent.local_cands
+      |> Map.values()
+      |> Enum.filter(&(&1.base.type == :srflx))
+    end
+  end
+
   test "relay ice_transport_policy" do
     ice_agent =
       ICEAgent.new(
