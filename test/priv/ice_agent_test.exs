@@ -2635,11 +2635,19 @@ defmodule ExICE.Priv.ICEAgentTest do
     alias ExICE.Priv.Candidate
 
     @ipv4 {10, 10, 10, 10}
-    @ipv6 {64_512, 0, 0, 0, 0, 0, 0, 1}
-    @invalid_ip :invalid_ip
 
     test "adds srflx candidate" do
-      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> @ipv4 end)
+      ice_agent =
+        %ICEAgent{gathering_state: :complete} =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlled,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
+          host_to_srflx_ip_mapper: fn _ip -> @ipv4 end
+        )
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+        |> ICEAgent.gather_candidates()
 
       assert [%Candidate.Srflx{base: %{address: @ipv4}}] = srflx_candidates(ice_agent)
 
@@ -2648,49 +2656,6 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       assert host_cand =~ "typ host"
       assert srflx_cand =~ "typ srflx"
-    end
-
-    test "creates only one candidate if external ip is repeated" do
-      ice_agent = spawn_ice_agent(IfDiscovery.MockMulti, fn _ip -> @ipv4 end)
-
-      assert [%Candidate.Srflx{base: %{address: @ipv4}}] = srflx_candidates(ice_agent)
-
-      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand}}
-      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand_2}}
-      assert_receive {:ex_ice, _pid, {:new_candidate, srflx_cand}}
-
-      assert host_cand =~ "typ host"
-      assert host_cand_2 =~ "typ host"
-      assert srflx_cand =~ "typ srflx"
-    end
-
-    test "ignores one to one mapping" do
-      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn ip -> ip end)
-
-      assert [] == srflx_candidates(ice_agent)
-
-      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand}}
-      refute_receive {:ex_ice, _pid, {:new_candidate, _srflx_cand}}
-
-      assert host_cand =~ "typ host"
-    end
-
-    test "ignores if ip types is not the same" do
-      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> @ipv6 end)
-
-      assert [] == srflx_candidates(ice_agent)
-    end
-
-    test "ignores when function returns nil value" do
-      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> nil end)
-
-      assert [] == srflx_candidates(ice_agent)
-    end
-
-    test "ignores when function returns invalid value" do
-      ice_agent = spawn_ice_agent(IfDiscovery.MockSingle, fn _ip -> @invalid_ip end)
-
-      assert [] == srflx_candidates(ice_agent)
     end
 
     test "works with STUN enabled" do
@@ -2730,19 +2695,6 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # assert there isn't new srflx candidate
       assert [%Candidate.Srflx{}] = srflx_candidates(ice_agent)
-    end
-
-    defp spawn_ice_agent(discovery_module, host_to_srflx_ip_mapper) do
-      %ICEAgent{gathering_state: :complete} =
-        ICEAgent.new(
-          controlling_process: self(),
-          role: :controlled,
-          transport_module: Transport.Mock,
-          if_discovery_module: discovery_module,
-          host_to_srflx_ip_mapper: host_to_srflx_ip_mapper
-        )
-        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
-        |> ICEAgent.gather_candidates()
     end
 
     defp srflx_candidates(ice_agent) do

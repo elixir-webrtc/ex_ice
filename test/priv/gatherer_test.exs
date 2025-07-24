@@ -100,4 +100,90 @@ defmodule ExICE.Priv.GathererTest do
       assert port in port_range
     end
   end
+
+  describe "host to prefabricated srflx mapper" do
+    @ipv4 {10, 10, 10, 10}
+    @ipv6 {64_512, 0, 0, 0, 0, 0, 0, 1}
+    @invalid_ip :invalid_ip
+
+    @ipv4_filter &:inet.is_ipv4_address(&1)
+
+    test "adds srflx candidate" do
+      ip_filter = fn
+        {192, 168, 0, 2} -> false
+        _ -> true
+      end
+
+      {local_preferences, host_cands} = setup_gatherer(ip_filter)
+
+      assert [%Candidate.Srflx{base: %{address: @ipv4}}] =
+               Gatherer.fabricate_srflx_candidates(
+                 host_cands,
+                 fn _ip -> @ipv4 end,
+                 local_preferences
+               )
+    end
+
+    test "creates only one candidate if external ip is repeated" do
+      {local_preferences, host_cands} = setup_gatherer(@ipv4_filter)
+
+      assert [%Candidate.Srflx{base: %{address: @ipv4}}] =
+               Gatherer.fabricate_srflx_candidates(
+                 host_cands,
+                 fn _ip -> @ipv4 end,
+                 local_preferences
+               )
+    end
+
+    test "ignores one to one mapping" do
+      {local_preferences, host_cands} = setup_gatherer(@ipv4_filter)
+
+      assert [] ==
+               Gatherer.fabricate_srflx_candidates(
+                 host_cands,
+                 fn ip -> ip end,
+                 local_preferences
+               )
+    end
+
+    test "ignores if ip types is not the same" do
+      {local_preferences, host_cands} = setup_gatherer(@ipv4_filter)
+
+      assert [] ==
+               Gatherer.fabricate_srflx_candidates(
+                 host_cands,
+                 fn _ip -> @ipv6 end,
+                 local_preferences
+               )
+    end
+
+    test "ignores when function returns nil value" do
+      {local_preferences, host_cands} = setup_gatherer(@ipv4_filter)
+
+      assert [] ==
+               Gatherer.fabricate_srflx_candidates(
+                 host_cands,
+                 fn _ip -> nil end,
+                 local_preferences
+               )
+    end
+
+    test "ignores when function returns invalid value" do
+      {local_preferences, host_cands} = setup_gatherer(@ipv4_filter)
+
+      assert [] ==
+               Gatherer.fabricate_srflx_candidates(
+                 host_cands,
+                 fn _ip -> @invalid_ip end,
+                 local_preferences
+               )
+    end
+
+    defp setup_gatherer(ip_filter) do
+      gatherer = Gatherer.new(IfDiscovery.Mock, Transport.Mock, ip_filter, [0])
+      assert {:ok, sockets} = Gatherer.open_sockets(gatherer)
+
+      Gatherer.gather_host_candidates(gatherer, %{}, sockets)
+    end
+  end
 end
