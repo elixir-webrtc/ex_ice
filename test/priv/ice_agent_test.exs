@@ -2631,6 +2631,79 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "host to prefabricated srflx mapper" do
+    alias ExICE.Priv.Candidate
+
+    @ipv4 {10, 10, 10, 10}
+
+    test "adds srflx candidate" do
+      ice_agent =
+        %ICEAgent{gathering_state: :complete} =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlled,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
+          host_to_srflx_ip_mapper: fn _ip -> @ipv4 end
+        )
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+        |> ICEAgent.gather_candidates()
+
+      assert [%Candidate.Srflx{base: %{address: @ipv4}}] = srflx_candidates(ice_agent)
+
+      assert_receive {:ex_ice, _pid, {:new_candidate, host_cand}}
+      assert_receive {:ex_ice, _pid, {:new_candidate, srflx_cand}}
+
+      assert host_cand =~ "typ host"
+      assert srflx_cand =~ "typ srflx"
+    end
+
+    test "works with STUN enabled" do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlled,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
+          ice_servers: [%{urls: "stun:192.168.0.3:19302"}],
+          host_to_srflx_ip_mapper: fn _ip -> @ipv4 end
+        )
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+        |> ICEAgent.gather_candidates()
+
+      [%Candidate.Srflx{base: %{address: @ipv4, port: srflx_port}}] = srflx_candidates(ice_agent)
+
+      [socket] = ice_agent.sockets
+
+      # assert no transactions are started until handle_ta_timeout is called
+      assert nil == Transport.Mock.recv(socket)
+
+      # assert ice agent started gathering transaction by sending a binding request
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+      assert req.type.class == :request
+      assert req.type.method == :binding
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: @ipv4, port: srflx_port}
+        ])
+        |> Message.encode()
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @stun_ip, @stun_port, resp)
+
+      # assert there isn't new srflx candidate
+      assert [%Candidate.Srflx{}] = srflx_candidates(ice_agent)
+    end
+
+    defp srflx_candidates(ice_agent) do
+      ice_agent.local_cands
+      |> Map.values()
+      |> Enum.filter(&(&1.base.type == :srflx))
+    end
+  end
+
   test "relay ice_transport_policy" do
     ice_agent =
       ICEAgent.new(

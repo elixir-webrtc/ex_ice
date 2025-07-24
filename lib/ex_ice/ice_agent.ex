@@ -48,6 +48,21 @@ defmodule ExICE.ICEAgent do
   @type ip_filter() :: (:inet.ip_address() -> boolean)
 
   @typedoc """
+  Function called for each host candidate to derive a new "fabricated" srflx candidate from it.
+  This function takes host's ip as an argument and should return srflx's ip as a result or nil if for given host candidate
+  there should be no srflx one.
+
+  Note that each returned IP address must be unique.
+  If the mapping function repeatedly returns the same address,
+  it will be ignored, and only one server reflexive candidate will be created.
+
+  This function is meant to be used for server implementations where the public addresses are well known.
+  NAT uses 1 to 1 port mapping and using STUN server for discovering public IP is undesirable
+  (e.g. because of unknown response time).
+  """
+  @type host_to_srflx_ip_mapper() :: (:inet.ip_address() -> :inet.ip_address() | nil)
+
+  @typedoc """
   ICE Agent configuration options.
   All notifications are by default sent to a process that spawns `ExICE`.
   This behavior can be overwritten using the following options.
@@ -71,6 +86,9 @@ defmodule ExICE.ICEAgent do
   * `on_connection_state_change` - where to send connection state change notifications. Defaults to a process that spawns `ExICE`.
   * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.
   * `on_new_candidate` - where to send new candidates. Defaults to a process that spawns `ExICE`.
+  * `host_to_srflx_ip_mapper` - function called for each host candidate to derive a new "fabricated" srflx candidate from it.
+  This function takes host's ip as an argument and should return srflx's ip as a result or nil if for given host candidate
+  there should be no srflx one.
   """
   @type opts() :: [
           role: role() | nil,
@@ -88,7 +106,8 @@ defmodule ExICE.ICEAgent do
           on_gathering_state_change: pid() | nil,
           on_connection_state_change: pid() | nil,
           on_data: pid() | nil,
-          on_new_candidate: pid() | nil
+          on_new_candidate: pid() | nil,
+          host_to_srflx_ip_mapper: host_to_srflx_ip_mapper() | nil
         ]
 
   @doc """

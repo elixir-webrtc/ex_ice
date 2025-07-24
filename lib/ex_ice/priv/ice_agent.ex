@@ -90,6 +90,7 @@ defmodule ExICE.Priv.ICEAgent do
     stun_servers: [],
     turn_servers: [],
     resolved_turn_servers: [],
+    host_to_srflx_ip_mapper: nil,
     # stats
     bytes_sent: 0,
     bytes_received: 0,
@@ -165,7 +166,8 @@ defmodule ExICE.Priv.ICEAgent do
       local_ufrag: local_ufrag,
       local_pwd: local_pwd,
       stun_servers: stun_servers,
-      turn_servers: turn_servers
+      turn_servers: turn_servers,
+      host_to_srflx_ip_mapper: opts[:host_to_srflx_ip_mapper]
     }
   end
 
@@ -324,12 +326,25 @@ defmodule ExICE.Priv.ICEAgent do
 
     ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
 
+    srflx_cands =
+      Gatherer.fabricate_srflx_candidates(
+        host_cands,
+        ice_agent.host_to_srflx_ip_mapper,
+        ice_agent.local_preferences
+      )
+
     ice_agent =
       Enum.reduce(host_cands, ice_agent, fn host_cand, ice_agent ->
         add_local_cand(ice_agent, host_cand)
       end)
 
-    for %cand_mod{} = cand <- host_cands do
+    ice_agent =
+      Enum.reduce(srflx_cands, ice_agent, fn cand, ice_agent ->
+        # don't pair reflexive candidate, it should be pruned anyway - see sec. 6.1.2.4
+        put_in(ice_agent.local_cands[cand.base.id], cand)
+      end)
+
+    for %cand_mod{} = cand <- host_cands ++ srflx_cands do
       notify(ice_agent.on_new_candidate, {:new_candidate, cand_mod.marshal(cand)})
     end
 
