@@ -3,13 +3,21 @@ defmodule ExICE.Priv.Transport.UDP do
   @behaviour ExICE.Priv.Transport
 
   @impl true
-  defdelegate open(port, opts), to: :gen_udp
+  def transport, do: :udp
+
+  @impl true
+  def socket_configs, do: [%{}]
+
+  @impl true
+  def setup_socket(ip, port, socket_opts, _tp_opts) do
+    :gen_udp.open(port, socket_opts ++ [ip: ip])
+  end
 
   @impl true
   defdelegate sockname(socket), to: :inet
 
   @impl true
-  defdelegate send(socket, dest, packet), to: :gen_udp
+  def send(socket, dest, packet, _tp_opts), do: :gen_udp.send(socket, dest, packet)
 
   @impl true
   defdelegate close(socket), to: :gen_udp
