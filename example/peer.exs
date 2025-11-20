@@ -1,7 +1,7 @@
 Mix.install([{:gun, "~> 2.0.1"}, {:ex_ice, path: "../", force: true}, {:jason, "~> 1.4.0"}])
 
 require Logger
-Logger.configure(level: :info)
+Logger.configure(level: :debug)
 
 defmodule Peer do
   use GenServer
@@ -95,12 +95,14 @@ defmodule Peer do
     role = String.to_atom(role)
 
     {:ok, pid} =
-      ICEAgent.start_link(role,
+      ICEAgent.start_link(
+        role: role,
         ip_filter: fn
           {_, _, _, _} -> true
           {_, _, _, _, _, _, _, _} -> false
         end,
-        ice_servers: [%{urls: "stun:stun.l.google.com:19302"}]
+        ice_servers: [%{urls: "stun:stun.nextcloud.com"}],
+        transport: :tcp
       )
 
     {:ok, ufrag, passwd} = ICEAgent.get_local_credentials(pid)

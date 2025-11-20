@@ -107,7 +107,8 @@ defmodule ExICE.ICEAgent do
           on_connection_state_change: pid() | nil,
           on_data: pid() | nil,
           on_new_candidate: pid() | nil,
-          host_to_srflx_ip_mapper: host_to_srflx_ip_mapper() | nil
+          host_to_srflx_ip_mapper: host_to_srflx_ip_mapper() | nil,
+          transport: :udp | :tcp
         ]
 
   @doc """
@@ -321,6 +322,15 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def init(opts) do
+    # TODO: this is ugly, and will not allow us to run more than two TCP ICE agents at the same time
+    opts =
+      if opts[:transport] == :tcp do
+        {:ok, _pid} = ExICE.Priv.Transport.TCP.Client.start_link()
+        opts ++ [transport_module: ExICE.Priv.Transport.TCP.Client]
+      else
+        opts
+      end
+
     ice_agent = ExICE.Priv.ICEAgent.new(opts)
     {:ok, %{ice_agent: ice_agent, pending_eoc: false, pending_remote_cands: MapSet.new()}}
   end
@@ -476,6 +486,14 @@ defmodule ExICE.ICEAgent do
   def handle_info({:udp, socket, src_ip, src_port, packet}, state) do
     ice_agent = ExICE.Priv.ICEAgent.handle_udp(state.ice_agent, socket, src_ip, src_port, packet)
     {:noreply, %{state | ice_agent: ice_agent}}
+  end
+
+  @impl true
+  def handle_info({:tcp, _socket, _packet}, state) do
+    # TODO: consider receiving TCP data in the ICE Agent process
+    # ice_agent = ExICE.Priv.ICEAgent.handle_tcp(state.ice_agent, socket, packet)
+    # {:noreply, %{state | ice_agent: ice_agent}}
+    {:noreply, state}
   end
 
   @impl true
