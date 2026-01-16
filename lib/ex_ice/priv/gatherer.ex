@@ -63,7 +63,9 @@ defmodule ExICE.Priv.Gatherer do
       inet
     ]
 
-    Enum.reduce_while(gatherer.ports, nil, fn port, _ ->
+    gatherer.ports
+    |> Enum.shuffle()
+    |> Enum.reduce_while(nil, fn port, _ ->
       case gatherer.transport_module.open(port, socket_opts) do
         {:ok, socket} ->
           {:ok, {^ip, sock_port}} = gatherer.transport_module.sockname(socket)

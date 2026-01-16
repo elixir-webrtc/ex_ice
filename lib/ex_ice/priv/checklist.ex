@@ -19,8 +19,7 @@ defmodule ExICE.Priv.Checklist do
     checklist
     # pair might have been marked as failed if the associated
     # local candidate has been closed
-    |> Stream.filter(fn {_id, pair} -> pair.state == :succeeded end)
-    |> Stream.filter(fn {_id, pair} -> pair.valid? end)
+    |> Enum.filter(fn {_id, pair} -> pair.state == :succeeded and pair.valid? end)
     |> Enum.max_by(fn {_id, pair} -> pair.priority end, fn -> {nil, nil} end)
     |> elem(1)
   end
@@ -28,10 +27,9 @@ defmodule ExICE.Priv.Checklist do
   @spec get_valid_pair(t()) :: CandidatePair.t() | nil
   def get_valid_pair(checklist) do
     checklist
-    |> Stream.map(fn {_id, pair} -> pair end)
-    |> Stream.filter(fn pair -> pair.valid? end)
-    |> Enum.sort_by(fn pair -> pair.priority end, :desc)
-    |> Enum.at(0)
+    |> Enum.filter(fn {_id, pair} -> pair.valid? end)
+    |> Enum.max_by(fn {_id, pair} -> pair.priority end, fn -> {nil, nil} end)
+    |> elem(1)
   end
 
   @spec find_pair(t(), CandidatePair.t()) :: CandidatePair.t() | nil
