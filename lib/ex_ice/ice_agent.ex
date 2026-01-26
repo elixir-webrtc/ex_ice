@@ -87,6 +87,7 @@ defmodule ExICE.ICEAgent do
   * `on_data` - where to send data. Defaults to a process that spawns `ExICE`.
   * `on_new_candidate` - where to send new candidates. Defaults to a process that spawns `ExICE`.
   * `host_to_srflx_ip_mapper` - function called for each host candidate to derive a new "fabricated" srflx candidate from it.
+  * `logger_metadata` - a keyword list of metadata to be attached to the Logger for all logs emitted by the ICEAgent process.
   This function takes host's ip as an argument and should return srflx's ip as a result or nil if for given host candidate
   there should be no srflx one.
   """
@@ -107,7 +108,8 @@ defmodule ExICE.ICEAgent do
           on_connection_state_change: pid() | nil,
           on_data: pid() | nil,
           on_new_candidate: pid() | nil,
-          host_to_srflx_ip_mapper: host_to_srflx_ip_mapper() | nil
+          host_to_srflx_ip_mapper: host_to_srflx_ip_mapper() | nil,
+          logger_metadata: Enumerable.t({atom(), term()})
         ]
 
   @doc """
@@ -321,6 +323,8 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def init(opts) do
+    if Keyword.has_key?(opts, :logger_metadata), do: Logger.metadata(opts[:logger_metadata])
+
     ice_agent = ExICE.Priv.ICEAgent.new(opts)
     {:ok, %{ice_agent: ice_agent, pending_eoc: false, pending_remote_cands: MapSet.new()}}
   end
