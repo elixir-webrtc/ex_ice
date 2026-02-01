@@ -963,6 +963,9 @@ defmodule ExICE.Priv.ICEAgent do
             update_gathering_state(ice_agent)
         end
 
+      {nil, %{client: %{state: :error}}} ->
+        ice_agent
+
       {nil, cand} ->
         case ExTURN.Client.handle_message(cand.client, msg) do
           {:ok, client} ->
