@@ -71,7 +71,12 @@ defmodule ExICE.ICEAgent do
     until role is set, adding remote candidates or gathering local candidates won't possible, and calls to these
     functions will be ignored. Defaults to `nil`.
   * `ip_filter` - filter applied when gathering host candidates
-  * `ports` - ports that will be used when gathering host candidates, otherwise the ports are chosen by the OS
+  * `transport` - transport protocol to be used.
+    * `udp` - use UDP only (default).
+    * `tcp`- use TCP only. Note that relay candidates for TCP transport are not yet supported.
+  * `ports` - ports that will be used when gathering host candidates, otherwise the ports are chosen by the OS.
+    Warning: when using `transport: :tcp` and setting this option, make sure that this port range is used only by ICE Agents
+    from this Erlang VM instance. Refer to the source code (`lib/ex_ice/priv/transport/tcp.ex`) for more info.
   * `ice_servers` - list of STUN/TURN servers
   * `ice_transport_policy` - candidate types to be used.
     * `all` - all ICE candidates will be considered (default).
@@ -94,6 +99,7 @@ defmodule ExICE.ICEAgent do
   @type opts() :: [
           role: role() | nil,
           ip_filter: ip_filter(),
+          transport: :udp | :tcp,
           ports: Enumerable.t(non_neg_integer()),
           ice_servers: [
             %{
@@ -325,6 +331,13 @@ defmodule ExICE.ICEAgent do
   def init(opts) do
     if Keyword.has_key?(opts, :logger_metadata), do: Logger.metadata(opts[:logger_metadata])
 
+    opts =
+      if opts[:transport] == :tcp do
+        opts ++ [transport_module: ExICE.Priv.Transport.TCP]
+      else
+        opts ++ [transport_module: ExICE.Priv.Transport.UDP]
+      end
+
     ice_agent = ExICE.Priv.ICEAgent.new(opts)
     {:ok, %{ice_agent: ice_agent, pending_eoc: false, pending_remote_cands: MapSet.new()}}
   end
@@ -480,6 +493,14 @@ defmodule ExICE.ICEAgent do
   def handle_info({:udp, socket, src_ip, src_port, packet}, state) do
     ice_agent = ExICE.Priv.ICEAgent.handle_udp(state.ice_agent, socket, src_ip, src_port, packet)
     {:noreply, %{state | ice_agent: ice_agent}}
+  end
+
+  @impl true
+  def handle_info({:tcp, _socket, _packet}, state) do
+    # TODO: consider receiving TCP data in the ICE Agent process
+    # ice_agent = ExICE.Priv.ICEAgent.handle_tcp(state.ice_agent, socket, packet)
+    # {:noreply, %{state | ice_agent: ice_agent}}
+    {:noreply, state}
   end
 
   @impl true

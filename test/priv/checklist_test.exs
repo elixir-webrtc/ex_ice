@@ -18,7 +18,8 @@ defmodule ExICE.Priv.ChecklistTest do
         base_address: local_addr,
         base_port: local_port,
         priority: 123,
-        socket: nil
+        socket: nil,
+        transport_module: ExICE.Support.Transport.Mock
       )
 
     remote_host_cand =

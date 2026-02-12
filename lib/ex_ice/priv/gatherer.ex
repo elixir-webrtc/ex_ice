@@ -41,14 +41,16 @@ defmodule ExICE.Priv.Gatherer do
         |> Stream.reject(&unsupported_ipv6?(&1))
         |> Enum.to_list()
 
-      ips
-      |> Enum.map(&open_socket(gatherer, &1))
+      for transport_opts <- gatherer.transport_module.socket_configs(),
+          ip <- ips do
+        open_socket(gatherer, ip, transport_opts)
+      end
       |> Enum.reject(&(&1 == nil))
       |> then(&{:ok, &1})
     end
   end
 
-  defp open_socket(gatherer, ip) do
+  defp open_socket(gatherer, ip, transport_opts) do
     inet =
       case ip do
         {_, _, _, _} -> :inet
@@ -56,8 +58,9 @@ defmodule ExICE.Priv.Gatherer do
       end
 
     socket_opts = [
-      {:inet_backend, :socket},
-      {:ip, ip},
+      # We're using the :inet` backend, as `:socket` has issues
+      # with the `{:reuseport, true}` option added by the TCP Client
+      {:inet_backend, :inet},
       {:active, true},
       :binary,
       inet
@@ -66,7 +69,12 @@ defmodule ExICE.Priv.Gatherer do
     gatherer.ports
     |> Enum.shuffle()
     |> Enum.reduce_while(nil, fn port, _ ->
-      case gatherer.transport_module.open(port, socket_opts) do
+      case gatherer.transport_module.setup_socket(
+             ip,
+             port,
+             socket_opts,
+             transport_opts
+           ) do
         {:ok, socket} ->
           {:ok, {^ip, sock_port}} = gatherer.transport_module.sockname(socket)
 
@@ -74,7 +82,7 @@ defmodule ExICE.Priv.Gatherer do
             "Successfully opened socket for: #{inspect(ip)}:#{sock_port}, socket: #{inspect(socket)}"
           )
 
-          {:halt, socket}
+          {:halt, %{socket: socket, transport_opts: transport_opts}}
 
         {:error, :eaddrinuse} ->
           Logger.debug("Address #{inspect(ip)}:#{inspect(port)} in use. Trying next port.")
@@ -88,7 +96,7 @@ defmodule ExICE.Priv.Gatherer do
   end
 
   @spec gather_host_candidates(t(), %{:inet.ip_address() => non_neg_integer()}, [
-          Transport.socket()
+          {Transport.socket(), map()}
         ]) :: [Candidate.t()]
   def gather_host_candidates(gatherer, local_preferences, sockets) do
     {local_preferences, cands} =
@@ -123,7 +131,14 @@ defmodule ExICE.Priv.Gatherer do
         stun_family = Utils.family(ip)
 
         if cand_family == stun_family do
-          gatherer.transport_module.send(socket, {ip, port}, binding_request)
+          # If using TCP transport:
+          # Communication with STUN servers should be handled differently
+          # than the rest of the TCP traffic: the messages are not RFC 4571-framed,
+          # and we want to issue connection attempts from passive candidates as well.
+          gatherer.transport_module.send(socket, {ip, port}, binding_request,
+            frame?: false,
+            connect?: true
+          )
         else
           Logger.debug("""
           Not gathering srflx candidate because of incompatible ip address families.
@@ -180,7 +195,12 @@ defmodule ExICE.Priv.Gatherer do
 
     if valid_external_ip?(external_ip, host_cand.base.address, external_ips) do
       priority =
-        Candidate.priority!(local_preferences, host_cand.base.address, :srflx)
+        Candidate.priority!(
+          local_preferences,
+          host_cand.base.address,
+          :srflx,
+          host_cand.base.tcp_type
+        )
 
       cand =
         Candidate.Srflx.new(
@@ -190,7 +210,8 @@ defmodule ExICE.Priv.Gatherer do
           base_port: host_cand.base.port,
           priority: priority,
           transport_module: host_cand.base.transport_module,
-          socket: host_cand.base.socket
+          socket: host_cand.base.socket,
+          tcp_type: host_cand.base.tcp_type
         )
 
       Logger.debug("New srflx candidate from NAT mapping: #{inspect(cand)}")
@@ -264,10 +285,16 @@ defmodule ExICE.Priv.Gatherer do
     Keyword.get_values(int, :addr)
   end
 
-  defp create_new_host_candidate(gatherer, local_preferences, socket) do
+  defp create_new_host_candidate(gatherer, local_preferences, %{
+         socket: socket,
+         transport_opts: transport_opts
+       }) do
     {:ok, {sock_ip, sock_port}} = gatherer.transport_module.sockname(socket)
 
-    {local_preferences, priority} = Candidate.priority(local_preferences, sock_ip, :host)
+    tcp_type = transport_opts[:tcp_type]
+
+    {local_preferences, priority} =
+      Candidate.priority(local_preferences, sock_ip, :host, tcp_type)
 
     cand =
       Candidate.Host.new(
@@ -277,7 +304,8 @@ defmodule ExICE.Priv.Gatherer do
         base_port: sock_port,
         priority: priority,
         transport_module: gatherer.transport_module,
-        socket: socket
+        socket: socket,
+        tcp_type: tcp_type
       )
 
     Logger.debug("New candidate: #{inspect(cand)}")

@@ -14,7 +14,8 @@ defmodule ExICE.Priv.CandidatePairTest do
         base_address: addr1,
         base_port: port1,
         priority: 100,
-        socket: nil
+        socket: nil,
+        transport_module: ExICE.Support.Transport.Mock
       )
 
     addr2 = {192, 168, 1, 2}

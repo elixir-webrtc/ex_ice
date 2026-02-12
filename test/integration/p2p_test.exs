@@ -36,8 +36,8 @@ defmodule ExICE.Integration.P2PTest do
     a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
     a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
 
-    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
-    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
+    a1_status = %{fd: a1_fd, data_send: false, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, data_send: false, completed: false, data_recv: false}
 
     assert p2p(agent1, agent2, a1_status, a2_status)
 
@@ -53,8 +53,8 @@ defmodule ExICE.Integration.P2PTest do
     a1_fd = File.open!(Path.join([tmp_dir, "a1_restart_recv_data"]), [:append])
     a2_fd = File.open!(Path.join([tmp_dir, "a2_restart_recv_data"]), [:append])
 
-    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
-    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
+    a1_status = %{fd: a1_fd, data_send: false, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, data_send: false, completed: false, data_recv: false}
 
     flush_ice_mailbox()
 
@@ -117,8 +117,8 @@ defmodule ExICE.Integration.P2PTest do
     a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
     a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
 
-    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
-    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
+    a1_status = %{fd: a1_fd, data_send: false, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, data_send: false, completed: false, data_recv: false}
 
     assert p2p(agent1, agent2, a1_status, a2_status)
 
@@ -172,8 +172,8 @@ defmodule ExICE.Integration.P2PTest do
     a1_fd = File.open!(Path.join([tmp_dir, "a1_recv_data"]), [:append])
     a2_fd = File.open!(Path.join([tmp_dir, "a2_recv_data"]), [:append])
 
-    a1_status = %{fd: a1_fd, completed: false, data_recv: false}
-    a2_status = %{fd: a2_fd, completed: false, data_recv: false}
+    a1_status = %{fd: a1_fd, data_send: false, completed: false, data_recv: false}
+    a2_status = %{fd: a2_fd, data_send: false, completed: false, data_recv: false}
 
     assert p2p(agent1, agent2, a1_status, a2_status)
 
@@ -200,17 +200,27 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.end_of_candidates(agent2)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent1, {:connection_state_change, :connected}} ->
-        Logger.info("Connected, sending file...")
+      {:ex_ice, ^agent1, {:connection_state_change, new_state}} ->
+        Logger.info("Conn state change: #{inspect(new_state)}")
 
-        Task.start(fn ->
-          File.stream!("./test/fixtures/lotr.txt", [], 1000)
-          |> Stream.each(fn chunk -> ICEAgent.send_data(agent1, chunk) end)
-          |> Stream.run()
+        a1_status =
+          if new_state in [:connected, :completed] and not a1_status.data_send do
+            Logger.info("Sending file...")
 
-          ICEAgent.send_data(agent1, "eof")
-        end)
+            Task.start(fn ->
+              File.stream!("./test/fixtures/lotr.txt", [], 1000)
+              |> Stream.each(fn chunk -> ICEAgent.send_data(agent1, chunk) end)
+              |> Stream.run()
 
+              ICEAgent.send_data(agent1, "eof")
+            end)
+
+            %{a1_status | data_send: true}
+          else
+            a1_status
+          end
+
+        a1_status = %{a1_status | completed: new_state == :completed}
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent1, {:data, "eof"}} ->
@@ -218,11 +228,6 @@ defmodule ExICE.Integration.P2PTest do
 
       {:ex_ice, ^agent1, {:data, data}} ->
         :ok = IO.binwrite(a1_status.fd, data)
-        p2p(agent1, agent2, a1_status, a2_status)
-
-      {:ex_ice, ^agent1, {:connection_state_change, :completed}} ->
-        Logger.info("Completed")
-        a1_status = %{a1_status | completed: true}
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent2, {:new_candidate, cand}} ->
@@ -233,22 +238,27 @@ defmodule ExICE.Integration.P2PTest do
         ICEAgent.end_of_candidates(agent1)
         p2p(agent1, agent2, a1_status, a2_status)
 
-      {:ex_ice, ^agent2, {:connection_state_change, :completed}} ->
-        Logger.info("Completed")
-        a2_status = %{a2_status | completed: true}
-        p2p(agent1, agent2, a1_status, a2_status)
+      {:ex_ice, ^agent2, {:connection_state_change, new_state}} ->
+        Logger.info("Conn state change: #{inspect(new_state)}")
 
-      {:ex_ice, ^agent2, {:connection_state_change, :connected}} ->
-        Logger.info("Connected, sending file...")
+        a2_status =
+          if new_state in [:connected, :completed] and not a2_status.data_send do
+            Logger.info("Sending file...")
 
-        Task.start(fn ->
-          File.stream!("./test/fixtures/lotr.txt", [], 1000)
-          |> Stream.each(fn chunk -> ICEAgent.send_data(agent2, chunk) end)
-          |> Stream.run()
+            Task.start(fn ->
+              File.stream!("./test/fixtures/lotr.txt", [], 1000)
+              |> Stream.each(fn chunk -> ICEAgent.send_data(agent2, chunk) end)
+              |> Stream.run()
 
-          ICEAgent.send_data(agent2, "eof")
-        end)
+              ICEAgent.send_data(agent2, "eof")
+            end)
 
+            %{a2_status | data_send: true}
+          else
+            a2_status
+          end
+
+        a2_status = %{a2_status | completed: new_state == :completed}
         p2p(agent1, agent2, a1_status, a2_status)
 
       {:ex_ice, ^agent2, {:data, "eof"}} ->
