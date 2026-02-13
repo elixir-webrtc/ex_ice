@@ -243,7 +243,9 @@ defmodule ExICE.Priv.Transport.TCP.Client do
             {:noreply, state} = handle_info(msg, state)
             state
         after
-          50 -> state
+          50 ->
+            Logger.debug("No `:connected` message received in 50 ms, connection state unknown")
+            state
         end
 
       other ->
@@ -257,8 +259,8 @@ defmodule ExICE.Priv.Transport.TCP.Client do
 
     case :gen_tcp.accept(listen_socket) do
       {:ok, socket} ->
-        :ok = :gen_tcp.controlling_process(socket, pid)
         send(pid, {:connected, socket})
+        :ok = :gen_tcp.controlling_process(socket, pid)
 
         {:ok, {peer_ip, peer_port}} = :inet.peername(socket)
 
