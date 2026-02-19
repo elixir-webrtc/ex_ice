@@ -169,13 +169,7 @@ defmodule ExICE.Priv.Transport.TCP.Client do
 
       conn_state.frame? ->
         # Framing according to RFC 4571
-        previous =
-          case conn_state.recv_buffer do
-            nil -> <<>>
-            data -> data
-          end
-
-        case previous <> packet do
+        case conn_state.recv_buffer <> packet do
           <<length::unsigned-big-16, data::binary-size(length), rest::binary>> ->
             # HACK: this is dirty and means that, with framing, we're miscalculating
             #       the bytes_sent and bytes_received counters
