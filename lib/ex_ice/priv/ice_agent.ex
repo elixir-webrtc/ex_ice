@@ -1580,8 +1580,9 @@ defmodule ExICE.Priv.ICEAgent do
          {:ok, role_attr} <- get_role_attribute(msg),
          {:ok, use_cand_attr} <- get_use_cand_attribute(msg),
          {:ok, ice_agent} <- check_req_role_conflict(ice_agent, role_attr) do
+      # OOOO NIEEEEEE
       {remote_cand, ice_agent} =
-        get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr)
+        get_or_create_remote_cand(ice_agent, local_cand, src_ip, src_port, prio_attr)
 
       pair =
         CandidatePair.new(local_cand, remote_cand, ice_agent.role, :waiting, last_seen: now())
@@ -2344,14 +2345,17 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr) do
+  defp get_or_create_remote_cand(ice_agent, local_cand, src_ip, src_port, prio_attr) do
     case find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port) do
       nil ->
+        # OOOOO NIEEEEEE
+        IO.inspect(local_cand, label: :LOCAL_CANDIDATE)
         cand =
           ExICE.Candidate.new(:prflx,
             address: src_ip,
             port: src_port,
-            priority: prio_attr.priority
+            priority: prio_attr.priority,
+            transport: local_cand.transport
           )
 
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
