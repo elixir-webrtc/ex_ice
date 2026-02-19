@@ -2355,7 +2355,7 @@ defmodule ExICE.Priv.ICEAgent do
             address: src_ip,
             port: src_port,
             priority: prio_attr.priority,
-            transport: local_cand.transport
+            transport: local_cand.base.transport
           )
 
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
