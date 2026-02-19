@@ -920,7 +920,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  @spex handle_tcp(
+  @spec handle_tcp(
           t(),
           ExICE.Priv.Transport.socket(),
           :inet.ip_address(),
