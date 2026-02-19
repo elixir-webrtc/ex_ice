@@ -37,13 +37,14 @@ defmodule ExICE.Priv.Transport.TCP do
   defdelegate sockname(socket), to: :inet
 
   # HACK: using listen sockets here is ugly, but was easier to fit into the existing ICE Agent implementation.
+  #       At the moment, `listen_socket` is used to access the specific socket connected to `dest`.
   #       This should be changed, especially because we're going to want to close the listen sockets
   #       after the connection is successfully established.
   @impl true
   def send(listen_socket, dest, packet, tp_opts \\ []) do
     with {:ok, local} <- sockname(listen_socket),
          [{pid, _}] <- Registry.lookup(ExICE.Priv.Registry, local) do
-      GenServer.call(pid, {:send, listen_socket, dest, packet, tp_opts})
+      Client.send(pid, listen_socket, dest, packet, tp_opts)
     else
       _ -> {:error, :no_client_process}
     end
@@ -53,7 +54,7 @@ defmodule ExICE.Priv.Transport.TCP do
   def close(listen_socket) do
     with {:ok, local} <- sockname(listen_socket),
          [{pid, _}] <- Registry.lookup(ExICE.Priv.Registry, local) do
-      GenServer.call(pid, {:close, listen_socket})
+      Client.close(pid, listen_socket)
     else
       _ -> {:error, :no_client_process}
     end

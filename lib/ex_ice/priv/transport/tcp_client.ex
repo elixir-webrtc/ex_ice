@@ -133,7 +133,7 @@ defmodule ExICE.Priv.Transport.TCP.Client do
 
   @impl true
   def handle_call({:close, listen_socket}, _from, state) do
-    # TODO: revisit the closing logic
+    # TODO: revisit the closing logic. Listen sockets should be closed after the connection is established
     :gen_tcp.close(listen_socket)
     Enum.each(state.connections, fn {_, %{socket: socket}} -> :gen_tcp.close(socket) end)
 
@@ -179,7 +179,7 @@ defmodule ExICE.Priv.Transport.TCP.Client do
           <<length::unsigned-big-16, data::binary-size(length), rest::binary>> ->
             # HACK: this is dirty and means that, with framing, we're miscalculating
             #       the bytes_sent and bytes_received counters
-            send(state.ice_agent, {:udp, state.listen_socket, src_ip, src_port, data})
+            send(state.ice_agent, {:tcp, state.listen_socket, src_ip, src_port, data})
             state = put_in(state, [:connections, remote, :recv_buffer], <<>>)
 
             if rest != <<>> do
@@ -194,7 +194,7 @@ defmodule ExICE.Priv.Transport.TCP.Client do
         end
 
       true ->
-        send(state.ice_agent, {:udp, state.listen_socket, src_ip, src_port, packet})
+        send(state.ice_agent, {:tcp, state.listen_socket, src_ip, src_port, packet})
         {:noreply, state}
     end
   end

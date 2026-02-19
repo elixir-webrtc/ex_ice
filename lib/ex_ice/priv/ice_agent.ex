@@ -920,6 +920,18 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
+  @spex handle_tcp(
+          t(),
+          ExICE.Priv.Transport.socket(),
+          :inet.ip_address(),
+          :inet.port_number(),
+          binary()
+        ) :: t()
+  def handle_tcp(ice_agent, socket, src_ip, src_port, packet) do
+    # This is the same because framing and mapping the sockets is handled in the TCP Client
+    handle_udp(ice_agent, socket, src_ip, src_port, packet)
+  end
+
   @spec handle_ex_turn_msg(t(), reference(), ExTURN.Client.notification_message()) :: t()
   def handle_ex_turn_msg(%__MODULE__{state: :closed} = ice_agent, _, _) do
     Logger.debug("Received ex_turn message in closed state. Ignoring.")

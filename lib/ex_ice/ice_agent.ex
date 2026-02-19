@@ -496,11 +496,9 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def handle_info({:tcp, _socket, _packet}, state) do
-    # TODO: consider receiving TCP data in the ICE Agent process
-    # ice_agent = ExICE.Priv.ICEAgent.handle_tcp(state.ice_agent, socket, packet)
-    # {:noreply, %{state | ice_agent: ice_agent}}
-    {:noreply, state}
+  def handle_info({:tcp, socket, src_ip, src_port, packet}, state) do
+    ice_agent = ExICE.Priv.ICEAgent.handle_tcp(state.ice_agent, socket, src_ip, src_port, packet)
+    {:noreply, %{state | ice_agent: ice_agent}}
   end
 
   @impl true
