@@ -1580,7 +1580,6 @@ defmodule ExICE.Priv.ICEAgent do
          {:ok, role_attr} <- get_role_attribute(msg),
          {:ok, use_cand_attr} <- get_use_cand_attribute(msg),
          {:ok, ice_agent} <- check_req_role_conflict(ice_agent, role_attr) do
-      # OOOO NIEEEEEE
       {remote_cand, ice_agent} =
         get_or_create_remote_cand(ice_agent, local_cand, src_ip, src_port, prio_attr)
 
@@ -2252,11 +2251,12 @@ defmodule ExICE.Priv.ICEAgent do
     end)
   end
 
-  defp tcp_types_ok?(nil, nil), do: true
-  defp tcp_types_ok?(:so, :so), do: true
-  defp tcp_types_ok?(:active, :passive), do: true
-  defp tcp_types_ok?(:passive, :active), do: true
-  defp tcp_types_ok?(_, _), do: false
+  defp tcp_types_ok?(t1, t2), do: get_matching_tcp_type(t1) == t2
+
+  defp get_matching_tcp_type(nil), do: nil
+  defp get_matching_tcp_type(:so), do: :so
+  defp get_matching_tcp_type(:active), do: :passive
+  defp get_matching_tcp_type(:passive), do: :active
 
   defp symmetric?(ice_agent, socket, response_src, conn_check_pair) do
     local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
@@ -2348,14 +2348,13 @@ defmodule ExICE.Priv.ICEAgent do
   defp get_or_create_remote_cand(ice_agent, local_cand, src_ip, src_port, prio_attr) do
     case find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port) do
       nil ->
-        # OOOOO NIEEEEEE
-        IO.inspect(local_cand, label: :LOCAL_CANDIDATE)
         cand =
           ExICE.Candidate.new(:prflx,
             address: src_ip,
             port: src_port,
             priority: prio_attr.priority,
-            transport: local_cand.base.transport
+            transport: local_cand.base.transport,
+            tcp_type: get_matching_tcp_type(local_cand.base.tcp_type)
           )
 
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
