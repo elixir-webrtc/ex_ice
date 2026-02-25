@@ -10,7 +10,6 @@ defmodule ExICE.Priv.ICEAgent do
     ConnCheckHandler,
     Gatherer,
     IfDiscovery,
-    Transport,
     Utils
   }
 
@@ -142,9 +141,9 @@ defmodule ExICE.Priv.ICEAgent do
     {local_ufrag, local_pwd} = generate_credentials()
 
     controlling_process = Keyword.fetch!(opts, :controlling_process)
+    transport_module = Keyword.fetch!(opts, :transport_module)
 
     if_discovery_module = opts[:if_discovery_module] || IfDiscovery.Inet
-    transport_module = opts[:transport_module] || Transport.UDP
     ip_filter = opts[:ip_filter] || fn _ -> true end
     ports = opts[:ports] || [0]
 
@@ -358,7 +357,7 @@ defmodule ExICE.Priv.ICEAgent do
 
     %{
       ice_agent
-      | sockets: sockets,
+      | sockets: Enum.map(sockets, fn %{socket: socket} -> socket end),
         gathering_transactions: gathering_transactions
     }
     |> update_gathering_state()
@@ -377,7 +376,7 @@ defmodule ExICE.Priv.ICEAgent do
 
     %{
       ice_agent
-      | sockets: sockets,
+      | sockets: Enum.map(sockets, fn %{socket: socket} -> socket end),
         gathering_transactions: relay_gathering_transactions
     }
     |> update_gathering_state()
@@ -921,6 +920,18 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
+  @spec handle_tcp(
+          t(),
+          ExICE.Priv.Transport.socket(),
+          :inet.ip_address(),
+          :inet.port_number(),
+          binary()
+        ) :: t()
+  def handle_tcp(ice_agent, socket, src_ip, src_port, packet) do
+    # This is the same because framing and mapping the sockets is handled in the TCP Client
+    handle_udp(ice_agent, socket, src_ip, src_port, packet)
+  end
+
   @spec handle_ex_turn_msg(t(), reference(), ExTURN.Client.notification_message()) :: t()
   def handle_ex_turn_msg(%__MODULE__{state: :closed} = ice_agent, _, _) do
     Logger.debug("Received ex_turn message in closed state. Ignoring.")
@@ -993,7 +1004,7 @@ defmodule ExICE.Priv.ICEAgent do
   ## PRIV API
 
   defp create_srflx_gathering_transactions(stun_servers, sockets) do
-    for stun_server <- stun_servers, socket <- sockets, into: %{} do
+    for stun_server <- stun_servers, %{socket: socket} <- sockets, into: %{} do
       <<t_id::12*8>> = :crypto.strong_rand_bytes(12)
 
       t = %{
@@ -1009,8 +1020,18 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp create_relay_gathering_transactions(ice_agent, turn_servers, sockets) do
+    transport = ice_agent.transport_module.transport()
+
+    turn_servers =
+      if transport == :udp or turn_servers == [] do
+        turn_servers
+      else
+        Logger.warning("Relay candidates for transport #{inspect(transport)} are unsupported")
+        []
+      end
+
     # TODO revisit this
-    for turn_server <- turn_servers, socket <- sockets do
+    for turn_server <- turn_servers, %{socket: socket} <- sockets do
       with {:ok, client} <-
              ExTURN.Client.new(turn_server.url, turn_server.username, turn_server.credential),
            {:ok, {sock_ip, _sock_port}} <- ice_agent.transport_module.sockname(socket),
@@ -1217,8 +1238,9 @@ defmodule ExICE.Priv.ICEAgent do
         # In other case, we might get duplicates.
         {:ok, {sock_addr, _sock_port}} = ice_agent.transport_module.sockname(tr.socket)
 
+        # TODO: set correct tcp_type here
         {local_preferences, priority} =
-          Candidate.priority(ice_agent.local_preferences, sock_addr, :relay)
+          Candidate.priority(ice_agent.local_preferences, sock_addr, :relay, nil)
 
         ice_agent = %{
           ice_agent
@@ -1559,7 +1581,7 @@ defmodule ExICE.Priv.ICEAgent do
          {:ok, use_cand_attr} <- get_use_cand_attribute(msg),
          {:ok, ice_agent} <- check_req_role_conflict(ice_agent, role_attr) do
       {remote_cand, ice_agent} =
-        get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr)
+        get_or_create_remote_cand(ice_agent, local_cand, src_ip, src_port, prio_attr)
 
       pair =
         CandidatePair.new(local_cand, remote_cand, ice_agent.role, :waiting, last_seen: now())
@@ -1913,7 +1935,15 @@ defmodule ExICE.Priv.ICEAgent do
       nil ->
         {:ok, {base_addr, base_port}} = ice_agent.transport_module.sockname(tr.socket)
 
-        priority = Candidate.priority!(ice_agent.local_preferences, base_addr, :srflx)
+        host_cand = find_host_cand(Map.values(ice_agent.local_cands), tr.socket)
+
+        priority =
+          Candidate.priority!(
+            ice_agent.local_preferences,
+            base_addr,
+            :srflx,
+            host_cand.base.tcp_type
+          )
 
         cand =
           Candidate.Srflx.new(
@@ -1923,7 +1953,8 @@ defmodule ExICE.Priv.ICEAgent do
             base_port: base_port,
             priority: priority,
             transport_module: ice_agent.transport_module,
-            socket: tr.socket
+            socket: tr.socket,
+            tcp_type: host_cand.base.tcp_type
           )
 
         Logger.debug("New srflx candidate: #{inspect(cand)}")
@@ -2208,15 +2239,24 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp get_matching_candidates_local(candidates, %c_mod{} = cand) do
     Enum.filter(candidates, fn c ->
-      ExICE.Candidate.family(c) == c_mod.family(cand)
+      ExICE.Candidate.family(c) == c_mod.family(cand) and
+        tcp_types_ok?(ExICE.Candidate.tcp_type(c), c_mod.tcp_type(cand))
     end)
   end
 
   defp get_matching_candidates_remote(candidates, cand) do
     Enum.filter(candidates, fn %c_mod{} = c ->
-      c_mod.family(c) == ExICE.Candidate.family(cand)
+      c_mod.family(c) == ExICE.Candidate.family(cand) and
+        tcp_types_ok?(c_mod.tcp_type(c), ExICE.Candidate.tcp_type(cand))
     end)
   end
+
+  defp tcp_types_ok?(t1, t2), do: get_matching_tcp_type(t1) == t2
+
+  defp get_matching_tcp_type(nil), do: nil
+  defp get_matching_tcp_type(:so), do: :so
+  defp get_matching_tcp_type(:active), do: :passive
+  defp get_matching_tcp_type(:passive), do: :active
 
   defp symmetric?(ice_agent, socket, response_src, conn_check_pair) do
     local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
@@ -2275,7 +2315,12 @@ defmodule ExICE.Priv.ICEAgent do
         local_cand = conn_check_local_cand
 
         priority =
-          Candidate.priority!(ice_agent.local_preferences, local_cand.base.base_address, :prflx)
+          Candidate.priority!(
+            ice_agent.local_preferences,
+            local_cand.base.base_address,
+            :prflx,
+            local_cand.base.tcp_type
+          )
 
         cand =
           Candidate.Prflx.new(
@@ -2285,7 +2330,8 @@ defmodule ExICE.Priv.ICEAgent do
             base_port: local_cand.base.base_port,
             priority: priority,
             transport_module: ice_agent.transport_module,
-            socket: local_cand.base.socket
+            socket: local_cand.base.socket,
+            tcp_type: local_cand.base.tcp_type
           )
 
         Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
@@ -2299,14 +2345,16 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp get_or_create_remote_cand(ice_agent, src_ip, src_port, prio_attr) do
+  defp get_or_create_remote_cand(ice_agent, local_cand, src_ip, src_port, prio_attr) do
     case find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port) do
       nil ->
         cand =
           ExICE.Candidate.new(:prflx,
             address: src_ip,
             port: src_port,
-            priority: prio_attr.priority
+            priority: prio_attr.priority,
+            transport: local_cand.base.transport,
+            tcp_type: get_matching_tcp_type(local_cand.base.tcp_type)
           )
 
         Logger.debug("Adding new remote prflx candidate: #{inspect(cand)}")
@@ -2400,7 +2448,8 @@ defmodule ExICE.Priv.ICEAgent do
     # but it's return type is not standardized - sometimes it's %{states: [:closed]},
     # some other time %{rstates: [:closed], wstates: [:closed]}.
     case ice_agent.transport_module.sockname(socket) do
-      {:error, :closed} -> ice_agent
+      # usually we'd see EINVAL here, but in rare cases it might be EBADF (FD already disposed of)
+      {:error, _reason} -> ice_agent
       _ -> do_close_socket(ice_agent, socket)
     end
   end
@@ -2497,7 +2546,7 @@ defmodule ExICE.Priv.ICEAgent do
           :ok = ice_agent.transport_module.close(socket)
           :ok = flush_socket_msg(socket)
 
-        {:error, :closed} ->
+        {:error, _reason} ->
           # socket already closed
           :ok
       end
@@ -2652,7 +2701,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp change_gathering_state(ice_agent, new_gathering_state, opts \\ []) do
-    Logger.debug("Gatering state change: #{ice_agent.gathering_state} -> #{new_gathering_state}")
+    Logger.debug("Gathering state change: #{ice_agent.gathering_state} -> #{new_gathering_state}")
 
     if opts[:notify] != false do
       notify(ice_agent.on_gathering_state_change, {:gathering_state_change, new_gathering_state})
@@ -3094,12 +3143,18 @@ defmodule ExICE.Priv.ICEAgent do
         {:ok, {sock_addr, _sock_port}} =
           ice_agent.transport_module.sockname(local_candidate.base.socket)
 
-        Candidate.priority!(ice_agent.local_preferences, sock_addr, :prflx)
+        Candidate.priority!(
+          ice_agent.local_preferences,
+          sock_addr,
+          :prflx,
+          local_candidate.base.tcp_type
+        )
       else
         Candidate.priority!(
           ice_agent.local_preferences,
           local_candidate.base.base_address,
-          :prflx
+          :prflx,
+          local_candidate.base.tcp_type
         )
       end
 
@@ -3130,7 +3185,7 @@ defmodule ExICE.Priv.ICEAgent do
           # we get an eperm error but retrying seems to help ¯\_(ツ)_/¯
           Logger.debug("""
           Couldn't send data to: #{inspect(dst_ip)}:#{dst_port}, reason: #{reason}, cand: #{inspect(local_cand)}. \
-          Retyring...\
+          Retrying...\
           """)
 
           do_send(ice_agent, local_cand, dst, data, false)
