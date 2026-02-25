@@ -944,13 +944,27 @@ defmodule ExICE.Priv.ICEAgent do
 
           {:send, dst, data, client} ->
             tr = %{tr | client: client}
-            :ok = ice_agent.transport_module.send(tr.socket, dst, data)
-            put_in(ice_agent.gathering_transactions[tr_id], tr)
+
+            case ice_agent.transport_module.send(tr.socket, dst, data) do
+              :ok ->
+                put_in(ice_agent.gathering_transactions[tr_id], tr)
+
+              {:error, reason} ->
+                Logger.debug(
+                  "Failed to send TURN message: #{inspect(reason)}. Closing transaction."
+                )
+
+                {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
+                update_gathering_state(ice_agent)
+            end
 
           {:error, _reason, _client} ->
             {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
             update_gathering_state(ice_agent)
         end
+
+      {nil, %{client: %{state: :error}}} ->
+        ice_agent
 
       {nil, cand} ->
         case ExTURN.Client.handle_message(cand.client, msg) do
@@ -962,8 +976,17 @@ defmodule ExICE.Priv.ICEAgent do
             cand = %{cand | client: client}
             ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
             # we can't use do_send here as it will try to create permission for the turn address
-            :ok = ice_agent.transport_module.send(cand.base.socket, dst, data)
-            ice_agent
+            case ice_agent.transport_module.send(cand.base.socket, dst, data) do
+              :ok ->
+                ice_agent
+
+              {:error, reason} ->
+                Logger.debug(
+                  "Failed to send TURN message: #{inspect(reason)}. Closing candidate."
+                )
+
+                close_candidate(ice_agent, cand)
+            end
 
           {:error, _reason, client} ->
             Logger.debug("""
