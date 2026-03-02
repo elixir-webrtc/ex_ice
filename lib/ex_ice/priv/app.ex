@@ -9,16 +9,17 @@ defmodule ExICE.Priv.App do
     kernel_ver = kernel_version()
 
     children =
-      if kernel_ver >= {9, 1} do
-        [{ExICE.Priv.MDNS.Resolver, :gen_udp}]
-      else
-        Logger.warning("""
-        Not starting MDNS resolver as it requires kernel version >= 9.1.
-        Detected kernel version: #{inspect(kernel_ver)}
-        """)
+      [{Registry, keys: :unique, name: ExICE.Priv.Registry}] ++
+        if kernel_ver >= {9, 1} do
+          [{ExICE.Priv.MDNS.Resolver, ExICE.Priv.Transport.UDP}]
+        else
+          Logger.warning("""
+          Not starting mDNS resolver as it requires kernel version >= 9.1.
+          Detected kernel version: #{inspect(kernel_ver)}
+          """)
 
-        []
-      end
+          []
+        end
 
     Supervisor.start_link(children, strategy: :one_for_one)
   end

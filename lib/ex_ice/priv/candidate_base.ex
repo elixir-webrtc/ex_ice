@@ -2,7 +2,7 @@ defmodule ExICE.Priv.CandidateBase do
   @moduledoc false
   alias ExICE.Priv.{Candidate, Utils}
 
-  @type t() :: %__MODULE__{
+  @type t :: %__MODULE__{
           id: integer(),
           address: :inet.ip_address() | String.t(),
           base_address: :inet.ip_address() | nil,
@@ -10,10 +10,11 @@ defmodule ExICE.Priv.CandidateBase do
           foundation: integer(),
           port: :inet.port_number(),
           priority: integer(),
-          transport: :udp,
+          transport: :udp | :tcp,
           transport_module: module(),
           socket: :inet.socket() | nil,
           type: Candidate.type(),
+          tcp_type: Candidate.tcp_type(),
           closed?: boolean()
         }
 
@@ -28,11 +29,12 @@ defmodule ExICE.Priv.CandidateBase do
     :transport_module,
     :type
   ]
-  defstruct @enforce_keys ++ [:base_address, :base_port, :socket, closed?: false]
+  defstruct @enforce_keys ++ [:base_address, :base_port, :socket, :tcp_type, closed?: false]
 
   @spec new(Candidate.type(), Keyword.t()) :: t()
   def new(type, config) do
-    transport = :udp
+    transport_module = Keyword.fetch!(config, :transport_module)
+    transport = transport_module.transport()
     address = Keyword.fetch!(config, :address)
 
     %__MODULE__{
@@ -44,9 +46,10 @@ defmodule ExICE.Priv.CandidateBase do
       port: Keyword.fetch!(config, :port),
       priority: Keyword.fetch!(config, :priority),
       transport: transport,
-      transport_module: Keyword.get(config, :transport_module, ExICE.Priv.Transport.UDP),
+      transport_module: transport_module,
       socket: Keyword.fetch!(config, :socket),
-      type: type
+      type: type,
+      tcp_type: config[:tcp_type]
     }
   end
 
@@ -57,6 +60,9 @@ defmodule ExICE.Priv.CandidateBase do
   def family(%__MODULE__{address: {_, _, _, _}}), do: :ipv4
   def family(%__MODULE__{address: {_, _, _, _, _, _, _, _}}), do: :ipv6
 
+  @spec tcp_type(t()) :: Candidate.tcp_type()
+  def tcp_type(%__MODULE__{tcp_type: tt}), do: tt
+
   @spec to_candidate(t()) :: ExICE.Candidate.t()
   def to_candidate(cand) do
     ExICE.Candidate.new(cand.type,
@@ -66,7 +72,8 @@ defmodule ExICE.Priv.CandidateBase do
       base_port: cand.base_port,
       foundation: cand.foundation,
       transport: cand.transport,
-      priority: cand.priority
+      priority: cand.priority,
+      tcp_type: cand.tcp_type
     )
   end
 end

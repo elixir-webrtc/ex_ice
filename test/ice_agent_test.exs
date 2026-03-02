@@ -16,18 +16,20 @@ defmodule ExICE.ICEAgentTest do
   end
 
   test "gather_candidates/1" do
-    {:ok, agent} = ICEAgent.start_link(role: :controlling)
-    :ok = ICEAgent.gather_candidates(agent)
+    for transport <- [:udp, :tcp] do
+      {:ok, agent} = ICEAgent.start_link(role: :controlling, transport: transport)
+      :ok = ICEAgent.gather_candidates(agent)
 
-    assert_receive {:ex_ice, ^agent, {:gathering_state_change, :gathering}}
-    assert_receive {:ex_ice, ^agent, {:gathering_state_change, :complete}}
+      assert_receive {:ex_ice, ^agent, {:gathering_state_change, :gathering}}
+      assert_receive {:ex_ice, ^agent, {:gathering_state_change, :complete}}
 
-    :ok = ICEAgent.restart(agent)
-    assert_receive {:ex_ice, ^agent, {:gathering_state_change, :new}}
+      :ok = ICEAgent.restart(agent)
+      assert_receive {:ex_ice, ^agent, {:gathering_state_change, :new}}
 
-    :ok = ICEAgent.gather_candidates(agent)
-    assert_receive {:ex_ice, ^agent, {:gathering_state_change, :gathering}}
-    assert_receive {:ex_ice, ^agent, {:gathering_state_change, :complete}}
+      :ok = ICEAgent.gather_candidates(agent)
+      assert_receive {:ex_ice, ^agent, {:gathering_state_change, :gathering}}
+      assert_receive {:ex_ice, ^agent, {:gathering_state_change, :complete}}
+    end
   end
 
   test "get_stats/1" do

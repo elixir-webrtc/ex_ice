@@ -26,7 +26,7 @@ defmodule ExICE.Support.Transport.Mock do
     end
   end
 
-  @spec recv(ExICE.Transport.socket()) :: binary() | nil
+  @spec recv(ExICE.Priv.Transport.socket()) :: binary() | nil
   def recv(ref) do
     case :ets.lookup(:transport_mock, ref) do
       [{^ref, %{buf: []} = _socket}] ->
@@ -39,7 +39,13 @@ defmodule ExICE.Support.Transport.Mock do
   end
 
   @impl true
-  def open(port, opts) do
+  def transport, do: :udp
+
+  @impl true
+  def socket_configs, do: [[]]
+
+  @impl true
+  def setup_socket(ip, port, _opts \\ [], _tp_opts \\ []) do
     unless :transport_mock in :ets.all() do
       raise """
       #{__MODULE__} has not been initialized.
@@ -47,8 +53,6 @@ defmodule ExICE.Support.Transport.Mock do
       in a long running process.
       """
     end
-
-    ip = Keyword.get(opts, :ip, {0, 0, 0, 0})
 
     case port do
       0 ->
@@ -79,7 +83,7 @@ defmodule ExICE.Support.Transport.Mock do
   end
 
   @impl true
-  def send(ref, _dst, packet) do
+  def send(ref, _dst, packet, _tp_opts \\ []) do
     [{^ref, %{state: :open} = socket}] = :ets.lookup(:transport_mock, ref)
     :ets.insert(:transport_mock, {ref, %{socket | buf: socket.buf ++ [packet]}})
     :ok

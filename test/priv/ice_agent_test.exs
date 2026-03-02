@@ -68,6 +68,9 @@ defmodule ExICE.Priv.ICEAgentTest do
     def family(cand), do: CandidateBase.family(cand.base)
 
     @impl true
+    def tcp_type(cand), do: CandidateBase.tcp_type(cand.base)
+
+    @impl true
     def to_candidate(cand), do: CandidateBase.to_candidate(cand.base)
 
     @impl true

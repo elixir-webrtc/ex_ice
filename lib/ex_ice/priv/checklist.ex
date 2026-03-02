@@ -63,6 +63,8 @@ defmodule ExICE.Priv.Checklist do
 
   @spec prune(t()) :: t()
   def prune(checklist) do
+    # TODO: prune pairs where the local TCP candidate is passive, per RFC 6544, sec. 6.2.
+
     # This is done according to RFC 8838 sec. 10
     {waiting, in_flight_or_done} =
       Enum.split_with(checklist, fn {_id, p} -> p.state in [:waiting, :frozen] end)

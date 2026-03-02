@@ -95,7 +95,8 @@ defmodule Peer do
     role = String.to_atom(role)
 
     {:ok, pid} =
-      ICEAgent.start_link(role,
+      ICEAgent.start_link(
+        role: role,
         ip_filter: fn
           {_, _, _, _} -> true
           {_, _, _, _, _, _, _, _} -> false

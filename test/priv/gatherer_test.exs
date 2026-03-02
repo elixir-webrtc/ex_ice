@@ -95,7 +95,7 @@ defmodule ExICE.Priv.GathererTest do
 
     {:ok, sockets} = Gatherer.open_sockets(gatherer)
 
-    for socket <- sockets do
+    for %{socket: socket} <- sockets do
       {:ok, {_ip, port}} = Transport.Mock.sockname(socket)
       assert port in port_range
     end
