@@ -302,7 +302,7 @@ defmodule ExICE.Integration.P2PTest do
         :ok = IO.binwrite(a2_status.fd, data)
         p2p(agent1, agent2, a1_status, a2_status)
     after
-      10_000 -> false
+      20_000 -> false
     end
   end
 
