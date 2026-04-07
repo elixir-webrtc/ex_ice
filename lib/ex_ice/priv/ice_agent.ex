@@ -2675,8 +2675,8 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp generate_credentials() do
-    ufrag = :crypto.strong_rand_bytes(3) |> Base.encode64()
-    pwd = :crypto.strong_rand_bytes(16) |> Base.encode64()
+    ufrag = :crypto.strong_rand_bytes(3) |> Base.encode64(padding: false)
+    pwd = :crypto.strong_rand_bytes(16) |> Base.encode64(padding: false)
     {ufrag, pwd}
   end
 
