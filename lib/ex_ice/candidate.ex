@@ -12,7 +12,7 @@ defmodule ExICE.Candidate do
           address: :inet.ip_address() | String.t(),
           base_address: :inet.ip_address() | nil,
           base_port: :inet.port_number() | nil,
-          foundation: integer(),
+          foundation: String.t(),
           port: :inet.port_number(),
           priority: integer(),
           transport: :udp | :tcp,
@@ -80,7 +80,7 @@ defmodule ExICE.Candidate do
   def unmarshal(string) do
     with [f_str, c_str, tr_str, pr_str, a_str, po_str, "typ", ty_str | rest] <-
            String.split(string, " "),
-         {foundation, ""} <- Integer.parse(f_str),
+         {:ok, foundation} <- parse_foundation(f_str),
          {_component_id, ""} <- Integer.parse(c_str),
          {:ok, transport} <- parse_transport(String.downcase(tr_str)),
          {priority, ""} <- Integer.parse(pr_str),
@@ -99,7 +99,8 @@ defmodule ExICE.Candidate do
       {:ok, new(type, config ++ extra_config)}
     else
       err when is_list(err) -> {:error, :invalid_candidate}
-      err -> err
+      {:error, _} = err -> err
+      _other -> {:error, :invalid_candidate}
     end
   end
 
@@ -123,7 +124,10 @@ defmodule ExICE.Candidate do
       address: address,
       base_address: config[:base_address],
       base_port: config[:base_port],
-      foundation: ExICE.Priv.Candidate.foundation(type, address, nil, transport),
+      foundation:
+        Keyword.get_lazy(config, :foundation, fn ->
+          ExICE.Priv.Candidate.foundation(type, address, nil, transport)
+        end),
       port: Keyword.fetch!(config, :port),
       priority: Keyword.fetch!(config, :priority),
       transport: transport,
@@ -140,6 +144,16 @@ defmodule ExICE.Candidate do
 
   defp tcp_type_to_string(nil), do: ""
   defp tcp_type_to_string(type), do: "tcptype #{type}"
+
+  # RFC 8839 Section 5.1: foundation = 1*32ice-char, ice-char = ALPHA / DIGIT / "+" / "/"
+  @foundation_pattern ~r/^[a-zA-Z0-9+\/]+$/
+  defp parse_foundation(str) when byte_size(str) in 1..32 do
+    if Regex.match?(@foundation_pattern, str),
+      do: {:ok, str},
+      else: {:error, :invalid_foundation}
+  end
+
+  defp parse_foundation(_str), do: {:error, :invalid_foundation}
 
   defp parse_transport("udp"), do: {:ok, :udp}
   defp parse_transport("tcp"), do: {:ok, :tcp}

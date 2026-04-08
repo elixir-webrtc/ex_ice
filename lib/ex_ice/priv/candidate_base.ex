@@ -7,7 +7,7 @@ defmodule ExICE.Priv.CandidateBase do
           address: :inet.ip_address() | String.t(),
           base_address: :inet.ip_address() | nil,
           base_port: :inet.port_number() | nil,
-          foundation: integer(),
+          foundation: String.t(),
           port: :inet.port_number(),
           priority: integer(),
           transport: :udp | :tcp,

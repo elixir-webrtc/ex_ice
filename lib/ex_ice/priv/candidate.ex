@@ -13,7 +13,7 @@ defmodule ExICE.Priv.Candidate do
           base_port: :inet.port_number(),
           socket: :inet.socket(),
           priority: integer(),
-          foundation: integer(),
+          foundation: String.t(),
           transport: :udp | :tcp,
           tcp_type: tcp_type()
         ]
@@ -128,8 +128,8 @@ defmodule ExICE.Priv.Candidate do
   end
 
   @spec foundation(type(), :inet.ip_address() | String.t(), :inet.ip_address() | nil, atom()) ::
-          integer()
+          String.t()
   def foundation(type, ip, stun_turn_ip, transport) do
-    {type, ip, stun_turn_ip, transport} |> inspect() |> :erlang.crc32()
+    {type, ip, stun_turn_ip, transport} |> inspect() |> :erlang.crc32() |> Integer.to_string()
   end
 end
