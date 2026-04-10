@@ -2908,6 +2908,23 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert <<_channel_number::16, _len::16, "somedata">> = packet
   end
 
+  describe "generate_credentials/0" do
+    test "generates credentials without padding" do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          if_discovery_module: IfDiscovery.MockSingle,
+          transport_module: Transport.Mock
+        )
+
+      refute String.contains?(ice_agent.local_ufrag, "=")
+      refute String.contains?(ice_agent.local_pwd, "=")
+      assert byte_size(ice_agent.local_ufrag) == 4
+      assert byte_size(ice_agent.local_pwd) == 22
+    end
+  end
+
   defp connect(ice_agent) do
     [socket] = ice_agent.sockets
     [remote_cand] = Map.values(ice_agent.remote_cands)
