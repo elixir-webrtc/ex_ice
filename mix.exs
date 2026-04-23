@@ -56,7 +56,10 @@ defmodule ExICE.MixProject do
   defp deps do
     [
       {:ex_stun, "~> 0.2.0"},
-      {:ex_turn, "~> 0.2.0"},
+      {:ex_turn,
+       git: "https://github.com/joaothallis/ex_turn.git",
+       ref: "8a4801b2423bfcc52fe2a5ffb35472324a066556",
+       override: true},
       {:elixir_uuid, "~> 1.0"},
       {:excoveralls, "~> 0.15", only: :test, runtime: false},
       {:ex_doc, "~> 0.27", only: :dev, runtime: false},

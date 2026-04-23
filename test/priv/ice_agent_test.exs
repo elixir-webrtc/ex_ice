@@ -2634,6 +2634,91 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "close with TURN allocation" do
+    setup do
+      ice_agent =
+        ICEAgent.new(
+          controlling_process: self(),
+          role: :controlling,
+          transport_module: Transport.Mock,
+          if_discovery_module: IfDiscovery.MockSingle,
+          ice_transport_policy: :relay,
+          ice_servers: [
+            %{
+              urls: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
+              username: @turn_username,
+              credential: @turn_password
+            }
+          ]
+        )
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+
+      ice_agent = ICEAgent.add_remote_candidate(ice_agent, @remote_cand)
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "sends TURN Refresh(lifetime=0) for an allocated relay candidate",
+         %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      # Drive TURN allocation to success.
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      req = read_allocate_request(socket)
+      resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      assert %ExICE.Priv.Candidate.Relay{client: %ExTURN.Client{state: :allocated}} =
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.base.type == :relay))
+
+      drain_packets(socket)
+
+      ice_agent = ICEAgent.close(ice_agent)
+      assert ice_agent.state == :closed
+
+      refresh_packet = Transport.Mock.recv(socket)
+      assert refresh_packet != nil, "expected close to emit a TURN Refresh packet"
+
+      {:ok, req} = Message.decode(refresh_packet)
+      assert req.type == %Type{class: :request, method: :refresh}
+      assert {:ok, %Lifetime{value: 0}} = Message.get_attribute(req, Lifetime)
+      assert {:ok, %Username{value: @turn_username}} = Message.get_attribute(req, Username)
+      assert {:ok, %Realm{value: @turn_realm}} = Message.get_attribute(req, Realm)
+      assert {:ok, %Nonce{value: @turn_nonce}} = Message.get_attribute(req, Nonce)
+    end
+
+    test "does not send Refresh while the allocation is still being negotiated",
+         %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      # Kick off gathering; after handle_ta_timeout the TURN client is in :auth
+      # (first Allocate sent, no credentials yet). No allocation exists on the
+      # server — closing must not emit a Refresh.
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      _req = read_allocate_request(socket)
+
+      drain_packets(socket)
+
+      _ice_agent = ICEAgent.close(ice_agent)
+
+      assert Transport.Mock.recv(socket) == nil
+    end
+  end
+
+  defp drain_packets(socket) do
+    case Transport.Mock.recv(socket) do
+      nil -> :ok
+      _ -> drain_packets(socket)
+    end
+  end
+
   describe "host to prefabricated srflx mapper" do
     alias ExICE.Priv.Candidate
 

@@ -331,6 +331,12 @@ defmodule ExICE.ICEAgent do
   def init(opts) do
     if Keyword.has_key?(opts, :logger_metadata), do: Logger.metadata(opts[:logger_metadata])
 
+    # Trap exits so terminate/2 runs when our linked parent dies abruptly.
+    # Without this, a parent crash kills us before we can emit TURN
+    # Refresh(lifetime=0), leaving the allocation live on the server and
+    # setting up a later 437 Allocation Mismatch on port reuse.
+    Process.flag(:trap_exit, true)
+
     opts =
       if opts[:transport] == :tcp do
         opts ++ [transport_module: ExICE.Priv.Transport.TCP]
@@ -547,14 +553,35 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
+  def handle_info({:EXIT, _from, :normal}, state), do: {:noreply, state}
+
+  @impl true
+  def handle_info({:EXIT, _from, reason}, state) do
+    # A linked process died abnormally. Stop so terminate/2 can release TURN
+    # allocations before we go. Uses the same reason so supervisors see the
+    # original cause.
+    {:stop, reason, state}
+  end
+
+  @impl true
   def handle_info(msg, state) do
     Logger.warning("Got unexpected msg: #{inspect(msg)}")
     {:noreply, state}
   end
 
   @impl true
-  def terminate(reason, _state) do
-    # we don't need to close sockets manually as this is done automatically by Erlang
+  def terminate(reason, state) do
     Logger.debug("Stopping ICE agent with reason: #{inspect(reason)}")
+
+    # Run the normal close path so TURN allocations get Refresh(lifetime=0)
+    # before the VM tears our sockets down; otherwise the 5-tuple stays bound
+    # on the TURN server until its TTL and a future Allocate from the same
+    # source port is rejected with 437 (RFC 5766 §6.2).
+    case state do
+      %{ice_agent: ice_agent} -> ExICE.Priv.ICEAgent.close(ice_agent)
+      _ -> :ok
+    end
+
+    :ok
   end
 end

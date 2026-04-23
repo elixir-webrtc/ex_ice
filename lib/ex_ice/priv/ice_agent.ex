@@ -14,7 +14,7 @@ defmodule ExICE.Priv.ICEAgent do
   }
 
   alias ExICE.Priv.Attribute.{ICEControlling, ICEControlled, Priority, UseCandidate}
-  alias ExICE.Priv.Candidate.Srflx
+  alias ExICE.Priv.Candidate.{Relay, Srflx}
 
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
@@ -2457,6 +2457,12 @@ defmodule ExICE.Priv.ICEAgent do
   defp do_close_socket(ice_agent, socket) do
     Logger.debug("Closing socket: #{inspect(socket)}")
 
+    # Release any live TURN allocation bound to this socket's 5-tuple before
+    # the socket closes. Without it the TURN server keeps the allocation alive
+    # until TTL and a future Allocate from the same source port is rejected
+    # with 437 Allocation Mismatch (RFC 5766 §6.2 / RFC 8656 §6.2).
+    release_turn_allocations(ice_agent, socket)
+
     ice_agent =
       Enum.reduce(ice_agent.local_cands, ice_agent, fn {_local_cand_id, local_cand}, ice_agent ->
         if local_cand.base.socket == socket do
@@ -2477,6 +2483,34 @@ defmodule ExICE.Priv.ICEAgent do
     :ok = flush_socket_msg(socket)
 
     %{ice_agent | tr_rtx: tr_rtx, gathering_transactions: gathering_transactions}
+  end
+
+  defp release_turn_allocations(ice_agent, socket) do
+    Enum.each(ice_agent.local_cands, fn
+      {_id, %Relay{base: %{socket: ^socket}} = cand} ->
+        release_turn_allocation(ice_agent, socket, cand.client)
+
+      _ ->
+        :ok
+    end)
+
+    Enum.each(ice_agent.gathering_transactions, fn {_id, tr} ->
+      case tr do
+        %{socket: ^socket, client: client} -> release_turn_allocation(ice_agent, socket, client)
+        _ -> :ok
+      end
+    end)
+  end
+
+  defp release_turn_allocation(ice_agent, socket, client) do
+    case ExTURN.Client.close(client) do
+      {:send, turn_addr, data, _client} ->
+        _ = ice_agent.transport_module.send(socket, turn_addr, data)
+        :ok
+
+      {:ok, _client} ->
+        :ok
+    end
   end
 
   defp flush_socket_msg(socket) do

@@ -52,4 +52,38 @@ defmodule ExICE.ICEAgentTest do
     assert is_list(candidate_pairs)
     assert is_binary(local_ufrag)
   end
+
+  describe "parent crash teardown" do
+    test "traps exits so terminate/2 can run TURN teardown" do
+      {:ok, agent} = ICEAgent.start_link(role: :controlling)
+
+      assert {:trap_exit, true} = Process.info(agent, :trap_exit)
+    end
+
+    test "stops when a linked process dies" do
+      test_pid = self()
+
+      owner =
+        spawn(fn ->
+          {:ok, agent} = ICEAgent.start_link(role: :controlling)
+          send(test_pid, {:agent, agent})
+
+          receive do
+            :die -> exit(:boom)
+          end
+        end)
+
+      agent =
+        receive do
+          {:agent, a} -> a
+        after
+          1_000 -> flunk("agent never started")
+        end
+
+      ref = Process.monitor(agent)
+      send(owner, :die)
+
+      assert_receive {:DOWN, ^ref, :process, ^agent, :boom}, 1_000
+    end
+  end
 end
