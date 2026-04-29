@@ -2694,6 +2694,34 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert {:ok, %Nonce{value: @turn_nonce}} = Message.get_attribute(req, Nonce)
     end
 
+    test "logs a warning when the Refresh send fails", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      req = read_allocate_request(socket)
+      resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      assert %ExICE.Priv.Candidate.Relay{client: %ExTURN.Client{state: :allocated}} =
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.base.type == :relay))
+
+      drain_packets(socket)
+      :ok = Transport.Mock.fail_send(socket, :enotconn)
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          ICEAgent.close(ice_agent)
+        end)
+
+      assert log =~ "Failed to send TURN Refresh(lifetime=0) on socket close: :enotconn"
+    end
+
     test "does not send Refresh while the allocation is still being negotiated",
          %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets

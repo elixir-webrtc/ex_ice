@@ -95,7 +95,24 @@ defmodule ExICE.Support.Transport.Mock do
   @impl true
   def send(ref, _dst, packet, _tp_opts \\ []) do
     [{^ref, %{state: :open} = socket}] = :ets.lookup(:transport_mock, ref)
-    :ets.insert(:transport_mock, {ref, %{socket | buf: socket.buf ++ [packet]}})
+
+    case Map.get(socket, :send_error) do
+      nil ->
+        :ets.insert(:transport_mock, {ref, %{socket | buf: socket.buf ++ [packet]}})
+        :ok
+
+      reason ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Forces subsequent `send/4` calls on `ref` to return `{:error, reason}`.
+  """
+  @spec fail_send(ExICE.Priv.Transport.socket(), term()) :: :ok
+  def fail_send(ref, reason) do
+    [{^ref, socket}] = :ets.lookup(:transport_mock, ref)
+    :ets.insert(:transport_mock, {ref, Map.put(socket, :send_error, reason)})
     :ok
   end
 

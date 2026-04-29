@@ -2505,8 +2505,15 @@ defmodule ExICE.Priv.ICEAgent do
   defp release_turn_allocation(ice_agent, socket, client) do
     case ExTURN.Client.close(client) do
       {:send, turn_addr, data, _client} ->
-        _ = ice_agent.transport_module.send(socket, turn_addr, data)
-        :ok
+        case ice_agent.transport_module.send(socket, turn_addr, data) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "Failed to send TURN Refresh(lifetime=0) on socket close: #{inspect(reason)}."
+            )
+        end
 
       {:ok, _client} ->
         :ok
