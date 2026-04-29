@@ -85,5 +85,23 @@ defmodule ExICE.ICEAgentTest do
 
       assert_receive {:DOWN, ^ref, :process, ^agent, :boom}, 1_000
     end
+
+    test "stops when a non-parent linked process dies abnormally" do
+      # gen_server special-cases EXITs from the parent and bypasses
+      # handle_info, so a non-parent link is needed to exercise the
+      # abnormal-EXIT clause that drives terminate/2.
+      # Trap exits so the agent's own EXIT signal (we're its parent) doesn't kill us.
+      Process.flag(:trap_exit, true)
+
+      {:ok, agent} = ICEAgent.start_link(role: :controlling)
+      ref = Process.monitor(agent)
+
+      spawn(fn ->
+        Process.link(agent)
+        exit(:boom)
+      end)
+
+      assert_receive {:DOWN, ^ref, :process, ^agent, :boom}, 1_000
+    end
   end
 end

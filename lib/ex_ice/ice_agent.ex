@@ -577,11 +577,7 @@ defmodule ExICE.ICEAgent do
     # before the VM tears our sockets down; otherwise the 5-tuple stays bound
     # on the TURN server until its TTL and a future Allocate from the same
     # source port is rejected with 437 (RFC 5766 §6.2).
-    case state do
-      %{ice_agent: ice_agent} -> ExICE.Priv.ICEAgent.close(ice_agent)
-      _ -> :ok
-    end
-
+    ExICE.Priv.ICEAgent.close(state.ice_agent)
     :ok
   end
 end
