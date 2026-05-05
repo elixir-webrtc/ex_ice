@@ -331,12 +331,6 @@ defmodule ExICE.ICEAgent do
   def init(opts) do
     if Keyword.has_key?(opts, :logger_metadata), do: Logger.metadata(opts[:logger_metadata])
 
-    # Trap exits so terminate/2 runs when our linked parent dies abruptly.
-    # Without this, a parent crash kills us before we can emit TURN
-    # Refresh(lifetime=0), leaving the allocation live on the server and
-    # setting up a later 437 Allocation Mismatch on port reuse.
-    Process.flag(:trap_exit, true)
-
     opts =
       if opts[:transport] == :tcp do
         opts ++ [transport_module: ExICE.Priv.Transport.TCP]
@@ -550,17 +544,6 @@ defmodule ExICE.ICEAgent do
     else
       {:noreply, state}
     end
-  end
-
-  @impl true
-  def handle_info({:EXIT, _from, :normal}, state), do: {:noreply, state}
-
-  @impl true
-  def handle_info({:EXIT, _from, reason}, state) do
-    # A linked process died abnormally. Stop so terminate/2 can release TURN
-    # allocations before we go. Uses the same reason so supervisors see the
-    # original cause.
-    {:stop, reason, state}
   end
 
   @impl true
