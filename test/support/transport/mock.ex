@@ -68,17 +68,20 @@ defmodule ExICE.Support.Transport.Mock do
         socket = %{port: port, ip: ip, state: :open, buf: []}
         ref = :erlang.phash2(socket)
 
-        unless :ets.insert_new(:transport_mock, {ref, socket}) do
-          raise "Couldn't open socket: #{inspect(socket)}, reason: eaddrinuse."
-        end
+        case :ets.lookup(:transport_mock, ref) do
+          [{^ref, %{state: :open}}] ->
+            raise "Couldn't open socket: #{inspect(socket)}, reason: eaddrinuse."
 
-        {:ok, ref}
+          _other ->
+            :ets.insert(:transport_mock, {ref, socket})
+            {:ok, ref}
+        end
     end
   end
 
   @impl true
   def sockname(ref) do
-    [{^ref, socket}] = :ets.lookup(:transport_mock, ref)
+    [{^ref, %{state: :open} = socket}] = :ets.lookup(:transport_mock, ref)
     {:ok, {socket.ip, socket.port}}
   end
 
@@ -91,7 +94,10 @@ defmodule ExICE.Support.Transport.Mock do
 
   @impl true
   def close(ref) do
-    :ets.delete(:transport_mock, ref)
+    # Retain the entry in :closed state so tests can inspect any packets
+    # the agent sent in the close path
+    [{^ref, %{state: :open} = socket}] = :ets.lookup(:transport_mock, ref)
+    :ets.insert(:transport_mock, {ref, %{socket | state: :closed}})
     :ok
   end
 
@@ -100,10 +106,13 @@ defmodule ExICE.Support.Transport.Mock do
       socket = %{ip: ip, port: port, state: :open, buf: []}
       ref = :erlang.phash2(socket)
 
-      if :ets.insert_new(:transport_mock, {ref, socket}) do
-        ref
-      else
-        nil
+      case :ets.lookup(:transport_mock, ref) do
+        [{^ref, %{state: :open}}] ->
+          nil
+
+        _other ->
+          :ets.insert(:transport_mock, {ref, socket})
+          ref
       end
     end)
   end

@@ -56,7 +56,7 @@ defmodule ExICE.MixProject do
   defp deps do
     [
       {:ex_stun, "~> 0.2.0"},
-      {:ex_turn, "~> 0.2.0"},
+      {:ex_turn, github: "elixir-webrtc/ex_turn", branch: "fix/437-alloc-mismatch"},
       {:elixir_uuid, "~> 1.0"},
       {:excoveralls, "~> 0.15", only: :test, runtime: false},
       {:ex_doc, "~> 0.27", only: :dev, runtime: false},

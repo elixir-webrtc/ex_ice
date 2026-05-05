@@ -14,7 +14,6 @@ defmodule ExICE.Priv.ICEAgent do
   }
 
   alias ExICE.Priv.Attribute.{ICEControlling, ICEControlled, Priority, UseCandidate}
-  alias ExICE.Priv.Candidate.Srflx
 
   alias ExSTUN.Message
   alias ExSTUN.Message.Type
@@ -1090,7 +1089,7 @@ defmodule ExICE.Priv.ICEAgent do
     # Libnice seems to do the same.
     new_pairs =
       local_cands
-      |> Enum.reject(fn %mod{} -> mod == Srflx end)
+      |> Enum.reject(fn %mod{} -> mod == Candidate.Srflx end)
       |> Map.new(fn local_cand ->
         pair_state = get_pair_state(local_cand, remote_cand, checklist_foundations)
         pair = CandidatePair.new(local_cand, remote_cand, ice_agent.role, pair_state)
@@ -2460,6 +2459,14 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent =
       Enum.reduce(ice_agent.local_cands, ice_agent, fn {_local_cand_id, local_cand}, ice_agent ->
         if local_cand.base.socket == socket do
+          if local_cand.base.type == :relay do
+            # Release the allocation bound to this socket's 5-tuple before the socket closes.
+            # Without it the TURN server keeps the allocation alive until TTL,
+            # which could lead to future Allocate requests from the same source port
+            # being rejected with 437 Allocation Mismatch.
+            release_turn_allocation(ice_agent, socket, local_cand.client)
+          end
+
           do_close_candidate(ice_agent, local_cand)
         else
           ice_agent
@@ -2477,6 +2484,15 @@ defmodule ExICE.Priv.ICEAgent do
     :ok = flush_socket_msg(socket)
 
     %{ice_agent | tr_rtx: tr_rtx, gathering_transactions: gathering_transactions}
+  end
+
+  defp release_turn_allocation(ice_agent, socket, client) do
+    with {:send, turn_addr, data, _client} <- ExTURN.Client.close(client) do
+      case ice_agent.transport_module.send(socket, turn_addr, data) do
+        :ok -> :ok
+        {:error, reason} -> Logger.debug("Couldn't send deallocate request, reason: #{reason}")
+      end
+    end
   end
 
   defp flush_socket_msg(socket) do

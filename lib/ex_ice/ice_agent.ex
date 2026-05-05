@@ -553,8 +553,11 @@ defmodule ExICE.ICEAgent do
   end
 
   @impl true
-  def terminate(reason, _state) do
-    # we don't need to close sockets manually as this is done automatically by Erlang
+  def terminate(reason, state) do
     Logger.debug("Stopping ICE agent with reason: #{inspect(reason)}")
+
+    # Run the normal close path to ensure correct socket/allocation teardown
+    ExICE.Priv.ICEAgent.close(state.ice_agent)
+    :ok
   end
 end
