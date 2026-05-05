@@ -1999,7 +1999,13 @@ defmodule ExICE.Priv.ICEAgent do
          %Message{type: %Type{class: :success_response}} = msg
        ) do
     {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
-    pair = Map.fetch!(ice_agent.checklist, pair_id)
+
+    case Map.get(ice_agent.checklist, pair_id) do
+      nil ->
+        Logger.debug("Keepalive success response for pruned pair #{inspect(pair_id)}, ignoring")
+        ice_agent
+
+      pair ->
 
     with true <- symmetric?(ice_agent, local_cand.base.socket, {src_ip, src_port}, pair),
          :ok <- authenticate_msg(msg, ice_agent.remote_pwd) do
@@ -2043,6 +2049,7 @@ defmodule ExICE.Priv.ICEAgent do
         pair = %CandidatePair{pair | responses_received: pair.responses_received + 1}
         put_in(ice_agent.checklist[pair.id], pair)
     end
+    end
   end
 
   defp handle_keepalive_response(
@@ -2053,18 +2060,25 @@ defmodule ExICE.Priv.ICEAgent do
          %Message{type: %Type{class: :error_response}} = msg
        ) do
     {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
-    pair = Map.fetch!(ice_agent.checklist, pair_id)
-    pair = %CandidatePair{pair | responses_received: pair.responses_received + 1}
-    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
-    Logger.debug("""
-    Received keepalive error response from #{inspect({src_ip, src_port})}, \
-    on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})}. \
-    pair: #{pair_info(ice_agent, pair)} \
-    Not refreshing last_seen time. \
-    """)
+    case Map.get(ice_agent.checklist, pair_id) do
+      nil ->
+        Logger.debug("Keepalive error response for pruned pair #{inspect(pair_id)}, ignoring")
+        ice_agent
 
-    ice_agent
+      pair ->
+        pair = %CandidatePair{pair | responses_received: pair.responses_received + 1}
+        ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+
+        Logger.debug("""
+        Received keepalive error response from #{inspect({src_ip, src_port})}, \
+        on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})}. \
+        pair: #{pair_info(ice_agent, pair)} \
+        Not refreshing last_seen time. \
+        """)
+
+        ice_agent
+    end
   end
 
   # Adds valid pair according to sec 7.2.5.3.2
