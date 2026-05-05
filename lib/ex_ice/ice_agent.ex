@@ -556,10 +556,7 @@ defmodule ExICE.ICEAgent do
   def terminate(reason, state) do
     Logger.debug("Stopping ICE agent with reason: #{inspect(reason)}")
 
-    # Run the normal close path so TURN allocations get Refresh(lifetime=0)
-    # before the VM tears our sockets down; otherwise the 5-tuple stays bound
-    # on the TURN server until its TTL and a future Allocate from the same
-    # source port is rejected with 437 (RFC 5766 §6.2).
+    # Run the normal close path to ensure correct socket/allocation teardown
     ExICE.Priv.ICEAgent.close(state.ice_agent)
     :ok
   end
