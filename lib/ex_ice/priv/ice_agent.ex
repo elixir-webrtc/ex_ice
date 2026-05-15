@@ -2487,11 +2487,12 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp release_turn_allocation(ice_agent, socket, client) do
-    with {:send, turn_addr, data, _client} <- ExTURN.Client.close(client) do
-      case ice_agent.transport_module.send(socket, turn_addr, data) do
-        :ok -> :ok
-        {:error, reason} -> Logger.debug("Couldn't send deallocate request, reason: #{reason}")
-      end
+    with {:send, turn_addr, data, _client} <- ExTURN.Client.close(client),
+         :ok <- ice_agent.transport_module.send(socket, turn_addr, data) do
+      :ok
+    else
+      {:ok, _state} -> :ok
+      {:error, reason} -> Logger.debug("Couldn't send deallocate request, reason: #{reason}")
     end
   end
 
