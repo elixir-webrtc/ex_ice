@@ -2593,6 +2593,76 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert ice_agent.gathering_transactions == %{}
     end
 
+    test "ex_turn permission expired", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      req = read_allocate_request(socket)
+      resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      cand = ice_agent.local_cands |> Map.values() |> Enum.find(&(&1.base.type == :relay))
+      ip = @remote_cand.address
+
+      cand =
+        put_in(cand.client.permissions[ip], %{
+          refresh_timer: make_ref(),
+          exp_timer: make_ref()
+        })
+
+      ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
+
+      ice_agent =
+        ICEAgent.handle_ex_turn_msg(
+          ice_agent,
+          cand.client.ref,
+          {:permission_expired, ip}
+        )
+
+      cand = ice_agent.local_cands[cand.base.id]
+      refute Map.has_key?(cand.client.permissions, ip)
+    end
+
+    test "ex_turn channel expired", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      req = read_allocate_request(socket)
+      resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      cand = ice_agent.local_cands |> Map.values() |> Enum.find(&(&1.base.type == :relay))
+      addr = {@remote_cand.address, @remote_cand.port}
+      channel_number = 0x4000
+
+      client = %{
+        cand.client
+        | addr_channel: %{addr => channel_number},
+          channel_addr: %{channel_number => addr},
+          channel_timer: %{channel_number => make_ref()}
+      }
+
+      cand = %{cand | client: client}
+      ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
+
+      ice_agent =
+        ICEAgent.handle_ex_turn_msg(
+          ice_agent,
+          cand.client.ref,
+          {:channel_expired, addr}
+        )
+
+      cand = ice_agent.local_cands[cand.base.id]
+      refute Map.has_key?(cand.client.addr_channel, addr)
+      refute Map.has_key?(cand.client.channel_addr, channel_number)
+    end
+
     test "invalid TURN URL" do
       ice_agent =
         ICEAgent.new(

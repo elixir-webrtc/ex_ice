@@ -931,7 +931,7 @@ defmodule ExICE.Priv.ICEAgent do
     handle_udp(ice_agent, socket, src_ip, src_port, packet)
   end
 
-  @spec handle_ex_turn_msg(t(), reference(), ExTURN.Client.notification_message()) :: t()
+  @spec handle_ex_turn_msg(t(), reference(), term()) :: t()
   def handle_ex_turn_msg(%__MODULE__{state: :closed} = ice_agent, _, _) do
     Logger.debug("Received ex_turn message in closed state. Ignoring.")
     ice_agent
@@ -974,6 +974,14 @@ defmodule ExICE.Priv.ICEAgent do
             # we can't use do_send here as it will try to create permission for the turn address
             :ok = ice_agent.transport_module.send(cand.base.socket, dst, data)
             ice_agent
+
+          {:permission_expired, _ip, client} ->
+            cand = %{cand | client: client}
+            put_in(ice_agent.local_cands[cand.base.id], cand)
+
+          {:channel_expired, _addr, client} ->
+            cand = %{cand | client: client}
+            put_in(ice_agent.local_cands[cand.base.id], cand)
 
           {:error, _reason, client} ->
             Logger.debug("""
