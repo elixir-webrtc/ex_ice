@@ -557,9 +557,7 @@ defmodule ExICE.ICEAgent do
 
   @impl true
   def handle_info({:EXIT, _from, reason}, state) do
-    # A linked process died abnormally. Stop so terminate/2 can release TURN
-    # allocations before we go. Uses the same reason so supervisors see the
-    # original cause.
+    # Stop so terminate/2 can release TURN allocations
     {:stop, reason, state}
   end
 
