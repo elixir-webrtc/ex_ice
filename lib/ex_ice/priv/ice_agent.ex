@@ -1383,8 +1383,7 @@ defmodule ExICE.Priv.ICEAgent do
          {:remote, %_{} = remote_cand} <-
            {:remote, find_remote_cand(remote_cands, src_ip, src_port)},
          {:pair, %CandidatePair{} = pair} <-
-           {:pair,
-            Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)} do
+           {:pair, Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)} do
       handle_data_message(ice_agent, pair, packet)
     else
       {:host, %{base: %{closed?: true}} = host_cand} ->
