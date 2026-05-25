@@ -490,6 +490,67 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert ice_agent.ta_timer != nil
   end
 
+  @tag :capture_log
+  test "ignores data received on a local socket with no matching pair for the remote" do
+    # Reproduces the MatchError raised at handle_data_message_raw/5:
+    # a peer-reflexive remote candidate is discovered through a STUN binding
+    # request on host1's socket (so only the (host1, prflx) pair is created),
+    # and then a non-STUN data packet from that same prflx (ip, port) arrives
+    # on host2's socket. find_pair(host2, prflx) returns nil and the strict
+    # `%CandidatePair{} = pair = ...` match crashes the GenServer.
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        transport_module: Transport.Mock,
+        if_discovery_module: IfDiscovery.MockMulti
+      )
+      |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(@remote_cand)
+
+    [host1, host2] =
+      ice_agent.local_cands
+      |> Map.values()
+      |> Enum.sort_by(& &1.base.address)
+
+    prflx_ip = {192, 168, 0, 100}
+    prflx_port = 9999
+
+    request =
+      Message.new(%Type{class: :request, method: :binding}, [
+        %Username{value: "#{ice_agent.local_ufrag}:someufrag"},
+        %Priority{priority: 1234},
+        %ICEControlled{tiebreaker: 1234}
+      ])
+      |> Message.with_integrity(ice_agent.local_pwd)
+      |> Message.with_fingerprint()
+      |> Message.encode()
+
+    ice_agent = ICEAgent.handle_udp(ice_agent, host1.base.socket, prflx_ip, prflx_port, request)
+
+    # Sanity-check the setup: prflx remote exists, paired only with host1.
+    assert prflx_remote =
+             Enum.find(Map.values(ice_agent.remote_cands), fn c ->
+               c.address == prflx_ip and c.port == prflx_port
+             end)
+
+    pairs_with_prflx =
+      Enum.filter(Map.values(ice_agent.checklist), &(&1.remote_cand_id == prflx_remote.id))
+
+    assert [pair] = pairs_with_prflx
+    assert pair.local_cand_id == host1.base.id
+
+    # Data arrives on host2's socket from the same prflx (ip, port) — possible
+    # with multi-homed peers, NAT path changes, or bridge-interface source rewrites.
+    ice_agent =
+      ICEAgent.handle_udp(ice_agent, host2.base.socket, prflx_ip, prflx_port, "some payload")
+
+    # The packet has no pair to attribute it to, so it must be dropped, not crash.
+    refute_received {:ex_ice, _pid, {:data, _}}
+    assert is_map(ice_agent.checklist)
+  end
+
   describe "re-schedules failed pair on incoming binding request" do
     test "with controlling ice agent" do
       ice_agent =

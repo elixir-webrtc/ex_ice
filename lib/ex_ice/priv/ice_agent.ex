@@ -1381,14 +1381,78 @@ defmodule ExICE.Priv.ICEAgent do
          {:host, %_{base: %{closed?: false}} = local_cand} <-
            {:host, find_host_cand(Map.values(ice_agent.local_cands), socket)},
          {:remote, %_{} = remote_cand} <-
-           {:remote, find_remote_cand(remote_cands, src_ip, src_port)} do
-      %CandidatePair{} =
-        pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
-
+           {:remote, find_remote_cand(remote_cands, src_ip, src_port)},
+         {:pair, %CandidatePair{} = pair} <-
+           {:pair,
+            Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)} do
       handle_data_message(ice_agent, pair, packet)
     else
       {:host, %{base: %{closed?: true}} = host_cand} ->
         log_closed_cand_message(host_cand, src_ip, src_port)
+        ice_agent
+
+      {:pair, nil} ->
+        # Data arrived on a known local host candidate from a known remote
+        # candidate, but no pair links them. The root cause is not yet fully
+        # understood, so we log everything we'd need to figure it out next time.
+        local_cand = find_host_cand(Map.values(ice_agent.local_cands), socket)
+        remote_cand = find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port)
+
+        pairs_with_remote =
+          ice_agent.checklist
+          |> Map.values()
+          |> Enum.filter(&(&1.remote_cand_id == remote_cand.id))
+          |> Enum.map(fn p ->
+            local = Map.get(ice_agent.local_cands, p.local_cand_id)
+
+            %{
+              pair_id: p.id,
+              state: p.state,
+              valid?: p.valid?,
+              nominated?: p.nominated?,
+              local_cand_id: p.local_cand_id,
+              local_type: local && local.base.type,
+              local_address: local && {local.base.base_address, local.base.base_port}
+            }
+          end)
+
+        pairs_with_local =
+          ice_agent.checklist
+          |> Map.values()
+          |> Enum.filter(&(&1.local_cand_id == local_cand.base.id))
+          |> Enum.map(fn p ->
+            remote = Map.get(ice_agent.remote_cands, p.remote_cand_id)
+
+            %{
+              pair_id: p.id,
+              state: p.state,
+              valid?: p.valid?,
+              nominated?: p.nominated?,
+              remote_cand_id: p.remote_cand_id,
+              remote_type: remote && remote.type,
+              remote_address: remote && {remote.address, remote.port}
+            }
+          end)
+
+        Logger.warning("""
+        No candidate pair for incoming non-STUN data; dropping packet.
+        agent_state: #{ice_agent.state}
+        selected_pair_id: #{inspect(ice_agent.selected_pair_id)}
+        local_cands_count: #{map_size(ice_agent.local_cands)}
+        remote_cands_count: #{map_size(ice_agent.remote_cands)}
+        checklist_size: #{map_size(ice_agent.checklist)}
+        local_cand: id=#{local_cand.base.id} type=#{local_cand.base.type} \
+        addr=#{inspect({local_cand.base.address, local_cand.base.port})} \
+        base=#{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
+        socket=#{inspect(socket)}
+        remote_cand: id=#{remote_cand.id} type=#{remote_cand.type} \
+        addr=#{inspect({remote_cand.address, remote_cand.port})} \
+        priority=#{remote_cand.priority} foundation=#{inspect(remote_cand.foundation)}
+        pairs containing this remote (#{length(pairs_with_remote)}): #{inspect(pairs_with_remote)}
+        pairs on this local (#{length(pairs_with_local)}): #{inspect(pairs_with_local)}
+        packet_size: #{byte_size(packet)} bytes
+        """)
+
         ice_agent
 
       {type, _} ->
