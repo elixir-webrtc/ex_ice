@@ -10,6 +10,8 @@ defmodule ExICE.Priv.Gatherer do
 
   require Logger
 
+  @type local_preferences :: %{:inet.ip_address() => non_neg_integer()}
+
   @type t() :: %__MODULE__{
           if_discovery_module: module(),
           transport_module: module(),
@@ -95,9 +97,8 @@ defmodule ExICE.Priv.Gatherer do
     end)
   end
 
-  @spec gather_host_candidates(t(), %{:inet.ip_address() => non_neg_integer()}, [
-          {Transport.socket(), map()}
-        ]) :: [Candidate.t()]
+  @spec gather_host_candidates(t(), local_preferences(), [{Transport.socket(), map()}]) ::
+          {local_preferences(), [Candidate.t()]}
   def gather_host_candidates(gatherer, local_preferences, sockets) do
     {local_preferences, cands} =
       Enum.reduce(sockets, {local_preferences, []}, fn socket, {local_preferences, cands} ->

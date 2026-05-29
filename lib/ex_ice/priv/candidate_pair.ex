@@ -1,6 +1,5 @@
 defmodule ExICE.Priv.CandidatePair do
   @moduledoc false
-  require Logger
 
   alias ExICE.Priv.{Candidate, Utils}
 
@@ -62,8 +61,9 @@ defmodule ExICE.Priv.CandidatePair do
               ]
 
   @doc false
-  @spec new(Candidate.t(), Candidate.t(), ExICE.ICEAgent.role(), state(), valid?: boolean()) ::
-          t()
+  @spec new(Candidate.t(), Candidate.t(), ExICE.ICEAgent.role(), state(), [
+          {:valid?, boolean()} | {:last_seen, integer()}
+        ]) :: t()
   def new(local_cand, remote_cand, agent_role, state, opts \\ []) do
     priority = priority(agent_role, local_cand.base.priority, remote_cand.priority)
 
@@ -94,8 +94,8 @@ defmodule ExICE.Priv.CandidatePair do
 
   @doc false
   @spec recompute_priority(t(), integer(), integer(), ExICE.ICEAgent.role()) :: t()
-  def recompute_priority(pair, local_cand_prio, remote_cand_prio, role) do
-    %__MODULE__{pair | priority: priority(role, local_cand_prio, remote_cand_prio)}
+  def recompute_priority(%__MODULE__{} = pair, local_cand_prio, remote_cand_prio, role) do
+    %{pair | priority: priority(role, local_cand_prio, remote_cand_prio)}
   end
 
   @doc false

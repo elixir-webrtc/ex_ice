@@ -164,7 +164,7 @@ defmodule ExICE.ICEAgent do
   @doc """
   Gets agent's role.
   """
-  @spec get_role(pid()) :: ExICE.Agent.t() | nil
+  @spec get_role(pid()) :: role() | nil
   def get_role(ice_agent) do
     GenServer.call(ice_agent, :get_role)
   end
