@@ -82,6 +82,24 @@ defmodule ExICE.Priv.ICEAgentTest do
   @remote_cand ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
   @remote_cand2 ExICE.Candidate.new(:host, address: {192, 168, 0, 3}, port: 8445, priority: 122)
 
+  test "generates ice-char compliant local credentials" do
+    # ice-char = ALPHA / DIGIT / "+" / "/" (RFC 8839 sec. 5.4) — in particular
+    # no base64 '=' padding, which strict SDP parsers reject.
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.MockSingle,
+        transport_module: Transport.Mock
+      )
+
+    assert ice_agent.local_ufrag =~ ~r|^[A-Za-z0-9+/]+$|
+    assert ice_agent.local_pwd =~ ~r|^[A-Za-z0-9+/]+$|
+    # RFC 8839: ufrag is 4..256 ice-chars, pwd is 22..256 ice-chars
+    assert byte_size(ice_agent.local_ufrag) >= 4
+    assert byte_size(ice_agent.local_pwd) >= 22
+  end
+
   describe "unmarshal_remote_candidate/1" do
     test "with correct candidate" do
       cand = "1 1 UDP 1686052863 127.0.0.1 57940 typ srflx raddr 0.0.0.0 rport 0"

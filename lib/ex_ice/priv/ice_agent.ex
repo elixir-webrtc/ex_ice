@@ -2700,8 +2700,11 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp generate_credentials() do
-    ufrag = :crypto.strong_rand_bytes(3) |> Base.encode64()
-    pwd = :crypto.strong_rand_bytes(16) |> Base.encode64()
+    # ice-char does not include '=' (RFC 8839 sec. 5.4, RFC 5245 sec. 15.4),
+    # so credentials must not contain base64 padding. Strict parsers
+    # (e.g. GStreamer's webrtcbin since 1.28) reject SDP with padded ice-pwd.
+    ufrag = :crypto.strong_rand_bytes(3) |> Base.encode64(padding: false)
+    pwd = :crypto.strong_rand_bytes(16) |> Base.encode64(padding: false)
     {ufrag, pwd}
   end
 
