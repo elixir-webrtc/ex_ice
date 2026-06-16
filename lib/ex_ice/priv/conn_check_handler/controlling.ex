@@ -36,9 +36,9 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
 
       nil when ice_agent.state in [:new, :checking, :connected] ->
         Logger.debug("Adding new candidate pair: #{inspect(pair)}")
-        pair = %CandidatePair{pair | requests_received: 1}
+        pair = %{pair | requests_received: 1}
         checklist = Map.put(ice_agent.checklist, pair.id, pair)
-        ice_agent = %ICEAgent{ice_agent | checklist: checklist}
+        ice_agent = %{ice_agent | checklist: checklist}
         ICEAgent.send_binding_success_response(ice_agent, pair, msg)
 
       %CandidatePair{} = checklist_pair ->
@@ -46,7 +46,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
           ice_agent.state == :failed ->
             r_pair = resolve_pair(ice_agent, checklist_pair)
 
-            r_pair = %CandidatePair{
+            r_pair = %{
               r_pair
               | last_seen: pair.last_seen,
                 requests_received: r_pair.requests_received + 1
@@ -57,7 +57,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
           checklist_pair.state == :failed and ice_agent.state == :completed ->
             r_pair = resolve_pair(ice_agent, checklist_pair)
 
-            r_pair = %CandidatePair{
+            r_pair = %{
               r_pair
               | last_seen: pair.last_seen,
                 requests_received: r_pair.requests_received + 1
@@ -68,7 +68,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
           checklist_pair.state == :failed ->
             r_pair = resolve_pair(ice_agent, checklist_pair)
 
-            r_pair = %CandidatePair{
+            r_pair = %{
               r_pair
               | state: :waiting,
                 last_seen: pair.last_seen,
@@ -81,7 +81,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
           true ->
             r_pair = resolve_pair(ice_agent, checklist_pair)
 
-            r_pair = %CandidatePair{
+            r_pair = %{
               r_pair
               | last_seen: pair.last_seen,
                 requests_received: r_pair.requests_received + 1
@@ -106,7 +106,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
     Logger.debug("Nomination succeeded. Selecting pair: #{inspect(pair_id)}")
 
     pair = Map.fetch!(ice_agent.checklist, pair_id)
-    pair = %CandidatePair{pair | nominate?: false, nominated?: true}
+    pair = %{pair | nominate?: false, nominated?: true}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     ice_agent =
@@ -114,13 +114,13 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
         ice_agent.selected_pair_id == nil ->
           Logger.debug("Selecting pair: #{pair_id}")
 
-          %ICEAgent{
+          %{
             ice_agent
             | selected_pair_id: pair.id,
               selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes + 1
           }
 
-        ice_agent.selected_pair_id != nil and pair.id != ice_agent.selected_pair_id ->
+        pair.id != ice_agent.selected_pair_id ->
           selected_pair = Map.fetch!(ice_agent.checklist, ice_agent.selected_pair_id)
 
           if pair.priority >= selected_pair.priority do
@@ -129,7 +129,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
             New pair: #{pair_id}, old pair: #{ice_agent.selected_pair_id}.\
             """)
 
-            %ICEAgent{
+            %{
               ice_agent
               | selected_pair_id: pair.id,
                 selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes + 1
@@ -150,7 +150,7 @@ defmodule ExICE.Priv.ConnCheckHandler.Controlling do
       Logger.warning("Nomination succeeded but checklist hasn't finished.")
     end
 
-    %ICEAgent{ice_agent | nominating?: {false, nil}}
+    %{ice_agent | nominating?: {false, nil}}
   end
 
   defp resolve_pair(ice_agent, pair) do

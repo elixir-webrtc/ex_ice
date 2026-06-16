@@ -19,6 +19,9 @@ defmodule ExICE.Priv.ICEAgent do
   alias ExSTUN.Message.Type
   alias ExSTUN.Message.Attribute.{ErrorCode, Username, XORMappedAddress}
 
+  # dialyzer falsely complains about ExTURN.Client.new never matching {:ok, client}
+  @dialyzer {:no_match, create_relay_gathering_transactions: 3}
+
   # Ta timeout in ms.
   @ta_timeout 50
 
@@ -110,21 +113,22 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp resolve_address(remote_cand) when is_binary(remote_cand.address) do
-    Logger.debug("Trying to resolve addr: #{remote_cand.address}")
+  defp resolve_address(%ExICE.Candidate{address: address} = remote_cand)
+       when is_binary(address) do
+    Logger.debug("Trying to resolve addr: #{address}")
 
     with pid when is_pid(pid) <- Process.whereis(ExICE.Priv.MDNS.Resolver),
-         {:ok, addr} <- ExICE.Priv.MDNS.Resolver.gethostbyname(remote_cand.address) do
-      Logger.debug("Successfully resolved #{remote_cand.address} to #{inspect(addr)}")
-      remote_cand = %ExICE.Candidate{remote_cand | address: addr}
+         {:ok, addr} <- ExICE.Priv.MDNS.Resolver.gethostbyname(address) do
+      Logger.debug("Successfully resolved #{address} to #{inspect(addr)}")
+      remote_cand = %{remote_cand | address: addr}
       {:ok, remote_cand}
     else
       {:error, reason} = err ->
-        Logger.debug("Couldn't resolve #{remote_cand.address}, reason: #{reason}")
+        Logger.debug("Couldn't resolve #{address}, reason: #{reason}")
         err
 
       nil ->
-        Logger.debug("Couldn't resolve #{remote_cand.address}, reason: MDNS reslover not alive.")
+        Logger.debug("Couldn't resolve #{address}, reason: MDNS reslover not alive.")
         {:error, :mdns_resolver_not_alive}
     end
   end
@@ -170,26 +174,26 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   @spec on_gathering_state_change(t(), pid() | nil) :: t()
-  def on_gathering_state_change(ice_agent, send_to) do
-    %__MODULE__{ice_agent | on_gathering_state_change: send_to}
+  def on_gathering_state_change(%__MODULE__{} = ice_agent, send_to) do
+    %{ice_agent | on_gathering_state_change: send_to}
   end
 
   @spec on_connection_state_change(t(), pid() | nil) :: t()
-  def on_connection_state_change(ice_agent, send_to) do
-    %__MODULE__{ice_agent | on_connection_state_change: send_to}
+  def on_connection_state_change(%__MODULE__{} = ice_agent, send_to) do
+    %{ice_agent | on_connection_state_change: send_to}
   end
 
   @spec on_data(t(), pid() | nil) :: t()
-  def on_data(ice_agent, send_to) do
-    %__MODULE__{ice_agent | on_data: send_to}
+  def on_data(%__MODULE__{} = ice_agent, send_to) do
+    %{ice_agent | on_data: send_to}
   end
 
   @spec on_new_candidate(t(), pid() | nil) :: t()
-  def on_new_candidate(ice_agent, send_to) do
-    %__MODULE__{ice_agent | on_new_candidate: send_to}
+  def on_new_candidate(%__MODULE__{} = ice_agent, send_to) do
+    %{ice_agent | on_new_candidate: send_to}
   end
 
-  @spec get_role(t()) :: ExICE.Agent.role() | nil
+  @spec get_role(t()) :: ExICE.ICEAgent.role() | nil
   def get_role(ice_agent), do: ice_agent.role
 
   @spec get_local_credentials(t()) :: {binary(), binary()}
@@ -246,7 +250,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   def set_role(%__MODULE__{role: nil} = ice_agent, role) do
-    %__MODULE__{ice_agent | role: role}
+    %{ice_agent | role: role}
   end
 
   def set_role(%__MODULE__{} = ice_agent, _role) do
@@ -270,7 +274,7 @@ defmodule ExICE.Priv.ICEAgent do
     # This is very loosely based on RFC 8863, sec. 4.
     # We can start eoc timer after sending and receiving ICE credentials.
     # In our case, we do this just after receiving remote credentials.
-    %__MODULE__{ice_agent | remote_ufrag: ufrag, remote_pwd: pwd}
+    %{ice_agent | remote_ufrag: ufrag, remote_pwd: pwd}
     |> start_eoc_timer()
     # check if timer does not need to be started
     |> update_ta_timer()
@@ -285,10 +289,10 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent
   end
 
-  def set_remote_credentials(ice_agent, ufrag, pwd) do
+  def set_remote_credentials(%__MODULE__{} = ice_agent, ufrag, pwd) do
     Logger.debug("New remote credentials different than the current ones. Restarting ICE")
     ice_agent = do_restart(ice_agent)
-    %__MODULE__{ice_agent | remote_ufrag: ufrag, remote_pwd: pwd}
+    %{ice_agent | remote_ufrag: ufrag, remote_pwd: pwd}
   end
 
   @spec gather_candidates(t()) :: t()
@@ -322,7 +326,7 @@ defmodule ExICE.Priv.ICEAgent do
     {local_preferences, host_cands} =
       Gatherer.gather_host_candidates(ice_agent.gatherer, ice_agent.local_preferences, sockets)
 
-    ice_agent = %__MODULE__{ice_agent | local_preferences: local_preferences}
+    ice_agent = %{ice_agent | local_preferences: local_preferences}
 
     srflx_cands =
       Gatherer.fabricate_srflx_candidates(
@@ -422,7 +426,7 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent
   end
 
-  def add_remote_candidate(ice_agent, remote_cand) do
+  def add_remote_candidate(%__MODULE__{} = ice_agent, remote_cand) do
     Logger.debug("Trying to add a new remote candidate: #{inspect(remote_cand)}")
 
     found_cand =
@@ -445,10 +449,10 @@ defmodule ExICE.Priv.ICEAgent do
           "Remote candidate already discovered as prflx. Updating its type and priority. Recomputing pair prios."
         )
 
-        found_cand = %ExICE.Candidate{found_cand | type: :host, priority: remote_cand.priority}
+        found_cand = %{found_cand | type: :host, priority: remote_cand.priority}
         ice_agent = put_in(ice_agent.remote_cands[found_cand.id], found_cand)
         checklist = recompute_pair_prios(ice_agent)
-        ice_agent = %__MODULE__{ice_agent | checklist: checklist}
+        ice_agent = %{ice_agent | checklist: checklist}
 
         if ice_agent.selected_pair_id != nil do
           %CandidatePair{} = best_valid_pair = Checklist.get_valid_pair(ice_agent.checklist)
@@ -456,7 +460,7 @@ defmodule ExICE.Priv.ICEAgent do
           if best_valid_pair.id != ice_agent.selected_pair_id do
             Logger.debug("New best valid pair: #{best_valid_pair.id}. Selecting.")
 
-            %__MODULE__{
+            %{
               ice_agent
               | selected_pair_id: best_valid_pair.id,
                 selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes + 1
@@ -521,7 +525,7 @@ defmodule ExICE.Priv.ICEAgent do
       {:ok, ice_agent} ->
         pair = Map.fetch!(ice_agent.checklist, pair.id)
 
-        pair = %CandidatePair{
+        pair = %{
           pair
           | packets_sent: pair.packets_sent + 1,
             bytes_sent: pair.bytes_sent + data_size
@@ -539,7 +543,7 @@ defmodule ExICE.Priv.ICEAgent do
       {:error, ice_agent} ->
         pair = Map.fetch!(ice_agent.checklist, pair.id)
 
-        pair = %CandidatePair{
+        pair = %{
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
             bytes_discarded_on_send: pair.bytes_discarded_on_send + data_size
@@ -652,7 +656,7 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp execute_transaction(ice_agent, :conn_check, pair) do
     Logger.debug("Sending conn check on pair: #{inspect(pair.id)}")
-    pair = %CandidatePair{pair | last_seen: now()}
+    pair = %{pair | last_seen: now()}
     send_conn_check(ice_agent, pair)
   end
 
@@ -708,7 +712,7 @@ defmodule ExICE.Priv.ICEAgent do
       {:error, ice_agent} ->
         pair = Map.fetch!(ice_agent.checklist, pair.id)
 
-        pair = %CandidatePair{
+        pair = %{
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
             bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(conn_check.raw_req)
@@ -847,7 +851,7 @@ defmodule ExICE.Priv.ICEAgent do
     # if pair was selected, send keepalives only on that pair
     s_pair = Map.fetch!(ice_agent.checklist, id)
     pair = CandidatePair.schedule_keepalive(s_pair)
-    ice_agent = %__MODULE__{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
+    ice_agent = %{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
     send_keepalive(ice_agent, ice_agent.checklist[id])
   end
 
@@ -859,14 +863,14 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent
   end
 
-  def handle_keepalive_timeout(ice_agent, id) do
+  def handle_keepalive_timeout(%__MODULE__{} = ice_agent, id) do
     # TODO: keepalives should be sent only if no data has been sent for @tr_timeout
     # atm, we send keepalives anyways, also it might be better to pace them with ta_timer
     # TODO: candidates not in a valid pair also should be kept alive (RFC 8445, sect 5.1.1.4)
     case Map.fetch(ice_agent.checklist, id) do
       {:ok, %CandidatePair{state: :succeeded, valid?: true} = pair} ->
         pair = CandidatePair.schedule_keepalive(pair)
-        ice_agent = %__MODULE__{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
+        ice_agent = %{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
         send_keepalive(ice_agent, pair)
 
       {:ok, _pair} ->
@@ -1076,16 +1080,17 @@ defmodule ExICE.Priv.ICEAgent do
     |> Map.new()
   end
 
-  defp do_add_remote_candidate(ice_agent, remote_cand) when ice_agent.local_cands == %{} do
+  defp do_add_remote_candidate(%__MODULE__{local_cands: local_cands} = ice_agent, remote_cand)
+       when local_cands == %{} do
     Logger.debug("Not adding any new pairs as we don't have any local candidates.")
 
-    %__MODULE__{
+    %{
       ice_agent
       | remote_cands: Map.put(ice_agent.remote_cands, remote_cand.id, remote_cand)
     }
   end
 
-  defp do_add_remote_candidate(ice_agent, remote_cand) do
+  defp do_add_remote_candidate(%__MODULE__{} = ice_agent, remote_cand) do
     local_cands = get_matching_candidates_remote(Map.values(ice_agent.local_cands), remote_cand)
 
     checklist_foundations = get_foundations(ice_agent)
@@ -1114,7 +1119,7 @@ defmodule ExICE.Priv.ICEAgent do
       Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
     end
 
-    %__MODULE__{
+    %{
       ice_agent
       | checklist: checklist,
         remote_cands: Map.put(ice_agent.remote_cands, remote_cand.id, remote_cand)
@@ -1125,7 +1130,7 @@ defmodule ExICE.Priv.ICEAgent do
     Enum.find(ice_agent.gathering_transactions, fn {_t_id, t} -> t.state == :waiting end)
   end
 
-  defp execute_gathering_transaction(ice_agent, %{stun_server: stun_server} = tr) do
+  defp execute_gathering_transaction(%__MODULE__{} = ice_agent, %{stun_server: stun_server} = tr) do
     {:ok, {sock_ip, sock_port}} = ice_agent.transport_module.sockname(tr.socket)
 
     Logger.debug("""
@@ -1138,7 +1143,7 @@ defmodule ExICE.Priv.ICEAgent do
       :ok ->
         tr = %{tr | state: :in_progress, send_time: now()}
         gathering_transactions = Map.put(ice_agent.gathering_transactions, tr.t_id, tr)
-        ice_agent = %__MODULE__{ice_agent | gathering_transactions: gathering_transactions}
+        ice_agent = %{ice_agent | gathering_transactions: gathering_transactions}
         {:ok, ice_agent}
 
       {:error, reason} ->
@@ -1186,7 +1191,7 @@ defmodule ExICE.Priv.ICEAgent do
     timeout_conn_checks(ice_agent, now)
   end
 
-  defp timeout_conn_checks(ice_agent, now) do
+  defp timeout_conn_checks(%__MODULE__{} = ice_agent, now) do
     {stale_cc, cc} =
       Enum.split_with(ice_agent.conn_checks, fn {_id, %{send_time: send_time}} ->
         now - send_time >= @hto
@@ -1204,10 +1209,10 @@ defmodule ExICE.Priv.ICEAgent do
         ice_agent.checklist
       end
 
-    %__MODULE__{ice_agent | checklist: checklist, conn_checks: cc}
+    %{ice_agent | checklist: checklist, conn_checks: cc}
   end
 
-  defp timeout_gathering_transactions(ice_agent, now) do
+  defp timeout_gathering_transactions(%__MODULE__{} = ice_agent, now) do
     {stale_gath_trans, gath_trans} =
       Enum.split_with(ice_agent.gathering_transactions, fn {_id, tr} ->
         tr.state == :in_progress and now - tr.send_time >= @hto
@@ -1220,7 +1225,7 @@ defmodule ExICE.Priv.ICEAgent do
       Logger.debug("Gathering transactions timed out: #{inspect(ids)}")
     end
 
-    %__MODULE__{ice_agent | gathering_transactions: gath_trans}
+    %{ice_agent | gathering_transactions: gath_trans}
   end
 
   defp from_turn?(ice_agent, src_ip, src_port),
@@ -1427,10 +1432,10 @@ defmodule ExICE.Priv.ICEAgent do
     do_handle_data_message(ice_agent, pair, packet)
   end
 
-  defp do_handle_data_message(ice_agent, pair, packet) do
+  defp do_handle_data_message(ice_agent, %CandidatePair{} = pair, packet) do
     data_size = byte_size(packet)
 
-    pair = %CandidatePair{
+    pair = %{
       pair
       | last_seen: now(),
         packets_received: pair.packets_received + 1,
@@ -1448,7 +1453,7 @@ defmodule ExICE.Priv.ICEAgent do
     }
   end
 
-  defp add_local_cand(ice_agent, local_cand) do
+  defp add_local_cand(%__MODULE__{} = ice_agent, local_cand) do
     ice_agent = put_in(ice_agent.local_cands[local_cand.base.id], local_cand)
 
     remote_cands = get_matching_candidates_local(Map.values(ice_agent.remote_cands), local_cand)
@@ -1474,7 +1479,7 @@ defmodule ExICE.Priv.ICEAgent do
       Logger.debug("New candidate pairs: #{inspect(added_pairs)}")
     end
 
-    %__MODULE__{ice_agent | checklist: checklist}
+    %{ice_agent | checklist: checklist}
   end
 
   defp do_handle_stun_message(ice_agent, local_cand, src_ip, src_port, %Message{} = msg) do
@@ -1552,12 +1557,14 @@ defmodule ExICE.Priv.ICEAgent do
   ## BINDING INDICATION HANDLING ##
   defp handle_binding_indication(ice_agent, local_cand, src_ip, src_port) do
     remote_cand = find_remote_cand(Map.values(ice_agent.remote_cands), src_ip, src_port)
-    pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
+
+    %CandidatePair{} =
+      pair = Checklist.find_pair(ice_agent.checklist, local_cand.base.id, remote_cand.id)
 
     case pair.state do
       :succeeded ->
         pair = Map.fetch!(ice_agent.checklist, pair.discovered_pair_id)
-        pair = %CandidatePair{pair | last_seen: now()}
+        pair = %{pair | last_seen: now()}
         put_in(ice_agent.checklist[pair.id], pair)
 
       :failed ->
@@ -1574,13 +1581,13 @@ defmodule ExICE.Priv.ICEAgent do
         # The `last_seen` field will be overritten when sending conn-check,
         # but we update it for consistency, the same way we update it when
         # receiving normal data.
-        pair = %CandidatePair{pair | last_seen: now()}
+        pair = %{pair | last_seen: now()}
         put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 
   ## BINDING REQUEST HANDLING ##
-  defp handle_binding_request(ice_agent, local_cand, src_ip, src_port, msg) do
+  defp handle_binding_request(%__MODULE__{} = ice_agent, local_cand, src_ip, src_port, msg) do
     with :ok <- check_username(msg, ice_agent.local_ufrag),
          :ok <- authenticate_msg(msg, ice_agent.local_pwd),
          {:ok, prio_attr} <- get_prio_attribute(msg),
@@ -1604,7 +1611,7 @@ defmodule ExICE.Priv.ICEAgent do
       |> update_ta_timer()
     else
       error ->
-        ice_agent = %__MODULE__{ice_agent | unmatched_requests: ice_agent.unmatched_requests + 1}
+        ice_agent = %{ice_agent | unmatched_requests: ice_agent.unmatched_requests + 1}
         handle_binding_request_error(ice_agent, local_cand, src_ip, src_port, msg, error)
     end
   end
@@ -1704,7 +1711,7 @@ defmodule ExICE.Priv.ICEAgent do
     Peer's tiebreaker: #{tiebreaker}\
     """)
 
-    ice_agent = %__MODULE__{ice_agent | role: :controlled}
+    ice_agent = %{ice_agent | role: :controlled}
 
     checklist = recompute_pair_prios(ice_agent)
 
@@ -1722,11 +1729,11 @@ defmodule ExICE.Priv.ICEAgent do
     Peer's tiebreaker: #{tiebreaker}\
     """)
 
-    ice_agent = %__MODULE__{ice_agent | role: :controlling}
+    ice_agent = %{ice_agent | role: :controlling}
 
     checklist = recompute_pair_prios(ice_agent)
 
-    {:ok, %__MODULE__{ice_agent | checklist: checklist}}
+    {:ok, %{ice_agent | checklist: checklist}}
   end
 
   defp check_req_role_conflict(%__MODULE__{role: :controlled}, %ICEControlled{
@@ -1754,13 +1761,13 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   ## BINDING RESPONSE HANDLING ##
-  defp handle_conn_check_response(ice_agent, local_cand, src_ip, src_port, msg) do
+  defp handle_conn_check_response(%__MODULE__{} = ice_agent, local_cand, src_ip, src_port, msg) do
     {%{pair_id: pair_id, raw_req: raw_req}, conn_checks} =
       Map.pop!(ice_agent.conn_checks, msg.transaction_id)
 
     {:ok, req} = Message.decode(raw_req)
-    ice_agent = %__MODULE__{ice_agent | conn_checks: conn_checks}
-    conn_check_pair = Map.fetch!(ice_agent.checklist, pair_id)
+    ice_agent = %{ice_agent | conn_checks: conn_checks}
+    %CandidatePair{} = conn_check_pair = Map.fetch!(ice_agent.checklist, pair_id)
 
     # This shouldn't happen as we clear conn checks when a pair times out.
     if conn_check_pair.state == :failed do
@@ -1790,7 +1797,7 @@ defmodule ExICE.Priv.ICEAgent do
       Pair failed: #{conn_check_pair.id}\
       """)
 
-      conn_check_pair = %CandidatePair{
+      conn_check_pair = %{
         conn_check_pair
         | state: :failed,
           valid?: false,
@@ -1801,7 +1808,11 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp handle_conn_check_success_response(ice_agent, conn_check_pair, msg) do
+  defp handle_conn_check_success_response(
+         %__MODULE__{} = ice_agent,
+         %CandidatePair{} = conn_check_pair,
+         msg
+       ) do
     with :ok <- authenticate_msg(msg, ice_agent.remote_pwd),
          {:ok, xor_addr} <- Message.get_attribute(msg, XORMappedAddress) do
       {local_cand, ice_agent} = get_or_create_local_cand(ice_agent, xor_addr, conn_check_pair)
@@ -1817,7 +1828,7 @@ defmodule ExICE.Priv.ICEAgent do
 
       pair = CandidatePair.schedule_keepalive(ice_agent.checklist[pair_id])
 
-      pair = %CandidatePair{
+      pair = %{
         pair
         | last_seen: now(),
           responses_received: pair.responses_received + 1
@@ -1827,11 +1838,11 @@ defmodule ExICE.Priv.ICEAgent do
 
       # get new conn check pair as it will have updated
       # discovered and succeeded pair fields
-      conn_check_pair = Map.fetch!(ice_agent.checklist, conn_check_pair.id)
+      %CandidatePair{} = conn_check_pair = Map.fetch!(ice_agent.checklist, conn_check_pair.id)
       nominate? = conn_check_pair.nominate?
-      conn_check_pair = %CandidatePair{conn_check_pair | nominate?: false}
+      conn_check_pair = %{conn_check_pair | nominate?: false}
       checklist = Map.put(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
-      ice_agent = %__MODULE__{ice_agent | checklist: checklist}
+      ice_agent = %{ice_agent | checklist: checklist}
       @conn_check_handler[ice_agent.role].update_nominated_flag(ice_agent, pair_id, nominate?)
     else
       {:error, reason} ->
@@ -1841,7 +1852,7 @@ defmodule ExICE.Priv.ICEAgent do
         Conn check pair: #{inspect(conn_check_pair.id)}.\
         """)
 
-        conn_check_pair = %CandidatePair{
+        conn_check_pair = %{
           conn_check_pair
           | responses_received: conn_check_pair.responses_received + 1
         }
@@ -1850,7 +1861,12 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp handle_conn_check_error_response(ice_agent, conn_check_pair, req, resp) do
+  defp handle_conn_check_error_response(
+         %__MODULE__{} = ice_agent,
+         %CandidatePair{} = conn_check_pair,
+         req,
+         resp
+       ) do
     # We only authenticate role conflict as it changes our state.
     # We don't add message-integrity to bad request and unauthenticated errors
     # so we also don't expect to receive it.
@@ -1864,7 +1880,7 @@ defmodule ExICE.Priv.ICEAgent do
           "Conn check failed due to error response from the peer, error: #{inspect(other)}"
         )
 
-        conn_check_pair = %CandidatePair{
+        conn_check_pair = %{
           conn_check_pair
           | state: :failed,
             valid?: false,
@@ -1872,11 +1888,16 @@ defmodule ExICE.Priv.ICEAgent do
         }
 
         checklist = Map.put(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
-        %__MODULE__{ice_agent | checklist: checklist}
+        %{ice_agent | checklist: checklist}
     end
   end
 
-  defp handle_role_conflict_error_response(ice_agent, conn_check_pair, req, resp) do
+  defp handle_role_conflict_error_response(
+         %__MODULE__{} = ice_agent,
+         %CandidatePair{} = conn_check_pair,
+         req,
+         resp
+       ) do
     case authenticate_msg(resp, ice_agent.remote_pwd) do
       :ok ->
         {:ok, role} = get_role_attribute(req)
@@ -1902,7 +1923,7 @@ defmodule ExICE.Priv.ICEAgent do
               tiebreaker = generate_tiebreaker()
               checklist = recompute_pair_prios(ice_agent)
 
-              %__MODULE__{
+              %{
                 ice_agent
                 | role: new_role,
                   checklist: checklist,
@@ -1910,7 +1931,7 @@ defmodule ExICE.Priv.ICEAgent do
               }
           end
 
-        conn_check_pair = %CandidatePair{
+        conn_check_pair = %{
           conn_check_pair
           | state: :waiting,
             responses_received: conn_check_pair.responses_received + 1
@@ -1918,7 +1939,7 @@ defmodule ExICE.Priv.ICEAgent do
 
         checklist = Map.replace!(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
 
-        %__MODULE__{ice_agent | checklist: checklist}
+        %{ice_agent | checklist: checklist}
 
       {:error, reason} ->
         Logger.debug(
@@ -2006,13 +2027,13 @@ defmodule ExICE.Priv.ICEAgent do
          %Message{type: %Type{class: :success_response}} = msg
        ) do
     {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
-    pair = Map.fetch!(ice_agent.checklist, pair_id)
+    %CandidatePair{} = pair = Map.fetch!(ice_agent.checklist, pair_id)
 
     with true <- symmetric?(ice_agent, local_cand.base.socket, {src_ip, src_port}, pair),
          :ok <- authenticate_msg(msg, ice_agent.remote_pwd) do
       Logger.debug("Received keepalive success response on: #{pair_info(ice_agent, pair)}")
 
-      pair = %CandidatePair{
+      pair = %{
         pair
         | last_seen: now(),
           responses_received: pair.responses_received + 1
@@ -2060,8 +2081,8 @@ defmodule ExICE.Priv.ICEAgent do
          %Message{type: %Type{class: :error_response}} = msg
        ) do
     {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
-    pair = Map.fetch!(ice_agent.checklist, pair_id)
-    pair = %CandidatePair{pair | responses_received: pair.responses_received + 1}
+    %CandidatePair{} = pair = Map.fetch!(ice_agent.checklist, pair_id)
+    pair = %{pair | responses_received: pair.responses_received + 1}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     Logger.debug("""
@@ -2082,14 +2103,19 @@ defmodule ExICE.Priv.ICEAgent do
   # Check against valid_pair == conn_check_pair before
   # checking against valid_pair == checklist_pair as
   # the second condition is always true if the first one is
-  defp add_valid_pair(ice_agent, valid_pair, conn_check_pair, _)
+  defp add_valid_pair(
+         %__MODULE__{} = ice_agent,
+         %CandidatePair{} = valid_pair,
+         %CandidatePair{} = conn_check_pair,
+         _
+       )
        when are_pairs_equal(valid_pair, conn_check_pair) do
     Logger.debug("""
     New valid pair: #{conn_check_pair.id} \
     resulted from conn check on pair: #{conn_check_pair.id}\
     """)
 
-    conn_check_pair = %CandidatePair{
+    conn_check_pair = %{
       conn_check_pair
       | succeeded_pair_id: conn_check_pair.id,
         discovered_pair_id: conn_check_pair.id,
@@ -2099,25 +2125,30 @@ defmodule ExICE.Priv.ICEAgent do
 
     checklist = Map.replace!(ice_agent.checklist, conn_check_pair.id, conn_check_pair)
 
-    ice_agent = %__MODULE__{ice_agent | checklist: checklist}
+    ice_agent = %{ice_agent | checklist: checklist}
     {conn_check_pair.id, ice_agent}
   end
 
-  defp add_valid_pair(ice_agent, valid_pair, conn_check_pair, checklist_pair)
+  defp add_valid_pair(
+         %__MODULE__{} = ice_agent,
+         %CandidatePair{} = valid_pair,
+         %CandidatePair{} = conn_check_pair,
+         %CandidatePair{} = checklist_pair
+       )
        when are_pairs_equal(valid_pair, checklist_pair) do
     Logger.debug("""
     New valid pair: #{checklist_pair.id} \
     resulted from conn check on pair: #{conn_check_pair.id}\
     """)
 
-    conn_check_pair = %CandidatePair{
+    conn_check_pair = %{
       conn_check_pair
       | discovered_pair_id: checklist_pair.id,
         succeeded_pair_id: conn_check_pair.id,
         state: :succeeded
     }
 
-    checklist_pair = %CandidatePair{
+    checklist_pair = %{
       checklist_pair
       | discovered_pair_id: checklist_pair.id,
         succeeded_pair_id: conn_check_pair.id,
@@ -2130,11 +2161,16 @@ defmodule ExICE.Priv.ICEAgent do
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
       |> Map.replace!(checklist_pair.id, checklist_pair)
 
-    ice_agent = %__MODULE__{ice_agent | checklist: checklist}
+    ice_agent = %{ice_agent | checklist: checklist}
     {checklist_pair.id, ice_agent}
   end
 
-  defp add_valid_pair(ice_agent, valid_pair, conn_check_pair, nil) do
+  defp add_valid_pair(
+         %__MODULE__{} = ice_agent,
+         %CandidatePair{} = valid_pair,
+         %CandidatePair{} = conn_check_pair,
+         nil
+       ) do
     # TODO compute priority according to sec 7.2.5.3.2
     Logger.debug("""
     Adding new candidate pair resulted from conn check \
@@ -2143,14 +2179,14 @@ defmodule ExICE.Priv.ICEAgent do
 
     Logger.debug("New valid pair: #{valid_pair.id}")
 
-    conn_check_pair = %CandidatePair{
+    conn_check_pair = %{
       conn_check_pair
       | discovered_pair_id: valid_pair.id,
         succeeded_pair_id: conn_check_pair.id,
         state: :succeeded
     }
 
-    valid_pair = %CandidatePair{
+    valid_pair = %{
       valid_pair
       | discovered_pair_id: valid_pair.id,
         succeeded_pair_id: conn_check_pair.id
@@ -2161,13 +2197,13 @@ defmodule ExICE.Priv.ICEAgent do
       |> Map.replace!(conn_check_pair.id, conn_check_pair)
       |> Map.put(valid_pair.id, valid_pair)
 
-    ice_agent = %__MODULE__{ice_agent | checklist: checklist}
+    ice_agent = %{ice_agent | checklist: checklist}
     {valid_pair.id, ice_agent}
   end
 
   @doc false
   @spec send_binding_success_response(t(), CandidatePair.t(), Message.t()) :: t()
-  def send_binding_success_response(ice_agent, pair, req) do
+  def send_binding_success_response(ice_agent, %CandidatePair{} = pair, req) do
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
@@ -2184,13 +2220,13 @@ defmodule ExICE.Priv.ICEAgent do
 
     case do_send(ice_agent, local_cand, {src_ip, src_port}, resp) do
       {:ok, ice_agent} ->
-        pair = %CandidatePair{pair | responses_sent: pair.responses_sent + 1}
+        pair = %{pair | responses_sent: pair.responses_sent + 1}
         put_in(ice_agent.checklist[pair.id], pair)
 
       {:error, ice_agent} ->
         pair = Map.fetch!(ice_agent.checklist, pair.id)
 
-        pair = %CandidatePair{
+        pair = %{
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
             bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(resp)
@@ -2278,7 +2314,7 @@ defmodule ExICE.Priv.ICEAgent do
     if f in checklist_foundations, do: :frozen, else: :waiting
   end
 
-  defp get_or_create_local_cand(ice_agent, xor_addr, conn_check_pair) do
+  defp get_or_create_local_cand(%__MODULE__{} = ice_agent, xor_addr, conn_check_pair) do
     conn_check_local_cand = Map.fetch!(ice_agent.local_cands, conn_check_pair.local_cand_id)
 
     local_cand =
@@ -2343,7 +2379,7 @@ defmodule ExICE.Priv.ICEAgent do
 
         Logger.debug("Adding new local prflx candidate: #{inspect(cand)}")
 
-        ice_agent = %__MODULE__{
+        ice_agent = %{
           ice_agent
           | local_cands: Map.put(ice_agent.local_cands, cand.base.id, cand)
         }
@@ -2539,15 +2575,15 @@ defmodule ExICE.Priv.ICEAgent do
 
   defp time_to_nominate?(_ice_agent), do: false
 
-  defp try_nominate(ice_agent) do
+  defp try_nominate(%__MODULE__{} = ice_agent) do
     case Checklist.get_pair_for_nomination(ice_agent.checklist) do
       %CandidatePair{} = pair ->
         Logger.debug("Trying to nominate pair: #{inspect(pair.id)}")
-        pair = %CandidatePair{pair | nominate?: true}
+        pair = %{pair | nominate?: true}
         checklist = Map.put(ice_agent.checklist, pair.id, pair)
-        ice_agent = %__MODULE__{ice_agent | checklist: checklist, nominating?: {true, pair.id}}
+        ice_agent = %{ice_agent | checklist: checklist, nominating?: {true, pair.id}}
         pair = Map.fetch!(ice_agent.checklist, pair.succeeded_pair_id)
-        pair = %CandidatePair{pair | state: :waiting, nominate?: true}
+        pair = %{pair | state: :waiting, nominate?: true}
         send_conn_check(ice_agent, pair)
 
       nil ->
@@ -2561,7 +2597,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp do_restart(ice_agent) do
+  defp do_restart(%__MODULE__{} = ice_agent) do
     Enum.each(ice_agent.sockets, fn socket ->
       case ice_agent.transport_module.sockname(socket) do
         {:ok, {ip, port}} ->
@@ -2596,7 +2632,7 @@ defmodule ExICE.Priv.ICEAgent do
 
     pair_changes_diff = if ice_agent.selected_pair_id != nil, do: 1, else: 0
 
-    %__MODULE__{
+    %{
       ice_agent
       | sockets: [],
         gathering_transactions: %{},
@@ -2679,10 +2715,12 @@ defmodule ExICE.Priv.ICEAgent do
       |> List.wrap()
       |> Enum.map(fn url ->
         case ExSTUN.URI.parse(url) do
-          {:ok, url} ->
-            ice_server
-            |> Map.delete(:urls)
-            |> Map.put(:url, url)
+          {:ok, parsed_url} ->
+            %{
+              url: parsed_url,
+              username: ice_server[:username],
+              credential: ice_server[:credential]
+            }
 
           :error ->
             Logger.warning("Couldn't parse URL: #{inspect(url)}. Ignoring.")
@@ -2725,14 +2763,14 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp change_gathering_state(ice_agent, new_gathering_state, opts \\ []) do
+  defp change_gathering_state(%__MODULE__{} = ice_agent, new_gathering_state, opts \\ []) do
     Logger.debug("Gathering state change: #{ice_agent.gathering_state} -> #{new_gathering_state}")
 
     if opts[:notify] != false do
       notify(ice_agent.on_gathering_state_change, {:gathering_state_change, new_gathering_state})
     end
 
-    %__MODULE__{ice_agent | gathering_state: new_gathering_state}
+    %{ice_agent | gathering_state: new_gathering_state}
   end
 
   defp update_gathering_state(%{gathering_state: :complete} = ice_agent), do: ice_agent
@@ -2847,14 +2885,14 @@ defmodule ExICE.Priv.ICEAgent do
     do_change_connection_state(ice_agent, new_conn_state, opts)
   end
 
-  defp do_change_connection_state(ice_agent, new_conn_state, opts) do
+  defp do_change_connection_state(%__MODULE__{} = ice_agent, new_conn_state, opts) do
     Logger.debug("Connection state change: #{ice_agent.state} -> #{new_conn_state}")
 
     if opts[:notify] != false do
       notify(ice_agent.on_connection_state_change, {:connection_state_change, new_conn_state})
     end
 
-    %__MODULE__{ice_agent | state: new_conn_state}
+    %{ice_agent | state: new_conn_state}
   end
 
   defp update_connection_state(%__MODULE__{state: :new} = ice_agent) do
@@ -3069,7 +3107,7 @@ defmodule ExICE.Priv.ICEAgent do
     %{ice_agent | ta_timer: nil}
   end
 
-  defp send_keepalive(ice_agent, pair) do
+  defp send_keepalive(%__MODULE__{} = ice_agent, %CandidatePair{} = pair) do
     Logger.debug("Sending keepalive on #{pair_info(ice_agent, pair)}")
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
@@ -3081,15 +3119,15 @@ defmodule ExICE.Priv.ICEAgent do
 
     case do_send(ice_agent, local_cand, dst, raw_req) do
       {:ok, ice_agent} ->
-        pair = %CandidatePair{pair | requests_sent: pair.requests_sent + 1}
+        pair = %{pair | requests_sent: pair.requests_sent + 1}
         ice_agent = put_in(ice_agent.checklist[pair.id], pair)
         keepalives = Map.put(ice_agent.keepalives, req.transaction_id, pair.id)
-        %__MODULE__{ice_agent | keepalives: keepalives}
+        %{ice_agent | keepalives: keepalives}
 
       {:error, ice_agent} ->
         pair = Map.fetch!(ice_agent.checklist, pair.id)
 
-        pair = %CandidatePair{
+        pair = %{
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
             bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req)
@@ -3099,7 +3137,7 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp send_conn_check(ice_agent, pair) do
+  defp send_conn_check(%__MODULE__{} = ice_agent, %CandidatePair{} = pair) do
     local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
     remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
@@ -3110,7 +3148,7 @@ defmodule ExICE.Priv.ICEAgent do
 
     # set nominate? flag in case we are running aggressive nomination
     # but don't override it if we are controlled agent and it was already set to true
-    pair = %CandidatePair{pair | nominate?: pair.nominate? || nominate}
+    pair = %{pair | nominate?: pair.nominate? || nominate}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 
     req = binding_request(ice_agent, local_cand, nominate)
@@ -3133,12 +3171,12 @@ defmodule ExICE.Priv.ICEAgent do
 
         conn_checks = Map.put(ice_agent.conn_checks, req.transaction_id, conn_check)
         checklist = Map.put(ice_agent.checklist, pair.id, pair)
-        %__MODULE__{ice_agent | conn_checks: conn_checks, checklist: checklist}
+        %{ice_agent | conn_checks: conn_checks, checklist: checklist}
 
       {:error, ice_agent} ->
         pair = Map.fetch!(ice_agent.checklist, pair.id)
 
-        pair = %CandidatePair{
+        pair = %{
           pair
           | packets_discarded_on_send: pair.packets_discarded_on_send + 1,
             bytes_discarded_on_send: pair.bytes_discarded_on_send + byte_size(raw_req),

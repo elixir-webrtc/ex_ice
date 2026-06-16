@@ -178,7 +178,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [prflx_cand] = Map.values(ice_agent.remote_cands)
       assert [prflx_pair] = Map.values(ice_agent.checklist)
       assert prflx_cand.type == :prflx
-      prflx_pair = %CandidatePair{prflx_pair | state: :succeeded, valid?: true}
+      prflx_pair = %{prflx_pair | state: :succeeded, valid?: true}
       ice_agent = put_in(ice_agent.checklist[prflx_pair.id], prflx_pair)
 
       # add another remote candidate that will result in higher pair priority
@@ -190,9 +190,9 @@ defmodule ExICE.Priv.ICEAgentTest do
         end)
 
       assert host_pair.priority > prflx_pair.priority
-      host_pair = %CandidatePair{host_pair | state: :succeeded, valid?: true}
+      host_pair = %{host_pair | state: :succeeded, valid?: true}
       ice_agent = put_in(ice_agent.checklist[host_pair.id], host_pair)
-      ice_agent = %ICEAgent{ice_agent | selected_pair_id: host_pair.id}
+      ice_agent = %{ice_agent | selected_pair_id: host_pair.id}
 
       # try to add host candidate that is the same as prflx candidate
       ice_agent = ICEAgent.add_remote_candidate(ice_agent, remote_cand1)
@@ -388,9 +388,9 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # check stats
     stats = ICEAgent.get_stats(ice_agent)
-    assert stats.local_candidates != %{}
-    assert stats.remote_candidates != %{}
-    assert stats.candidate_pairs != %{}
+    assert stats.local_candidates != []
+    assert stats.remote_candidates != []
+    assert stats.candidate_pairs != []
     assert stats.state == :closed
 
     refute_received {:ex_ice, _pid, {:connection_state_change, :closed}}
@@ -1051,7 +1051,7 @@ defmodule ExICE.Priv.ICEAgentTest do
         |> Message.encode()
 
       # modify last byte to make fingerprint incorrect
-      <<start::binary-size(byte_size(request) - 1), last_byte>> = request
+      <<start::binary-size(byte_size(^request) - 1), last_byte>> = request
       request = <<start::binary, last_byte + 1>>
 
       _ice_agent =
@@ -1220,7 +1220,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       # mark pair as failed
       [pair_before] = Map.values(ice_agent.checklist)
-      pair_before = %CandidatePair{pair_before | state: :failed, valid?: false}
+      pair_before = %{pair_before | state: :failed, valid?: false}
       ice_agent = put_in(ice_agent.checklist[pair_before.id], pair_before)
 
       # wait so that there is a change in last_seen in case of

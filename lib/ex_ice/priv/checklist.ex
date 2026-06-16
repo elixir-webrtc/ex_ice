@@ -96,9 +96,9 @@ defmodule ExICE.Priv.Checklist do
 
   @spec timeout_pairs(t(), [integer()]) :: t()
   def timeout_pairs(checklist, ids) do
-    for {_id, pair} <- checklist, into: %{} do
+    for {_id, %CandidatePair{} = pair} <- checklist, into: %{} do
       if pair.id in ids do
-        {pair.id, %CandidatePair{pair | valid?: false, state: :failed}}
+        {pair.id, %{pair | valid?: false, state: :failed}}
       else
         {pair.id, pair}
       end

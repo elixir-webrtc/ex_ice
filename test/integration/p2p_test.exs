@@ -242,7 +242,7 @@ defmodule ExICE.Integration.P2PTest do
             Logger.info("Sending file...")
 
             Task.start(fn ->
-              File.stream!("./test/fixtures/lotr.txt", [], 1000)
+              File.stream!("./test/fixtures/lotr.txt", 1000, [])
               |> Stream.each(fn chunk -> ICEAgent.send_data(agent1, chunk) end)
               |> Stream.run()
 
@@ -280,7 +280,7 @@ defmodule ExICE.Integration.P2PTest do
             Logger.info("Sending file...")
 
             Task.start(fn ->
-              File.stream!("./test/fixtures/lotr.txt", [], 1000)
+              File.stream!("./test/fixtures/lotr.txt", 1000, [])
               |> Stream.each(fn chunk -> ICEAgent.send_data(agent2, chunk) end)
               |> Stream.run()
 

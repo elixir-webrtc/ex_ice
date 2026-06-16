@@ -2,8 +2,6 @@ defmodule ExICE.Priv.Transport.TCP do
   @moduledoc false
   @behaviour ExICE.Priv.Transport
 
-  require Logger
-
   alias ExICE.Priv.Transport.TCP.Client
 
   @impl true
