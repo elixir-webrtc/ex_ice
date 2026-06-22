@@ -943,61 +943,90 @@ defmodule ExICE.Priv.ICEAgent do
 
   def handle_ex_turn_msg(ice_agent, client_ref, msg) do
     tr_id_tr = find_gathering_transaction(ice_agent.gathering_transactions, client_ref)
-
     cand = find_relay_cand_by_client(Map.values(ice_agent.local_cands), client_ref)
 
     case {tr_id_tr, cand} do
-      {nil, nil} ->
+      {nil, nil} -> ice_agent
+      {{tr_id, tr}, nil} -> handle_ex_turn_msg_for_gathering_tx(ice_agent, tr_id, tr, msg)
+      {nil, cand} -> handle_ex_turn_msg_for_relay_cand(ice_agent, cand, msg)
+    end
+  end
+
+  defp handle_ex_turn_msg_for_gathering_tx(ice_agent, tr_id, tr, msg) do
+    case ExTURN.Client.handle_message(tr.client, msg) do
+      {:ok, client} ->
+        put_in(ice_agent.gathering_transactions[tr_id], %{tr | client: client})
+
+      {:send, dst, data, client} ->
+        send_on_gathering_tx(ice_agent, tr_id, %{tr | client: client}, dst, data)
+
+      {:error, _reason, _client} ->
+        drop_gathering_transaction(ice_agent, tr_id)
+    end
+  end
+
+  defp send_on_gathering_tx(ice_agent, tr_id, tr, dst, data) do
+    case ice_agent.transport_module.send(tr.socket, dst, data) do
+      :ok ->
+        put_in(ice_agent.gathering_transactions[tr_id], tr)
+
+      {:error, _reason} ->
+        drop_gathering_transaction(ice_agent, tr_id)
+    end
+  end
+
+  defp drop_gathering_transaction(ice_agent, tr_id) do
+    {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
+    update_gathering_state(ice_agent)
+  end
+
+  defp handle_ex_turn_msg_for_relay_cand(ice_agent, cand, msg) do
+    case ExTURN.Client.handle_message(cand.client, msg) do
+      {:ok, client} ->
+        update_relay_cand_client(ice_agent, cand, client)
+
+      {:send, dst, data, client} ->
+        send_on_relay_cand(ice_agent, cand, client, dst, data)
+
+      {:permission_expired, _ip, client} ->
+        update_relay_cand_client(ice_agent, cand, client)
+
+      {:channel_expired, _addr, client} ->
+        update_relay_cand_client(ice_agent, cand, client)
+
+      {:error, _reason, client} ->
+        Logger.debug("""
+        Couldn't handle TURN message on candidate: #{inspect(cand)}. \
+        Closing candidate.\
+        """)
+
+        ice_agent
+        |> update_relay_cand_client(cand, client)
+        |> close_candidate(cand)
+    end
+  end
+
+  # we can't use do_send here as it will try to create permission for the turn address
+  defp send_on_relay_cand(ice_agent, cand, client, dst, data) do
+    cand = %{cand | client: client}
+    ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
+
+    case ice_agent.transport_module.send(cand.base.socket, dst, data) do
+      :ok ->
         ice_agent
 
-      {{tr_id, tr}, nil} ->
-        case ExTURN.Client.handle_message(tr.client, msg) do
-          {:ok, client} ->
-            tr = %{tr | client: client}
-            put_in(ice_agent.gathering_transactions[tr_id], tr)
+      {:error, _reason} ->
+        Logger.debug("""
+        Couldn't send TURN message on candidate: #{inspect(cand)}. \
+        Closing candidate.\
+        """)
 
-          {:send, dst, data, client} ->
-            tr = %{tr | client: client}
-            :ok = ice_agent.transport_module.send(tr.socket, dst, data)
-            put_in(ice_agent.gathering_transactions[tr_id], tr)
-
-          {:error, _reason, _client} ->
-            {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
-            update_gathering_state(ice_agent)
-        end
-
-      {nil, cand} ->
-        case ExTURN.Client.handle_message(cand.client, msg) do
-          {:ok, client} ->
-            cand = %{cand | client: client}
-            put_in(ice_agent.local_cands[cand.base.id], cand)
-
-          {:send, dst, data, client} ->
-            cand = %{cand | client: client}
-            ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
-            # we can't use do_send here as it will try to create permission for the turn address
-            :ok = ice_agent.transport_module.send(cand.base.socket, dst, data)
-            ice_agent
-
-          {:permission_expired, _ip, client} ->
-            cand = %{cand | client: client}
-            put_in(ice_agent.local_cands[cand.base.id], cand)
-
-          {:channel_expired, _addr, client} ->
-            cand = %{cand | client: client}
-            put_in(ice_agent.local_cands[cand.base.id], cand)
-
-          {:error, _reason, client} ->
-            Logger.debug("""
-            Couldn't handle TURN message on candidate: #{inspect(cand)}. \
-            Closing candidate.\
-            """)
-
-            cand = %{cand | client: client}
-            ice_agent = put_in(ice_agent.local_cands[cand.base.id], cand)
-            close_candidate(ice_agent, cand)
-        end
+        close_candidate(ice_agent, cand)
     end
+  end
+
+  defp update_relay_cand_client(ice_agent, cand, client) do
+    put_in(ice_agent.local_cands[cand.base.id], %{cand | client: client})
   end
 
   @spec close(t()) :: t()
@@ -1283,8 +1312,16 @@ defmodule ExICE.Priv.ICEAgent do
 
       {:send, turn_addr, data, client} ->
         tr = %{tr | client: client}
-        :ok = ice_agent.transport_module.send(tr.socket, turn_addr, data)
-        put_in(ice_agent.gathering_transactions[tr_id], tr)
+
+        case ice_agent.transport_module.send(tr.socket, turn_addr, data) do
+          :ok ->
+            put_in(ice_agent.gathering_transactions[tr_id], tr)
+
+          {:error, _reason} ->
+            Logger.debug("Failed to create TURN allocation.")
+            {_, ice_agent} = pop_in(ice_agent.gathering_transactions[tr_id])
+            ice_agent
+        end
 
       {:error, _reason, _client} ->
         Logger.debug("Failed to create TURN allocation.")
@@ -2019,16 +2056,27 @@ defmodule ExICE.Priv.ICEAgent do
     ice_agent
   end
 
-  defp handle_keepalive_response(
+  defp handle_keepalive_response(ice_agent, local_cand, src_ip, src_port, msg) do
+    {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
+
+    case Map.fetch(ice_agent.checklist, pair_id) do
+      {:ok, %CandidatePair{} = pair} ->
+        handle_keepalive_response_on_pair(ice_agent, local_cand, src_ip, src_port, msg, pair)
+
+      :error ->
+        Logger.debug("Ignoring keepalive response for pruned pair #{inspect(pair_id)}")
+        ice_agent
+    end
+  end
+
+  defp handle_keepalive_response_on_pair(
          ice_agent,
          local_cand,
          src_ip,
          src_port,
-         %Message{type: %Type{class: :success_response}} = msg
+         %Message{type: %Type{class: :success_response}} = msg,
+         pair
        ) do
-    {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
-    %CandidatePair{} = pair = Map.fetch!(ice_agent.checklist, pair_id)
-
     with true <- symmetric?(ice_agent, local_cand.base.socket, {src_ip, src_port}, pair),
          :ok <- authenticate_msg(msg, ice_agent.remote_pwd) do
       Logger.debug("Received keepalive success response on: #{pair_info(ice_agent, pair)}")
@@ -2045,7 +2093,7 @@ defmodule ExICE.Priv.ICEAgent do
         ka_local_cand = Map.fetch!(ice_agent.local_cands, pair.local_cand_id)
         ka_remote_cand = Map.fetch!(ice_agent.remote_cands, pair.remote_cand_id)
 
-        pair = %CandidatePair{
+        pair = %{
           pair
           | non_symmetric_responses_received: pair.non_symmetric_responses_received + 1
         }
@@ -2068,20 +2116,19 @@ defmodule ExICE.Priv.ICEAgent do
         Not refreshing last_seen time.\
         """)
 
-        pair = %CandidatePair{pair | responses_received: pair.responses_received + 1}
+        pair = %{pair | responses_received: pair.responses_received + 1}
         put_in(ice_agent.checklist[pair.id], pair)
     end
   end
 
-  defp handle_keepalive_response(
+  defp handle_keepalive_response_on_pair(
          ice_agent,
          local_cand,
          src_ip,
          src_port,
-         %Message{type: %Type{class: :error_response}} = msg
+         %Message{type: %Type{class: :error_response}},
+         pair
        ) do
-    {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
-    %CandidatePair{} = pair = Map.fetch!(ice_agent.checklist, pair_id)
     pair = %{pair | responses_received: pair.responses_received + 1}
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
 

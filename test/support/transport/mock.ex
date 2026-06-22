@@ -26,6 +26,20 @@ defmodule ExICE.Support.Transport.Mock do
     end
   end
 
+  @spec fail_send(ExICE.Priv.Transport.socket()) :: :ok
+  def fail_send(ref) do
+    [{^ref, socket}] = :ets.lookup(:transport_mock, ref)
+    :ets.insert(:transport_mock, {ref, Map.put(socket, :fail_send, true)})
+    :ok
+  end
+
+  @spec unfail_send(ExICE.Priv.Transport.socket()) :: :ok
+  def unfail_send(ref) do
+    [{^ref, socket}] = :ets.lookup(:transport_mock, ref)
+    :ets.insert(:transport_mock, {ref, Map.delete(socket, :fail_send)})
+    :ok
+  end
+
   @spec recv(ExICE.Priv.Transport.socket()) :: binary() | nil
   def recv(ref) do
     case :ets.lookup(:transport_mock, ref) do
@@ -88,8 +102,13 @@ defmodule ExICE.Support.Transport.Mock do
   @impl true
   def send(ref, _dst, packet, _tp_opts \\ []) do
     [{^ref, %{state: :open} = socket}] = :ets.lookup(:transport_mock, ref)
-    :ets.insert(:transport_mock, {ref, %{socket | buf: socket.buf ++ [packet]}})
-    :ok
+
+    if socket[:fail_send] do
+      {:error, :closed}
+    else
+      :ets.insert(:transport_mock, {ref, %{socket | buf: socket.buf ++ [packet]}})
+      :ok
+    end
   end
 
   @impl true

@@ -750,6 +750,62 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert new_pair.last_seen == pair.last_seen
       assert new_pair.responses_received == pair.responses_received + 1
     end
+
+    test "success response for pruned pair", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [pair] = Map.values(ice_agent.checklist)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+
+      resp =
+        binding_response(
+          req.transaction_id,
+          ice_agent.transport_module,
+          socket,
+          ice_agent.remote_pwd
+        )
+
+      {_, ice_agent} = pop_in(ice_agent.checklist[pair.id])
+      assert ice_agent.checklist == %{}
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
+
+      assert ice_agent.checklist == %{}
+      assert ice_agent.keepalives == %{}
+    end
+
+    test "error response for pruned pair", %{ice_agent: ice_agent} do
+      ice_agent = connect(ice_agent)
+
+      [socket] = ice_agent.sockets
+      [remote_cand] = Map.values(ice_agent.remote_cands)
+      [pair] = Map.values(ice_agent.checklist)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      assert packet = Transport.Mock.recv(socket)
+      assert {:ok, req} = ExSTUN.Message.decode(packet)
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :error_response, method: :binding}, [
+          %ErrorCode{code: 400}
+        ])
+        |> Message.encode()
+
+      {_, ice_agent} = pop_in(ice_agent.checklist[pair.id])
+      assert ice_agent.checklist == %{}
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, remote_cand.address, remote_cand.port, resp)
+
+      assert ice_agent.checklist == %{}
+      assert ice_agent.keepalives == %{}
+    end
   end
 
   describe "incoming binding request" do
@@ -2661,6 +2717,77 @@ defmodule ExICE.Priv.ICEAgentTest do
       cand = ice_agent.local_cands[cand.base.id]
       refute Map.has_key?(cand.client.addr_channel, addr)
       refute Map.has_key?(cand.client.channel_addr, channel_number)
+    end
+
+    test "send failure on gathering transaction via handle_ex_turn_msg", %{
+      ice_agent: ice_agent
+    } do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+
+      turn_tr_id = {socket, {@turn_ip, @turn_port}}
+      tr = Map.fetch!(ice_agent.gathering_transactions, turn_tr_id)
+
+      Transport.Mock.fail_send(socket)
+
+      ice_agent =
+        ICEAgent.handle_ex_turn_msg(
+          ice_agent,
+          tr.client.ref,
+          {:socket_data, @turn_ip, @turn_port, resp}
+        )
+
+      assert ice_agent.gathering_transactions == %{}
+    end
+
+    test "send failure on gathering transaction via handle_udp", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+
+      Transport.Mock.fail_send(socket)
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      assert ice_agent.gathering_transactions == %{}
+
+      assert nil ==
+               ice_agent.local_cands
+               |> Map.values()
+               |> Enum.find(&(&1.base.type == :relay))
+    end
+
+    test "send failure on relay candidate", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      req = read_allocate_request(socket)
+      resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      cand = ice_agent.local_cands |> Map.values() |> Enum.find(&(&1.base.type == :relay))
+      assert %ExICE.Priv.Candidate.Relay{} = cand
+      refute cand.base.closed?
+
+      Transport.Mock.fail_send(socket)
+
+      ice_agent =
+        ICEAgent.handle_ex_turn_msg(
+          ice_agent,
+          cand.client.ref,
+          :refresh_alloc
+        )
+
+      updated_cand = ice_agent.local_cands[cand.base.id]
+      assert updated_cand.base.closed?
     end
 
     test "invalid TURN URL" do
