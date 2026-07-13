@@ -276,7 +276,7 @@ defmodule ExICE.ICEAgent do
   * `packets_received` - data packets received. This does not include connectivity checks.
   * `candidate_pairs` - list of current candidate pairs. Changes after doing an ICE restart.
   """
-  @spec get_stats(pid()) :: %{
+  @spec get_stats(pid(), timeout()) :: %{
           bytes_sent: non_neg_integer(),
           bytes_received: non_neg_integer(),
           packets_sent: non_neg_integer(),
@@ -288,8 +288,8 @@ defmodule ExICE.ICEAgent do
           remote_candidates: [Candidate.t()],
           candidate_pairs: [CandidatePair.t()]
         }
-  def get_stats(ice_agent) do
-    GenServer.call(ice_agent, :get_stats)
+  def get_stats(ice_agent, timeout \\ 5000) do
+    GenServer.call(ice_agent, :get_stats, timeout)
   end
 
   @doc """
