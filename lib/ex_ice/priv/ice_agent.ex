@@ -29,10 +29,23 @@ defmodule ExICE.Priv.ICEAgent do
   # See appendix B.1.
   @hto 2_000
 
-  # Pair timeout in ms.
-  # If we don't receive any data in this time,
-  # a pair is marked as failed.
-  @pair_timeout 8_000
+  # Default disconnected timeout in ms.
+  # If we don't receive any data on the pair that is in use
+  # in this time, we report the disconnected state.
+  @disconnected_timeout 5_000
+
+  # Default failed timeout in ms.
+  # If we don't receive any data on a pair in this time,
+  # the pair is marked as failed.
+  @failed_timeout 30_000
+
+  # Default keepalive interval in ms.
+  @keepalive_interval 2_000
+
+  # Bounds of the interval (in ms) in which pairs are checked against
+  # the above timeouts. The interval is a fifth of the disconnected timeout.
+  @min_pair_check_interval 10
+  @max_pair_check_interval 1_000
 
   # End-of-candidates timeout in ms.
   # If we don't receive end-of-candidates indication in this time,
@@ -67,6 +80,10 @@ defmodule ExICE.Priv.ICEAgent do
     :ice_transport_policy,
     :ta_timer,
     :eoc_timer,
+    :pair_timer,
+    :disconnected_timeout,
+    :failed_timeout,
+    :keepalive_interval,
     :role,
     :tiebreaker,
     :selected_pair_id,
@@ -75,6 +92,9 @@ defmodule ExICE.Priv.ICEAgent do
     :remote_ufrag,
     :remote_pwd,
     state: :new,
+    # Set when the pair in use hasn't received any data for `disconnected_timeout`.
+    # Overlays `state` (only in :connected and :completed), which then is reported as :disconnected.
+    disconnected?: false,
     gathering_transactions: %{},
     checklist: %{},
     conn_checks: %{},
@@ -150,7 +170,7 @@ defmodule ExICE.Priv.ICEAgent do
     ip_filter = opts[:ip_filter] || fn _ -> true end
     ports = opts[:ports] || [0]
 
-    start_pair_timer()
+    {disconnected_timeout, failed_timeout, keepalive_interval} = liveness_timeouts!(opts)
 
     %__MODULE__{
       controlling_process: controlling_process,
@@ -169,8 +189,40 @@ defmodule ExICE.Priv.ICEAgent do
       local_pwd: local_pwd,
       stun_servers: stun_servers,
       turn_servers: turn_servers,
-      host_to_srflx_ip_mapper: opts[:host_to_srflx_ip_mapper]
+      host_to_srflx_ip_mapper: opts[:host_to_srflx_ip_mapper],
+      disconnected_timeout: disconnected_timeout,
+      failed_timeout: failed_timeout,
+      keepalive_interval: keepalive_interval
     }
+    |> start_pair_timer()
+  end
+
+  defp liveness_timeouts!(opts) do
+    timeouts =
+      for {name, default} <- [
+            disconnected_timeout: @disconnected_timeout,
+            failed_timeout: @failed_timeout,
+            keepalive_interval: @keepalive_interval
+          ] do
+        timeout = opts[name] || default
+
+        if not is_integer(timeout) or timeout <= 0 do
+          raise ArgumentError, "#{name} must be a positive integer, got: #{inspect(timeout)}"
+        end
+
+        timeout
+      end
+
+    [disconnected_timeout, failed_timeout, keepalive_interval] = timeouts
+
+    if failed_timeout <= disconnected_timeout or disconnected_timeout <= keepalive_interval do
+      raise ArgumentError, """
+      Expected failed_timeout > disconnected_timeout > keepalive_interval, got: \
+      #{failed_timeout}, #{disconnected_timeout}, #{keepalive_interval}\
+      """
+    end
+
+    List.to_tuple(timeouts)
   end
 
   @spec on_gathering_state_change(t(), pid() | nil) :: t()
@@ -234,7 +286,7 @@ defmodule ExICE.Priv.ICEAgent do
       packets_received: ice_agent.packets_received,
       unmatched_requests: ice_agent.unmatched_requests,
       selected_candidate_pair_changes: ice_agent.selected_candidate_pair_changes,
-      state: ice_agent.state,
+      state: reported_state(ice_agent),
       role: ice_agent.role,
       local_ufrag: ice_agent.local_ufrag,
       local_candidates: local_cands,
@@ -793,7 +845,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   def handle_pair_timeout(ice_agent) do
-    start_pair_timer()
+    ice_agent = start_pair_timer(ice_agent)
 
     # only take final pairs i.e. those that are actually used
     pairs =
@@ -802,8 +854,12 @@ defmodule ExICE.Priv.ICEAgent do
       |> Stream.filter(fn pair -> pair.state == :succeeded end)
       |> Enum.filter(fn pair -> pair.id == pair.discovered_pair_id end)
 
-    timeout_pairs(ice_agent, pairs, now())
+    now = now()
+
+    ice_agent
+    |> timeout_pairs(pairs, now)
     |> update_connection_state()
+    |> update_liveness(now)
   end
 
   defp timeout_pairs(ice_agent, [], _now), do: ice_agent
@@ -815,7 +871,7 @@ defmodule ExICE.Priv.ICEAgent do
   defp timeout_pairs(ice_agent, [pair | pairs], now) do
     diff = now - pair.last_seen
 
-    if diff >= @pair_timeout do
+    if diff >= ice_agent.failed_timeout do
       Logger.debug("""
       Pair: #{pair.id} didn't receive any data in #{diff}ms. \
       Marking as failed.\
@@ -850,7 +906,7 @@ defmodule ExICE.Priv.ICEAgent do
   def handle_keepalive_timeout(%__MODULE__{selected_pair_id: id} = ice_agent, id) do
     # if pair was selected, send keepalives only on that pair
     s_pair = Map.fetch!(ice_agent.checklist, id)
-    pair = CandidatePair.schedule_keepalive(s_pair)
+    pair = CandidatePair.schedule_keepalive(s_pair, ice_agent.keepalive_interval)
     ice_agent = %{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
     send_keepalive(ice_agent, ice_agent.checklist[id])
   end
@@ -859,17 +915,18 @@ defmodule ExICE.Priv.ICEAgent do
       when not is_nil(s_pair_id) do
     # note: current implementation assumes that, if selected pair exists, none of the already existing
     # valid pairs will ever become selected (only new appearing valid pairs)
-    # that's why there's no call to `CandidatePair.schedule_keepalive/1`
+    # that's why there's no call to `CandidatePair.schedule_keepalive/2`
     ice_agent
   end
 
   def handle_keepalive_timeout(%__MODULE__{} = ice_agent, id) do
-    # TODO: keepalives should be sent only if no data has been sent for @tr_timeout
-    # atm, we send keepalives anyways, also it might be better to pace them with ta_timer
+    # Keepalives are sent even if data is flowing: their responses refresh `last_seen`,
+    # so a path that only sends data in our direction is not reported as disconnected.
+    # TODO: it might be better to pace keepalives with ta_timer
     # TODO: candidates not in a valid pair also should be kept alive (RFC 8445, sect 5.1.1.4)
     case Map.fetch(ice_agent.checklist, id) do
       {:ok, %CandidatePair{state: :succeeded, valid?: true} = pair} ->
-        pair = CandidatePair.schedule_keepalive(pair)
+        pair = CandidatePair.schedule_keepalive(pair, ice_agent.keepalive_interval)
         ice_agent = %{ice_agent | checklist: Map.put(ice_agent.checklist, id, pair)}
         send_keepalive(ice_agent, pair)
 
@@ -1480,6 +1537,7 @@ defmodule ExICE.Priv.ICEAgent do
     }
 
     ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+    ice_agent = maybe_reconnect(ice_agent)
 
     notify(ice_agent.on_data, {:data, packet})
 
@@ -1581,6 +1639,7 @@ defmodule ExICE.Priv.ICEAgent do
     |> update_connection_state()
     |> maybe_nominate()
     |> update_ta_timer()
+    |> maybe_reconnect()
   end
 
   defp log_closed_cand_message(local_cand, src_ip, src_port) do
@@ -1863,7 +1922,11 @@ defmodule ExICE.Priv.ICEAgent do
       {pair_id, ice_agent} =
         add_valid_pair(ice_agent, valid_pair, conn_check_pair, checklist_pair)
 
-      pair = CandidatePair.schedule_keepalive(ice_agent.checklist[pair_id])
+      pair =
+        CandidatePair.schedule_keepalive(
+          ice_agent.checklist[pair_id],
+          ice_agent.keepalive_interval
+        )
 
       pair = %{
         pair
@@ -2932,6 +2995,17 @@ defmodule ExICE.Priv.ICEAgent do
     do_change_connection_state(ice_agent, new_conn_state, opts)
   end
 
+  # While disconnected, the transition from connected to completed is reported on recovery.
+  defp do_change_connection_state(%__MODULE__{disconnected?: true} = ice_agent, new_state, _opts)
+       when new_state in [:connected, :completed] do
+    Logger.debug("""
+    Connection state change: #{ice_agent.state} -> #{new_state}. \
+    Not notifying as we are still disconnected.\
+    """)
+
+    %{ice_agent | state: new_state}
+  end
+
   defp do_change_connection_state(%__MODULE__{} = ice_agent, new_conn_state, opts) do
     Logger.debug("Connection state change: #{ice_agent.state} -> #{new_conn_state}")
 
@@ -2939,8 +3013,58 @@ defmodule ExICE.Priv.ICEAgent do
       notify(ice_agent.on_connection_state_change, {:connection_state_change, new_conn_state})
     end
 
-    %{ice_agent | state: new_conn_state}
+    %{ice_agent | state: new_conn_state, disconnected?: false}
   end
+
+  defp reported_state(%__MODULE__{disconnected?: true, state: state})
+       when state in [:connected, :completed],
+       do: :disconnected
+
+  defp reported_state(ice_agent), do: ice_agent.state
+
+  # Reports the disconnected state when none of the pairs data is sent on has received
+  # anything for `disconnected_timeout`, and recovers from it as soon as one has.
+  defp update_liveness(%__MODULE__{state: state} = ice_agent, now)
+       when state in [:connected, :completed] do
+    case {alive?(ice_agent, now), ice_agent.disconnected?} do
+      {false, false} ->
+        Logger.debug("""
+        No data received in #{ice_agent.disconnected_timeout}ms. \
+        Connection state change: #{state} -> disconnected\
+        """)
+
+        notify(ice_agent.on_connection_state_change, {:connection_state_change, :disconnected})
+        %{ice_agent | disconnected?: true}
+
+      {true, true} ->
+        Logger.debug("Data received again. Connection state change: disconnected -> #{state}")
+        notify(ice_agent.on_connection_state_change, {:connection_state_change, state})
+        %{ice_agent | disconnected?: false}
+
+      _other ->
+        ice_agent
+    end
+  end
+
+  defp update_liveness(ice_agent, _now), do: ice_agent
+
+  defp maybe_reconnect(%__MODULE__{disconnected?: false} = ice_agent), do: ice_agent
+  defp maybe_reconnect(ice_agent), do: update_liveness(ice_agent, now())
+
+  defp alive?(ice_agent, now) do
+    ice_agent
+    |> active_pairs()
+    |> Enum.any?(fn pair ->
+      pair.last_seen != nil and now - pair.last_seen < ice_agent.disconnected_timeout
+    end)
+  end
+
+  # Pairs that data is sent on, see send_data/2.
+  defp active_pairs(%__MODULE__{selected_pair_id: nil} = ice_agent) do
+    ice_agent.checklist |> Map.values() |> Enum.filter(& &1.valid?)
+  end
+
+  defp active_pairs(ice_agent), do: [Map.fetch!(ice_agent.checklist, ice_agent.selected_pair_id)]
 
   defp update_connection_state(%__MODULE__{state: :new} = ice_agent) do
     if Checklist.waiting?(ice_agent.checklist) or Checklist.in_progress?(ice_agent.checklist) do
@@ -3099,8 +3223,15 @@ defmodule ExICE.Priv.ICEAgent do
     end
   end
 
-  defp start_pair_timer() do
-    Process.send_after(self(), :pair_timeout, div(@pair_timeout, 2))
+  defp start_pair_timer(ice_agent) do
+    interval =
+      ice_agent.disconnected_timeout
+      |> div(5)
+      |> max(@min_pair_check_interval)
+      |> min(@max_pair_check_interval)
+
+    timer = Process.send_after(self(), :pair_timeout, interval)
+    %{ice_agent | pair_timer: timer}
   end
 
   defp start_eoc_timer(ice_agent) do

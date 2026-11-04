@@ -3,9 +3,6 @@ defmodule ExICE.Priv.CandidatePair do
 
   alias ExICE.Priv.{Candidate, Utils}
 
-  # Tr timeout (keepalives) in ms
-  @tr_timeout 5 * 1000
-
   @type state() :: :waiting | :in_progress | :succeeded | :failed | :frozen
 
   @type t() :: %__MODULE__{
@@ -79,16 +76,20 @@ defmodule ExICE.Priv.CandidatePair do
   end
 
   @doc false
-  @spec schedule_keepalive(t(), Process.dest()) :: t()
-  def schedule_keepalive(pair, dest \\ self())
+  @spec schedule_keepalive(t(), pos_integer(), Process.dest()) :: t()
+  def schedule_keepalive(pair, interval, dest \\ self())
 
-  def schedule_keepalive(%{keepalive_timer: timer} = pair, dest) when is_reference(timer) do
+  def schedule_keepalive(%{keepalive_timer: timer} = pair, interval, dest)
+      when is_reference(timer) do
     Process.cancel_timer(timer)
-    schedule_keepalive(%{pair | keepalive_timer: nil}, dest)
+    schedule_keepalive(%{pair | keepalive_timer: nil}, interval, dest)
   end
 
-  def schedule_keepalive(pair, dest) do
-    ref = Process.send_after(dest, {:keepalive_timeout, pair.id}, @tr_timeout)
+  def schedule_keepalive(pair, interval, dest) do
+    # Randomize the interval to avoid synchronized keepalives,
+    # see RFC 7675, sec. 5.1.
+    timeout = round(interval * (0.8 + :rand.uniform() * 0.4))
+    ref = Process.send_after(dest, {:keepalive_timeout, pair.id}, timeout)
     %{pair | keepalive_timer: ref}
   end
 

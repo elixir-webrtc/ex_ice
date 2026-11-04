@@ -28,9 +28,15 @@ defmodule ExICE.ICEAgent do
   Emitted when connection state has changed.
 
   For exact meaning refer to the W3C WebRTC standard, sec. 5.6.4.
+
+  `:disconnected` is emitted in the `:connected` or `:completed` state when nothing
+  has been received on the pair in use for `disconnected_timeout` (see `t:opts/0`).
+  Data can still be sent. The agent goes back to the previous state as soon as
+  anything is received on that pair again, or to `:failed` once `failed_timeout` expires.
   """
   @type connection_state_change() ::
-          {:connection_state_change, :checking | :connected | :completed | :failed | :closed}
+          {:connection_state_change,
+           :checking | :connected | :completed | :disconnected | :failed | :closed}
 
   @typedoc """
   Messages sent by the ExICE.
@@ -95,6 +101,16 @@ defmodule ExICE.ICEAgent do
   * `logger_metadata` - a keyword list of metadata to be attached to the Logger for all logs emitted by the ICEAgent process.
   This function takes host's ip as an argument and should return srflx's ip as a result or nil if for given host candidate
   there should be no srflx one.
+  * `disconnected_timeout` - time in milliseconds without receiving anything on the pair in use
+  after which the `:disconnected` state is reported. Defaults to `5_000`.
+  * `failed_timeout` - time in milliseconds without receiving anything on a pair after which
+  the pair is marked as failed. When there are no other pairs left, the agent moves to the `:failed` state.
+  Defaults to `30_000`.
+  * `keepalive_interval` - average interval in milliseconds between keepalives (STUN binding requests)
+  sent on valid pairs. Each interval is randomized by +/-20%. Defaults to `2_000`.
+
+  The timeouts must satisfy `failed_timeout > disconnected_timeout > keepalive_interval`,
+  otherwise the agent fails to start with an `ArgumentError`.
   """
   @type opts() :: [
           role: role() | nil,
@@ -115,7 +131,10 @@ defmodule ExICE.ICEAgent do
           on_data: pid() | nil,
           on_new_candidate: pid() | nil,
           host_to_srflx_ip_mapper: host_to_srflx_ip_mapper() | nil,
-          logger_metadata: Enumerable.t({atom(), term()})
+          logger_metadata: Enumerable.t({atom(), term()}),
+          disconnected_timeout: pos_integer(),
+          failed_timeout: pos_integer(),
+          keepalive_interval: pos_integer()
         ]
 
   @doc """
