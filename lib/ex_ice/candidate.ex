@@ -120,7 +120,7 @@ defmodule ExICE.Candidate do
     tcp_type = if transport == :tcp, do: Keyword.fetch!(config, :tcp_type)
 
     %__MODULE__{
-      id: ExICE.Priv.Utils.id(),
+      id: Keyword.get_lazy(config, :id, &ExICE.Priv.Utils.id/0),
       address: address,
       base_address: config[:base_address],
       base_port: config[:base_port],

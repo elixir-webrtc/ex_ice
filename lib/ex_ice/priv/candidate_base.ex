@@ -66,6 +66,8 @@ defmodule ExICE.Priv.CandidateBase do
   @spec to_candidate(t()) :: ExICE.Candidate.t()
   def to_candidate(cand) do
     ExICE.Candidate.new(cand.type,
+      # keep the id so that candidates can be matched with candidate pairs in stats
+      id: cand.id,
       address: cand.address,
       port: cand.port,
       base_address: cand.base_address,
