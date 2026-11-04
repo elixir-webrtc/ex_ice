@@ -244,6 +244,30 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  test "get_stats/1 reports the candidate ids that candidate pairs refer to" do
+    ice_agent =
+      ICEAgent.new(
+        controlling_process: self(),
+        role: :controlling,
+        if_discovery_module: IfDiscovery.MockSingle,
+        transport_module: Transport.Mock
+      )
+      |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+      |> ICEAgent.gather_candidates()
+      |> ICEAgent.add_remote_candidate(@remote_cand)
+
+    stats = ICEAgent.get_stats(ice_agent)
+
+    assert [%ExICE.Candidate{} = local_cand] = stats.local_candidates
+    assert [%ExICE.Candidate{} = remote_cand] = stats.remote_candidates
+    assert [%ExICE.CandidatePair{} = pair] = stats.candidate_pairs
+    assert [priv_local_cand] = Map.values(ice_agent.local_cands)
+
+    assert local_cand.id == priv_local_cand.base.id
+    assert pair.local_cand_id == local_cand.id
+    assert pair.remote_cand_id == remote_cand.id
+  end
+
   test "set_role/2" do
     ice_agent =
       ICEAgent.new(
