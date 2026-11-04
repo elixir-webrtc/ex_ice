@@ -95,8 +95,10 @@ defmodule ExICE.Support.Transport.Mock do
 
   @impl true
   def sockname(ref) do
-    [{^ref, %{state: :open} = socket}] = :ets.lookup(:transport_mock, ref)
-    {:ok, {socket.ip, socket.port}}
+    case :ets.lookup(:transport_mock, ref) do
+      [{^ref, %{state: :open} = socket}] -> {:ok, {socket.ip, socket.port}}
+      [{^ref, %{state: :closed}}] -> {:error, :einval}
+    end
   end
 
   @impl true

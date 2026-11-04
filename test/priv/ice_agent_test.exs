@@ -610,6 +610,30 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert new_pair.responses_received == pair.responses_received
     end
 
+    test "reschedules with a jittered keepalive interval" do
+      ice_agent =
+        [disconnected_timeout: 2_000, failed_timeout: 10_000, keepalive_interval: 1_000]
+        |> new_ice_agent()
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> connect()
+
+      [pair] = Map.values(ice_agent.checklist)
+      assert_keepalive_timer(pair, 1_000)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      [pair] = Map.values(ice_agent.checklist)
+      assert_keepalive_timer(pair, 1_000)
+    end
+
+    defp assert_keepalive_timer(pair, interval) do
+      remaining = Process.read_timer(pair.keepalive_timer)
+      assert is_integer(remaining)
+      assert remaining >= interval * 0.8 - 10
+      assert remaining <= interval * 1.2
+    end
+
     test "timeout on unconnected pair", %{ice_agent: ice_agent} do
       [socket] = ice_agent.sockets
       [pair] = Map.values(ice_agent.checklist)
@@ -652,6 +676,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen > pair.last_seen
+      assert new_pair.last_consent > pair.last_consent
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
@@ -684,6 +709,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.last_consent == pair.last_consent
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
@@ -716,6 +742,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.last_consent == pair.last_consent
       assert new_pair.responses_received == pair.responses_received
 
       assert new_pair.non_symmetric_responses_received ==
@@ -748,6 +775,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.last_consent == pair.last_consent
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
@@ -1268,6 +1296,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       [pair_after] = Map.values(ice_agent.checklist)
 
       assert pair_after.last_seen > pair_before.last_seen
+      assert pair_after.last_consent == pair_before.last_consent
     end
 
     test "on failed pair", %{ice_agent: ice_agent} do
@@ -1390,6 +1419,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :succeeded
       assert new_pair.responses_received == pair.responses_received + 1
+      assert new_pair.last_consent != nil
       assert ice_agent.state == :connected
     end
 
@@ -1430,6 +1460,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :in_progress
       assert new_pair.responses_received == pair.responses_received + 1
+      assert new_pair.last_consent == nil
     end
 
     test "success response with the xor address of a local candidate with a different socket." do
@@ -1657,6 +1688,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :failed
       assert new_pair.responses_received == pair.responses_received
+      assert new_pair.last_consent == nil
 
       assert new_pair.non_symmetric_responses_received ==
                pair.non_symmetric_responses_received + 1
@@ -2153,11 +2185,8 @@ defmodule ExICE.Priv.ICEAgentTest do
     # make ice_agent connected
     ice_agent = connect(ice_agent)
 
-    # mock last_seen field
-    [pair] = Map.values(ice_agent.checklist)
-    last_seen = System.monotonic_time(:millisecond) - 10_000
-    pair = %{pair | last_seen: last_seen}
-    ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+    # mock the time the pair has last received a consent response
+    ice_agent = back_date(ice_agent, :last_consent, ice_agent.failed_timeout)
 
     # trigger pair timeout
     ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
@@ -2170,6 +2199,418 @@ defmodule ExICE.Priv.ICEAgentTest do
 
     # assert ice agent moved to the failed state
     assert ice_agent.state == :failed
+  end
+
+  describe "liveness timeouts" do
+    test "defaults" do
+      ice_agent = new_ice_agent()
+
+      assert ice_agent.disconnected_timeout == 5_000
+      assert ice_agent.failed_timeout == 30_000
+      assert ice_agent.keepalive_interval == 2_000
+    end
+
+    test "custom values" do
+      ice_agent =
+        new_ice_agent(disconnected_timeout: 300, failed_timeout: 1_500, keepalive_interval: 100)
+
+      assert ice_agent.disconnected_timeout == 300
+      assert ice_agent.failed_timeout == 1_500
+      assert ice_agent.keepalive_interval == 100
+    end
+
+    test "invalid values" do
+      for opts <- [
+            [disconnected_timeout: 0],
+            [failed_timeout: -1],
+            [keepalive_interval: 1.5],
+            [disconnected_timeout: "5000"],
+            [disconnected_timeout: 30_000],
+            [failed_timeout: 5_000],
+            [keepalive_interval: 5_000],
+            [disconnected_timeout: 1_000, failed_timeout: 2_000, keepalive_interval: 1_000]
+          ] do
+        assert_raise ArgumentError, fn -> new_ice_agent(opts) end
+      end
+    end
+
+    test "pair timer interval is derived from disconnected_timeout" do
+      for {disconnected_timeout, interval} <- [
+            {5_000, 1_000},
+            {300, 60},
+            {20, 10},
+            {60_000, 1_000}
+          ] do
+        ice_agent =
+          new_ice_agent(
+            disconnected_timeout: disconnected_timeout,
+            failed_timeout: disconnected_timeout * 6,
+            keepalive_interval: div(disconnected_timeout, 2)
+          )
+
+        assert_pair_timer(ice_agent, interval)
+
+        # the timer is re-armed with the same interval
+        ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+        assert_pair_timer(ice_agent, interval)
+      end
+    end
+
+    test "pair timeout arrives after the derived interval" do
+      _ice_agent =
+        new_ice_agent(disconnected_timeout: 100, failed_timeout: 1_000, keepalive_interval: 50)
+
+      refute_receive :pair_timeout, 10
+      assert_receive :pair_timeout, 100
+    end
+
+    defp assert_pair_timer(ice_agent, interval) do
+      remaining = Process.read_timer(ice_agent.pair_timer)
+      assert is_integer(remaining)
+      assert remaining <= interval
+      assert remaining > interval - 10
+    end
+  end
+
+  describe "disconnected state" do
+    setup do
+      ice_agent =
+        [aggressive_nomination: true]
+        |> new_ice_agent()
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> connect()
+
+      # with aggressive nomination, the pair is selected right away
+      assert ice_agent.selected_pair_id != nil
+      flush_ice_mailbox()
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "is reported once in connected state", %{ice_agent: ice_agent} do
+      assert_disconnects_once(ice_agent, :connected)
+    end
+
+    test "is reported once in completed state", %{ice_agent: ice_agent} do
+      ice_agent = ICEAgent.end_of_candidates(ice_agent)
+      assert ice_agent.state == :completed
+      flush_ice_mailbox()
+      assert_disconnects_once(ice_agent, :completed)
+    end
+
+    test "is not reported while data is received", %{ice_agent: ice_agent} do
+      ice_agent = back_date(ice_agent, :last_seen, ice_agent.disconnected_timeout - 100)
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      refute ice_agent.disconnected?
+      refute_received {:ex_ice, _pid, {:connection_state_change, :disconnected}}
+    end
+
+    test "keeps sending data", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = disconnect(ice_agent)
+
+      ice_agent = ICEAgent.send_data(ice_agent, "somedata")
+
+      assert Transport.Mock.recv(socket) == "somedata"
+      assert [%CandidatePair{packets_sent: 1}] = Map.values(ice_agent.checklist)
+    end
+
+    test "is reported by get_stats/1", %{ice_agent: ice_agent} do
+      assert ICEAgent.get_stats(ice_agent).state == :connected
+      ice_agent = disconnect(ice_agent)
+      assert ICEAgent.get_stats(ice_agent).state == :disconnected
+    end
+
+    test "recovers on incoming data", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = disconnect(ice_agent)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "data")
+
+      assert_recovered(ice_agent, :connected)
+      assert_received {:ex_ice, _pid, {:data, "data"}}
+    end
+
+    test "recovers on keepalive response", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = disconnect(ice_agent)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, ice_agent.selected_pair_id)
+      req = read_binding_request(socket, ice_agent.remote_pwd)
+      resp = binding_response(req.transaction_id, Transport.Mock, socket, ice_agent.remote_pwd)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, resp)
+
+      assert_recovered(ice_agent, :connected)
+    end
+
+    test "recovers on binding request", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = disconnect(ice_agent)
+
+      req =
+        binding_request(
+          ice_agent.role,
+          ice_agent.tiebreaker,
+          ice_agent.remote_ufrag,
+          ice_agent.local_ufrag,
+          ice_agent.local_pwd
+        )
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, req)
+
+      assert_recovered(ice_agent, :connected)
+    end
+
+    test "recovers into completed state", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = ice_agent |> ICEAgent.end_of_candidates() |> disconnect()
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "data")
+
+      assert_recovered(ice_agent, :completed)
+    end
+
+    test "does not recover on data received on a non-selected pair", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      [local_cand] = Map.values(ice_agent.local_cands)
+
+      # add another valid pair that is not selected
+      pair = CandidatePair.new(local_cand, @remote_cand2, :controlling, :succeeded, valid?: true)
+      pair = %{pair | discovered_pair_id: pair.id, succeeded_pair_id: pair.id}
+      ice_agent = put_in(ice_agent.remote_cands[@remote_cand2.id], @remote_cand2)
+      ice_agent = put_in(ice_agent.checklist[pair.id], pair)
+
+      ice_agent = disconnect(ice_agent)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand2.address, @remote_cand2.port, "data")
+
+      assert_received {:ex_ice, _pid, {:data, "data"}}
+      assert ice_agent.disconnected?
+      refute_received {:ex_ice, _pid, {:connection_state_change, _state}}
+    end
+
+    test "postpones completed notification until recovery", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = disconnect(ice_agent)
+
+      ice_agent = ICEAgent.handle_eoc_timeout(ice_agent)
+
+      assert ice_agent.state == :completed
+      assert ice_agent.disconnected?
+      assert ICEAgent.get_stats(ice_agent).state == :disconnected
+      refute_received {:ex_ice, _pid, {:connection_state_change, _state}}
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "data")
+
+      assert_recovered(ice_agent, :completed)
+    end
+
+    test "is cleared by ICE restart", %{ice_agent: ice_agent} do
+      ice_agent = ice_agent |> disconnect() |> ICEAgent.restart()
+
+      refute ice_agent.disconnected?
+      assert ice_agent.state == :checking
+      assert_received {:ex_ice, _pid, {:connection_state_change, :checking}}
+    end
+
+    test "is cleared by close", %{ice_agent: ice_agent} do
+      ice_agent = ice_agent |> disconnect() |> ICEAgent.close()
+
+      refute ice_agent.disconnected?
+      assert ice_agent.state == :closed
+    end
+
+    test "is followed by failed", %{ice_agent: ice_agent} do
+      ice_agent = ice_agent |> ICEAgent.end_of_candidates() |> disconnect()
+
+      ice_agent = back_date(ice_agent, [:last_seen, :last_consent], ice_agent.failed_timeout)
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert ice_agent.state == :failed
+      refute ice_agent.disconnected?
+      assert_received {:ex_ice, _pid, {:connection_state_change, :failed}}
+    end
+
+    test "is skipped when the failed timeout expires at once", %{ice_agent: ice_agent} do
+      ice_agent = ICEAgent.end_of_candidates(ice_agent)
+      flush_ice_mailbox()
+
+      ice_agent = back_date(ice_agent, [:last_seen, :last_consent], ice_agent.failed_timeout)
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert ice_agent.state == :failed
+      assert_received {:ex_ice, _pid, {:connection_state_change, :failed}}
+      refute_received {:ex_ice, _pid, {:connection_state_change, :disconnected}}
+    end
+
+    defp assert_disconnects_once(ice_agent, state) do
+      selected_pair_id = ice_agent.selected_pair_id
+
+      ice_agent = disconnect(ice_agent)
+
+      assert ice_agent.state == state
+      assert ice_agent.selected_pair_id == selected_pair_id
+      assert [%CandidatePair{state: :succeeded, valid?: true}] = Map.values(ice_agent.checklist)
+
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert ice_agent.disconnected?
+      refute_received {:ex_ice, _pid, {:connection_state_change, _state}}
+    end
+
+    defp disconnect(ice_agent) do
+      ice_agent = back_date(ice_agent, :last_seen, ice_agent.disconnected_timeout)
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert ice_agent.disconnected?
+      assert_received {:ex_ice, _pid, {:connection_state_change, :disconnected}}
+      ice_agent
+    end
+
+    defp assert_recovered(ice_agent, state) do
+      refute ice_agent.disconnected?
+      assert ice_agent.state == state
+      assert_received {:ex_ice, _pid, {:connection_state_change, ^state}}
+    end
+  end
+
+  describe "consent freshness" do
+    setup do
+      ice_agent =
+        [aggressive_nomination: true]
+        |> new_ice_agent()
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> connect()
+        |> ICEAgent.end_of_candidates()
+
+      assert ice_agent.state == :completed
+      flush_ice_mailbox()
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "expires without consent responses, even when data is received", %{
+      ice_agent: ice_agent
+    } do
+      [socket] = ice_agent.sockets
+      ice_agent = back_date(ice_agent, :last_consent, ice_agent.failed_timeout)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "data")
+
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert [%CandidatePair{state: :failed, valid?: false}] = Map.values(ice_agent.checklist)
+      assert ice_agent.state == :failed
+      assert_received {:ex_ice, _pid, {:connection_state_change, :failed}}
+      refute_received {:ex_ice, _pid, {:connection_state_change, :disconnected}}
+    end
+
+    test "does not expire while consent is fresh", %{ice_agent: ice_agent} do
+      ice_agent = back_date(ice_agent, :last_seen, ice_agent.failed_timeout)
+      ice_agent = back_date(ice_agent, :last_consent, ice_agent.failed_timeout - 100)
+
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert [%CandidatePair{state: :succeeded, valid?: true}] = Map.values(ice_agent.checklist)
+      assert ice_agent.state == :completed
+      assert ice_agent.disconnected?
+      refute_received {:ex_ice, _pid, {:connection_state_change, :failed}}
+    end
+
+    test "is not refreshed by data, requests or indications", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = back_date(ice_agent, :last_consent, 1_000)
+      [pair] = Map.values(ice_agent.checklist)
+
+      req =
+        binding_request(
+          ice_agent.role,
+          ice_agent.tiebreaker,
+          ice_agent.remote_ufrag,
+          ice_agent.local_ufrag,
+          ice_agent.local_pwd
+        )
+
+      ice_agent =
+        Enum.reduce(["data", req, binding_indication()], ice_agent, fn packet, ice_agent ->
+          ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, packet)
+        end)
+
+      assert [%CandidatePair{last_consent: last_consent}] = Map.values(ice_agent.checklist)
+      assert last_consent == pair.last_consent
+    end
+
+    test "is exposed in stats", %{ice_agent: ice_agent} do
+      [pair] = Map.values(ice_agent.checklist)
+
+      assert [%ExICE.CandidatePair{last_consent: last_consent}] =
+               ICEAgent.get_stats(ice_agent).candidate_pairs
+
+      assert is_integer(last_consent)
+      assert last_consent == pair.last_consent
+    end
+
+    test "keepalives without a response are pruned", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      [{stale_t_id, {pair_id, sent_at}}] = Map.to_list(ice_agent.keepalives)
+      stale = {pair_id, sent_at - ice_agent.failed_timeout}
+      ice_agent = put_in(ice_agent.keepalives[stale_t_id], stale)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      _stale_req = read_binding_request(socket, ice_agent.remote_pwd)
+      fresh_req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert Map.keys(ice_agent.keepalives) == [fresh_req.transaction_id]
+    end
+  end
+
+  defp new_ice_agent(opts \\ []) do
+    [
+      controlling_process: self(),
+      role: :controlling,
+      if_discovery_module: IfDiscovery.MockSingle,
+      transport_module: Transport.Mock
+    ]
+    |> Keyword.merge(opts)
+    |> ICEAgent.new()
+  end
+
+  # Moves the given pair field(s) `ms` milliseconds into the past for all pairs.
+  defp back_date(ice_agent, fields, ms) do
+    time = System.monotonic_time(:millisecond) - ms
+
+    checklist =
+      Map.new(ice_agent.checklist, fn {id, pair} ->
+        {id, Enum.reduce(List.wrap(fields), pair, &Map.replace!(&2, &1, time))}
+      end)
+
+    %{ice_agent | checklist: checklist}
+  end
+
+  defp flush_ice_mailbox() do
+    receive do
+      {:ex_ice, _pid, _msg} -> flush_ice_mailbox()
+    after
+      0 -> :ok
+    end
   end
 
   test "agent state and behavior after it fails" do
@@ -3188,6 +3629,258 @@ defmodule ExICE.Priv.ICEAgentTest do
     assert nil == Transport.Mock.recv(socket)
     assert ExTURN.channel_data?(packet)
     assert <<_channel_number::16, _len::16, "somedata">> = packet
+  end
+
+  describe "restart" do
+    setup do
+      ice_agent =
+        [aggressive_nomination: true]
+        |> new_ice_agent()
+        |> ICEAgent.set_remote_credentials("remoteufrag", "remotepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> connect()
+        |> ICEAgent.end_of_candidates()
+
+      assert ice_agent.state == :completed
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "with new remote credentials in failed state", %{ice_agent: ice_agent} do
+      ice_agent = fail(ice_agent)
+      {local_ufrag, local_pwd} = ICEAgent.get_local_credentials(ice_agent)
+
+      ice_agent = ICEAgent.set_remote_credentials(ice_agent, "newufrag", "newpwd")
+
+      assert ice_agent.state == :checking
+      assert ice_agent.gathering_state == :new
+      assert_received {:ex_ice, _pid, {:connection_state_change, :checking}}
+      assert_received {:ex_ice, _pid, {:gathering_state_change, :new}}
+
+      {new_local_ufrag, new_local_pwd} = ICEAgent.get_local_credentials(ice_agent)
+      assert new_local_ufrag != local_ufrag
+      assert new_local_pwd != local_pwd
+      assert ice_agent.remote_ufrag == "newufrag"
+      assert ice_agent.remote_pwd == "newpwd"
+
+      assert ice_agent.sockets == []
+      assert ice_agent.local_cands == %{}
+      assert ice_agent.remote_cands == %{}
+      assert ice_agent.checklist == %{}
+      assert ice_agent.keepalives == %{}
+      assert ice_agent.selected_pair_id == nil
+      refute ice_agent.disconnected?
+    end
+
+    test "connects again after restarting from failed state", %{ice_agent: ice_agent} do
+      [old_local_cand] = Map.values(ice_agent.local_cands)
+
+      ice_agent =
+        ice_agent
+        |> fail()
+        |> ICEAgent.set_remote_credentials("newufrag", "newpwd")
+        |> ICEAgent.gather_candidates()
+
+      assert [socket] = ice_agent.sockets
+      assert {:ok, _sockname} = Transport.Mock.sockname(socket)
+      assert [local_cand] = Map.values(ice_agent.local_cands)
+      assert local_cand.base.id != old_local_cand.base.id
+      assert_received {:ex_ice, _pid, {:new_candidate, _cand}}
+
+      remote_cand =
+        ExICE.Candidate.new(:host, address: {192, 168, 0, 2}, port: 8445, priority: 123)
+
+      ice_agent =
+        ice_agent
+        |> ICEAgent.add_remote_candidate(remote_cand)
+        |> connect()
+
+      assert_received {:ex_ice, _pid, {:connection_state_change, :connected}}
+
+      ice_agent = ICEAgent.send_data(ice_agent, "somedata")
+      assert Transport.Mock.recv(socket) == "somedata"
+    end
+
+    test "with the same remote credentials in failed state is ignored", %{ice_agent: ice_agent} do
+      ice_agent = fail(ice_agent)
+
+      assert ice_agent == ICEAgent.set_remote_credentials(ice_agent, "remoteufrag", "remotepwd")
+    end
+
+    test "with restart/1 in failed state", %{ice_agent: ice_agent} do
+      ice_agent = ice_agent |> fail() |> ICEAgent.restart()
+
+      assert ice_agent.state == :checking
+      assert ice_agent.gathering_state == :new
+      assert ice_agent.remote_ufrag == nil
+      assert_received {:ex_ice, _pid, {:connection_state_change, :checking}}
+    end
+
+    test "cancels keepalive timers of the previous session", %{ice_agent: ice_agent} do
+      [pair] = Map.values(ice_agent.checklist)
+      assert is_integer(Process.read_timer(pair.keepalive_timer))
+
+      ice_agent = ICEAgent.set_remote_credentials(ice_agent, "newufrag", "newpwd")
+
+      assert Process.read_timer(pair.keepalive_timer) == false
+      assert ice_agent == ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+    end
+
+    defp fail(ice_agent) do
+      ice_agent = back_date(ice_agent, [:last_seen, :last_consent], ice_agent.failed_timeout)
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert ice_agent.state == :failed
+      assert_received {:ex_ice, _pid, {:connection_state_change, :failed}}
+      flush_ice_mailbox()
+      ice_agent
+    end
+  end
+
+  describe "restart with TURN allocation" do
+    setup do
+      ice_agent =
+        [
+          aggressive_nomination: true,
+          ice_transport_policy: :relay,
+          ice_servers: [
+            %{
+              urls: "turn:#{@turn_ip_str}:#{@turn_port}?transport=udp",
+              username: @turn_username,
+              credential: @turn_password
+            }
+          ]
+        ]
+        |> new_ice_agent()
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> relay_connect()
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "releases the allocation and allocates a new one when disconnected", %{
+      ice_agent: ice_agent
+    } do
+      [socket] = ice_agent.sockets
+
+      ice_agent = back_date(ice_agent, :last_seen, ice_agent.disconnected_timeout)
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+      assert_received {:ex_ice, _pid, {:connection_state_change, :disconnected}}
+
+      ice_agent = ICEAgent.set_remote_credentials(ice_agent, "newufrag", "newpwd")
+      assert_received {:ex_ice, _pid, {:connection_state_change, :checking}}
+
+      assert_refresh_lifetime_0(Transport.Mock.recv(socket))
+      assert Transport.Mock.recv(socket) == nil
+
+      assert_allocates_again(ice_agent)
+    end
+
+    test "doesn't release the allocation twice when failed", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+
+      ice_agent = ICEAgent.end_of_candidates(ice_agent)
+      assert ice_agent.state == :completed
+
+      ice_agent = back_date(ice_agent, [:last_seen, :last_consent], ice_agent.failed_timeout)
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+      assert ice_agent.state == :failed
+
+      # sockets are closed and allocations are released when moving to the failed state
+      assert_refresh_lifetime_0(Transport.Mock.recv(socket))
+      assert Transport.Mock.recv(socket) == nil
+
+      ice_agent = ICEAgent.set_remote_credentials(ice_agent, "newufrag", "newpwd")
+      assert ice_agent.state == :checking
+      assert Transport.Mock.recv(socket) == nil
+
+      assert_allocates_again(ice_agent)
+    end
+
+    defp relay_connect(ice_agent) do
+      [socket] = ice_agent.sockets
+
+      ice_agent = allocate(ice_agent, socket)
+
+      # create permission
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert {:ok, req} = ExSTUN.Message.decode(Transport.Mock.recv(socket))
+      assert req.type.method == :create_permission
+
+      resp =
+        Message.new(
+          req.transaction_id,
+          %Type{class: :success_response, method: req.type.method},
+          []
+        )
+        |> Message.with_integrity(Message.lt_key(@turn_username, @turn_password, @turn_realm))
+        |> Message.encode()
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+
+      # conn check sent in a send indication, followed by a channel bind request
+      assert {:ok, send_ind} = ExSTUN.Message.decode(Transport.Mock.recv(socket))
+      {:ok, %Data{value: data}} = Message.get_attribute(send_ind, Data)
+      {:ok, req} = ExSTUN.Message.decode(data)
+      assert req.type.method == :binding
+      assert {:ok, channel_req} = ExSTUN.Message.decode(Transport.Mock.recv(socket))
+      assert channel_req.type.method == :channel_bind
+
+      resp =
+        Message.new(req.transaction_id, %Type{class: :success_response, method: :binding}, [
+          %XORMappedAddress{address: @turn_relay_ip, port: @turn_relay_port}
+        ])
+        |> Message.with_integrity(ice_agent.remote_pwd)
+        |> Message.with_fingerprint()
+        |> Message.encode()
+
+      data_ind =
+        Message.new(%Type{class: :indication, method: :data}, [
+          %Data{value: resp},
+          %XORPeerAddress{address: @remote_cand.address, port: @remote_cand.port}
+        ])
+        |> Message.encode()
+
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, data_ind)
+
+      assert ice_agent.state == :connected
+      assert ice_agent.selected_pair_id != nil
+      flush_ice_mailbox()
+      ice_agent
+    end
+
+    defp allocate(ice_agent, socket) do
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      req = read_allocate_request(socket)
+      resp = allocate_error_response(req.transaction_id)
+      ice_agent = ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+      req = read_allocate_request(socket)
+      resp = allocate_success_response(req.transaction_id, ice_agent.transport_module, socket)
+      ICEAgent.handle_udp(ice_agent, socket, @turn_ip, @turn_port, resp)
+    end
+
+    defp assert_allocates_again(ice_agent) do
+      ice_agent = ICEAgent.gather_candidates(ice_agent)
+      assert_received {:ex_ice, _pid, {:gathering_state_change, :gathering}}
+      [socket] = ice_agent.sockets
+
+      ice_agent = allocate(ice_agent, socket)
+      assert_received {:ex_ice, _pid, {:new_candidate, cand}}
+      assert cand =~ "typ relay"
+
+      ice_agent = ICEAgent.handle_ta_timeout(ice_agent)
+      assert ice_agent.gathering_state == :complete
+      assert_received {:ex_ice, _pid, {:gathering_state_change, :complete}}
+    end
+
+    defp assert_refresh_lifetime_0(packet) do
+      assert {:ok, req} = Message.decode(packet)
+      assert req.type == %Type{class: :request, method: :refresh}
+      assert {:ok, %Lifetime{value: 0}} = Message.get_attribute(req, Lifetime)
+    end
   end
 
   describe "generate_credentials/0" do

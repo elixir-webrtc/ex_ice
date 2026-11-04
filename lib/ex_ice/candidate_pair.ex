@@ -13,7 +13,8 @@ defmodule ExICE.CandidatePair do
           remote_cand_id: integer(),
           state: state(),
           valid?: boolean(),
-          last_seen: integer(),
+          last_seen: integer() | nil,
+          last_consent: integer() | nil,
           # stats
           packets_sent: non_neg_integer(),
           packets_received: non_neg_integer(),
@@ -35,6 +36,7 @@ defmodule ExICE.CandidatePair do
                 state: :frozen,
                 valid?: false,
                 last_seen: nil,
+                last_consent: nil,
                 packets_sent: 0,
                 packets_received: 0,
                 bytes_sent: 0,

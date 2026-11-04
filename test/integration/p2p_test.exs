@@ -218,6 +218,145 @@ defmodule ExICE.Integration.P2PTest do
              File.read!("./test/fixtures/lotr.txt")
   end
 
+  @liveness_opts [disconnected_timeout: 300, failed_timeout: 1_500, keepalive_interval: 100]
+
+  @tag :p2p
+  test "disconnected state" do
+    {agent1, agent2} = start_and_connect(@liveness_opts)
+
+    # agent2 stops processing anything, including agent1's keepalives
+    :ok = :sys.suspend(agent2)
+    assert_receive {:ex_ice, ^agent1, {:connection_state_change, :disconnected}}, 1_000
+
+    # agent1 can still send, and recovers once agent2 is back
+    :ok = ICEAgent.send_data(agent1, "while disconnected")
+    :ok = :sys.resume(agent2)
+    assert_receive {:ex_ice, ^agent1, {:connection_state_change, :completed}}, 1_000
+    assert_receive {:ex_ice, ^agent2, {:data, "while disconnected"}}, 1_000
+
+    :ok = ICEAgent.send_data(agent1, "after recovery")
+    assert_receive {:ex_ice, ^agent2, {:data, "after recovery"}}, 1_000
+    refute_received {:ex_ice, ^agent1, {:connection_state_change, :failed}}
+
+    :ok = ICEAgent.stop(agent1)
+    :ok = ICEAgent.stop(agent2)
+  end
+
+  @tag :p2p
+  test "restart from failed state" do
+    {agent1, agent2} = start_and_connect(@liveness_opts)
+    fail_and_restart(agent1, agent2)
+
+    :ok = ICEAgent.stop(agent1)
+    :ok = ICEAgent.stop(agent2)
+  end
+
+  @tag :relay
+  test "restart from failed state via turn server" do
+    # This test is by default excluded from runinng.
+    # Before running, start coturn with: turnserver -a -u testusername:testpassword
+    ice_servers = [
+      %{
+        urls: "turn:127.0.0.1:3478?transport=udp",
+        username: "testusername",
+        credential: "testpassword"
+      }
+    ]
+
+    agent1_opts = [ice_servers: ice_servers, ice_transport_policy: :relay] ++ @liveness_opts
+    {agent1, agent2} = start_and_connect(agent1_opts, @liveness_opts)
+    fail_and_restart(agent1, agent2)
+
+    :ok = ICEAgent.stop(agent1)
+    :ok = ICEAgent.stop(agent2)
+  end
+
+  defp fail_and_restart(agent1, agent2) do
+    # agent2 stops processing anything for longer than failed_timeout
+    :ok = :sys.suspend(agent2)
+    assert_receive {:ex_ice, ^agent1, {:connection_state_change, :failed}}, 3_000
+    :ok = :sys.resume(agent2)
+    # agent1 has closed its sockets, so agent2 fails too
+    assert_receive {:ex_ice, ^agent2, {:connection_state_change, :failed}}, 3_000
+    flush_ice_mailbox()
+
+    # failed agents can be restarted
+    :ok = ICEAgent.restart(agent1)
+    {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
+    :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
+    {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
+    :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    assert_receive {:ex_ice, ^agent1, {:connection_state_change, :checking}}
+    assert_receive {:ex_ice, ^agent2, {:connection_state_change, :checking}}
+
+    :ok = ICEAgent.gather_candidates(agent1)
+    :ok = ICEAgent.gather_candidates(agent2)
+    assert connect(agent1, agent2, {false, false})
+
+    :ok = ICEAgent.send_data(agent1, "from agent1")
+    :ok = ICEAgent.send_data(agent2, "from agent2")
+    assert_receive {:ex_ice, ^agent2, {:data, "from agent1"}}, 1_000
+    assert_receive {:ex_ice, ^agent1, {:data, "from agent2"}}, 1_000
+  end
+
+  defp start_and_connect(agent1_opts, agent2_opts \\ nil) do
+    ip_filter = fn
+      {_, _, _, _} -> true
+      _other -> false
+    end
+
+    agent2_opts = agent2_opts || agent1_opts
+
+    {:ok, agent1} = ICEAgent.start_link([role: :controlling, ip_filter: ip_filter] ++ agent1_opts)
+    {:ok, agent2} = ICEAgent.start_link([role: :controlled, ip_filter: ip_filter] ++ agent2_opts)
+
+    {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
+    {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
+
+    :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
+    :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    :ok = ICEAgent.gather_candidates(agent1)
+    :ok = ICEAgent.gather_candidates(agent2)
+
+    assert connect(agent1, agent2, {false, false})
+    {agent1, agent2}
+  end
+
+  defp connect(_agent1, _agent2, {true, true}), do: true
+
+  defp connect(agent1, agent2, {a1_completed?, a2_completed?} = completed) do
+    receive do
+      {:ex_ice, ^agent1, {:new_candidate, cand}} ->
+        :ok = ICEAgent.add_remote_candidate(agent2, cand)
+        connect(agent1, agent2, completed)
+
+      {:ex_ice, ^agent2, {:new_candidate, cand}} ->
+        :ok = ICEAgent.add_remote_candidate(agent1, cand)
+        connect(agent1, agent2, completed)
+
+      {:ex_ice, ^agent1, {:gathering_state_change, :complete}} ->
+        :ok = ICEAgent.end_of_candidates(agent2)
+        connect(agent1, agent2, completed)
+
+      {:ex_ice, ^agent2, {:gathering_state_change, :complete}} ->
+        :ok = ICEAgent.end_of_candidates(agent1)
+        connect(agent1, agent2, completed)
+
+      {:ex_ice, ^agent1, {:connection_state_change, :completed}} ->
+        connect(agent1, agent2, {true, a2_completed?})
+
+      {:ex_ice, ^agent2, {:connection_state_change, :completed}} ->
+        connect(agent1, agent2, {a1_completed?, true})
+
+      {:ex_ice, _agent, _msg} ->
+        connect(agent1, agent2, completed)
+    after
+      5_000 -> false
+    end
+  end
+
   defp p2p(_agent1, _agent2, %{completed: true, data_recv: true}, %{
          completed: true,
          data_recv: true
