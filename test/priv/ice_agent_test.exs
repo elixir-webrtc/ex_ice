@@ -676,6 +676,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen > pair.last_seen
+      assert new_pair.last_consent > pair.last_consent
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
@@ -708,6 +709,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.last_consent == pair.last_consent
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
@@ -740,6 +742,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.last_consent == pair.last_consent
       assert new_pair.responses_received == pair.responses_received
 
       assert new_pair.non_symmetric_responses_received ==
@@ -772,6 +775,7 @@ defmodule ExICE.Priv.ICEAgentTest do
 
       [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.last_seen == pair.last_seen
+      assert new_pair.last_consent == pair.last_consent
       assert new_pair.responses_received == pair.responses_received + 1
     end
 
@@ -1292,6 +1296,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       [pair_after] = Map.values(ice_agent.checklist)
 
       assert pair_after.last_seen > pair_before.last_seen
+      assert pair_after.last_consent == pair_before.last_consent
     end
 
     test "on failed pair", %{ice_agent: ice_agent} do
@@ -1414,6 +1419,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :succeeded
       assert new_pair.responses_received == pair.responses_received + 1
+      assert new_pair.last_consent != nil
       assert ice_agent.state == :connected
     end
 
@@ -1454,6 +1460,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :in_progress
       assert new_pair.responses_received == pair.responses_received + 1
+      assert new_pair.last_consent == nil
     end
 
     test "success response with the xor address of a local candidate with a different socket." do
@@ -1681,6 +1688,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       assert [new_pair] = Map.values(ice_agent.checklist)
       assert new_pair.state == :failed
       assert new_pair.responses_received == pair.responses_received
+      assert new_pair.last_consent == nil
 
       assert new_pair.non_symmetric_responses_received ==
                pair.non_symmetric_responses_received + 1
@@ -2177,8 +2185,8 @@ defmodule ExICE.Priv.ICEAgentTest do
     # make ice_agent connected
     ice_agent = connect(ice_agent)
 
-    # mock last_seen field
-    ice_agent = back_date(ice_agent, :last_seen, ice_agent.failed_timeout)
+    # mock the time the pair has last received a consent response
+    ice_agent = back_date(ice_agent, :last_consent, ice_agent.failed_timeout)
 
     # trigger pair timeout
     ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
@@ -2425,7 +2433,7 @@ defmodule ExICE.Priv.ICEAgentTest do
     test "is followed by failed", %{ice_agent: ice_agent} do
       ice_agent = ice_agent |> ICEAgent.end_of_candidates() |> disconnect()
 
-      ice_agent = back_date(ice_agent, :last_seen, ice_agent.failed_timeout)
+      ice_agent = back_date(ice_agent, [:last_seen, :last_consent], ice_agent.failed_timeout)
       ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
 
       assert ice_agent.state == :failed
@@ -2437,7 +2445,7 @@ defmodule ExICE.Priv.ICEAgentTest do
       ice_agent = ICEAgent.end_of_candidates(ice_agent)
       flush_ice_mailbox()
 
-      ice_agent = back_date(ice_agent, :last_seen, ice_agent.failed_timeout)
+      ice_agent = back_date(ice_agent, [:last_seen, :last_consent], ice_agent.failed_timeout)
       ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
 
       assert ice_agent.state == :failed
@@ -2476,6 +2484,104 @@ defmodule ExICE.Priv.ICEAgentTest do
     end
   end
 
+  describe "consent freshness" do
+    setup do
+      ice_agent =
+        [aggressive_nomination: true]
+        |> new_ice_agent()
+        |> ICEAgent.set_remote_credentials("someufrag", "somepwd")
+        |> ICEAgent.gather_candidates()
+        |> ICEAgent.add_remote_candidate(@remote_cand)
+        |> connect()
+        |> ICEAgent.end_of_candidates()
+
+      assert ice_agent.state == :completed
+      flush_ice_mailbox()
+
+      %{ice_agent: ice_agent}
+    end
+
+    test "expires without consent responses, even when data is received", %{
+      ice_agent: ice_agent
+    } do
+      [socket] = ice_agent.sockets
+      ice_agent = back_date(ice_agent, :last_consent, ice_agent.failed_timeout)
+
+      ice_agent =
+        ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, "data")
+
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert [%CandidatePair{state: :failed, valid?: false}] = Map.values(ice_agent.checklist)
+      assert ice_agent.state == :failed
+      assert_received {:ex_ice, _pid, {:connection_state_change, :failed}}
+      refute_received {:ex_ice, _pid, {:connection_state_change, :disconnected}}
+    end
+
+    test "does not expire while consent is fresh", %{ice_agent: ice_agent} do
+      ice_agent = back_date(ice_agent, :last_seen, ice_agent.failed_timeout)
+      ice_agent = back_date(ice_agent, :last_consent, ice_agent.failed_timeout - 100)
+
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert [%CandidatePair{state: :succeeded, valid?: true}] = Map.values(ice_agent.checklist)
+      assert ice_agent.state == :completed
+      assert ice_agent.disconnected?
+      refute_received {:ex_ice, _pid, {:connection_state_change, :failed}}
+    end
+
+    test "is not refreshed by data, requests or indications", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      ice_agent = back_date(ice_agent, :last_consent, 1_000)
+      [pair] = Map.values(ice_agent.checklist)
+
+      req =
+        binding_request(
+          ice_agent.role,
+          ice_agent.tiebreaker,
+          ice_agent.remote_ufrag,
+          ice_agent.local_ufrag,
+          ice_agent.local_pwd
+        )
+
+      ice_agent =
+        Enum.reduce(["data", req, binding_indication()], ice_agent, fn packet, ice_agent ->
+          ICEAgent.handle_udp(ice_agent, socket, @remote_cand.address, @remote_cand.port, packet)
+        end)
+
+      assert [%CandidatePair{last_consent: last_consent}] = Map.values(ice_agent.checklist)
+      assert last_consent == pair.last_consent
+    end
+
+    test "is exposed in stats", %{ice_agent: ice_agent} do
+      [pair] = Map.values(ice_agent.checklist)
+
+      assert [%ExICE.CandidatePair{last_consent: last_consent}] =
+               ICEAgent.get_stats(ice_agent).candidate_pairs
+
+      assert is_integer(last_consent)
+      assert last_consent == pair.last_consent
+    end
+
+    test "keepalives without a response are pruned", %{ice_agent: ice_agent} do
+      [socket] = ice_agent.sockets
+      [pair] = Map.values(ice_agent.checklist)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      [{stale_t_id, {pair_id, sent_at}}] = Map.to_list(ice_agent.keepalives)
+      stale = {pair_id, sent_at - ice_agent.failed_timeout}
+      ice_agent = put_in(ice_agent.keepalives[stale_t_id], stale)
+
+      ice_agent = ICEAgent.handle_keepalive_timeout(ice_agent, pair.id)
+      _stale_req = read_binding_request(socket, ice_agent.remote_pwd)
+      fresh_req = read_binding_request(socket, ice_agent.remote_pwd)
+
+      ice_agent = ICEAgent.handle_pair_timeout(ice_agent)
+
+      assert Map.keys(ice_agent.keepalives) == [fresh_req.transaction_id]
+    end
+  end
+
   defp new_ice_agent(opts \\ []) do
     [
       controlling_process: self(),
@@ -2487,12 +2593,14 @@ defmodule ExICE.Priv.ICEAgentTest do
     |> ICEAgent.new()
   end
 
-  # Moves the given pair field `ms` milliseconds into the past for all pairs.
-  defp back_date(ice_agent, field, ms) do
-    now = System.monotonic_time(:millisecond)
+  # Moves the given pair field(s) `ms` milliseconds into the past for all pairs.
+  defp back_date(ice_agent, fields, ms) do
+    time = System.monotonic_time(:millisecond) - ms
 
     checklist =
-      Map.new(ice_agent.checklist, fn {id, pair} -> {id, Map.replace!(pair, field, now - ms)} end)
+      Map.new(ice_agent.checklist, fn {id, pair} ->
+        {id, Enum.reduce(List.wrap(fields), pair, &Map.replace!(&2, &1, time))}
+      end)
 
     %{ice_agent | checklist: checklist}
   end

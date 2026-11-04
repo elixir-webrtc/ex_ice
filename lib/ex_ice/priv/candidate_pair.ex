@@ -17,7 +17,8 @@ defmodule ExICE.Priv.CandidatePair do
           succeeded_pair_id: integer() | nil,
           discovered_pair_id: integer() | nil,
           keepalive_timer: reference() | nil,
-          last_seen: integer(),
+          last_seen: integer() | nil,
+          last_consent: integer() | nil,
           packets_sent: non_neg_integer(),
           packets_received: non_neg_integer(),
           bytes_sent: non_neg_integer(),
@@ -44,6 +45,9 @@ defmodule ExICE.Priv.CandidatePair do
                 # Time when this pair has received some data
                 # or sent conn check.
                 last_seen: nil,
+                # Time when this pair has received an authenticated success response
+                # to our conn check or keepalive (consent freshness, RFC 7675).
+                last_consent: nil,
                 packets_sent: 0,
                 packets_received: 0,
                 bytes_sent: 0,
@@ -126,6 +130,7 @@ defmodule ExICE.Priv.CandidatePair do
       state: pair.state,
       valid?: pair.valid?,
       last_seen: pair.last_seen,
+      last_consent: pair.last_consent,
       requests_received: pair.requests_received,
       requests_sent: pair.requests_sent,
       responses_received: pair.responses_received,

@@ -35,8 +35,9 @@ defmodule ExICE.Priv.ICEAgent do
   @disconnected_timeout 5_000
 
   # Default failed timeout in ms.
-  # If we don't receive any data on a pair in this time,
-  # the pair is marked as failed.
+  # If we don't receive any consent (an authenticated response to our
+  # conn check or keepalive) on a pair in this time,
+  # the pair is marked as failed. See RFC 7675.
   @failed_timeout 30_000
 
   # Default keepalive interval in ms.
@@ -857,23 +858,27 @@ defmodule ExICE.Priv.ICEAgent do
     now = now()
 
     ice_agent
-    |> timeout_pairs(pairs, now)
+    |> expire_consent(pairs, now)
+    |> prune_keepalives(now)
     |> update_connection_state()
     |> update_liveness(now)
   end
 
-  defp timeout_pairs(ice_agent, [], _now), do: ice_agent
+  # Consent expiry, RFC 7675, sec. 5.1.
+  # Incoming data doesn't refresh consent, so we also stop sending
+  # when our packets don't reach the peer anymore.
+  defp expire_consent(ice_agent, [], _now), do: ice_agent
 
-  defp timeout_pairs(ice_agent, [%{last_seen: nil} | pairs], now) do
-    timeout_pairs(ice_agent, pairs, now)
+  defp expire_consent(ice_agent, [%{last_consent: nil} | pairs], now) do
+    expire_consent(ice_agent, pairs, now)
   end
 
-  defp timeout_pairs(ice_agent, [pair | pairs], now) do
-    diff = now - pair.last_seen
+  defp expire_consent(ice_agent, [pair | pairs], now) do
+    diff = now - pair.last_consent
 
     if diff >= ice_agent.failed_timeout do
       Logger.debug("""
-      Pair: #{pair.id} didn't receive any data in #{diff}ms. \
+      Pair: #{pair.id} didn't receive any consent in #{diff}ms. \
       Marking as failed.\
       """)
 
@@ -891,10 +896,20 @@ defmodule ExICE.Priv.ICEAgent do
           ice_agent
         end
 
-      timeout_pairs(ice_agent, pairs, now)
+      expire_consent(ice_agent, pairs, now)
     else
-      timeout_pairs(ice_agent, pairs, now)
+      expire_consent(ice_agent, pairs, now)
     end
+  end
+
+  # Responses to keepalives might never arrive.
+  defp prune_keepalives(ice_agent, now) do
+    keepalives =
+      Map.reject(ice_agent.keepalives, fn {_t_id, {_pair_id, sent_at}} ->
+        now - sent_at >= ice_agent.failed_timeout
+      end)
+
+    %{ice_agent | keepalives: keepalives}
   end
 
   @spec handle_keepalive_timeout(t(), integer()) :: t()
@@ -920,8 +935,9 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   def handle_keepalive_timeout(%__MODULE__{} = ice_agent, id) do
-    # Keepalives are sent even if data is flowing: their responses refresh `last_seen`,
-    # so a path that only sends data in our direction is not reported as disconnected.
+    # Keepalives are consent freshness checks (RFC 7675), so they are sent even if data is flowing.
+    # Their responses also refresh `last_seen`, so a path that only sends data in our direction
+    # is not reported as disconnected.
     # TODO: it might be better to pace keepalives with ta_timer
     # TODO: candidates not in a valid pair also should be kept alive (RFC 8445, sect 5.1.1.4)
     case Map.fetch(ice_agent.checklist, id) do
@@ -1617,7 +1633,6 @@ defmodule ExICE.Priv.ICEAgent do
 
       %Type{class: class, method: :binding}
       when is_response(class) and is_map_key(ice_agent.keepalives, msg.transaction_id) ->
-        # TODO: this a good basis to implement consent freshness
         handle_keepalive_response(ice_agent, local_cand, src_ip, src_port, msg)
 
       %Type{class: class, method: :binding} when is_response(class) ->
@@ -1928,9 +1943,12 @@ defmodule ExICE.Priv.ICEAgent do
           ice_agent.keepalive_interval
         )
 
+      now = now()
+
       pair = %{
         pair
-        | last_seen: now(),
+        | last_seen: now,
+          last_consent: now,
           responses_received: pair.responses_received + 1
       }
 
@@ -2120,7 +2138,7 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp handle_keepalive_response(ice_agent, local_cand, src_ip, src_port, msg) do
-    {pair_id, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
+    {{pair_id, _sent_at}, ice_agent} = pop_in(ice_agent.keepalives[msg.transaction_id])
 
     case Map.fetch(ice_agent.checklist, pair_id) do
       {:ok, %CandidatePair{} = pair} ->
@@ -2144,9 +2162,12 @@ defmodule ExICE.Priv.ICEAgent do
          :ok <- authenticate_msg(msg, ice_agent.remote_pwd) do
       Logger.debug("Received keepalive success response on: #{pair_info(ice_agent, pair)}")
 
+      now = now()
+
       pair = %{
         pair
-        | last_seen: now(),
+        | last_seen: now,
+          last_consent: now,
           responses_received: pair.responses_received + 1
       }
 
@@ -2168,7 +2189,7 @@ defmodule ExICE.Priv.ICEAgent do
         Sent from: #{inspect({ka_local_cand.base.base_address, ka_local_cand.base.base_port})}, \
         to: #{inspect({ka_remote_cand.address, ka_remote_cand.port})}
         Recv from: #{inspect({src_ip, src_port})}, on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})} \
-        Not refreshing last_seen time. \
+        Not refreshing last_seen and last_consent. \
         """)
 
         ice_agent
@@ -2176,7 +2197,7 @@ defmodule ExICE.Priv.ICEAgent do
       {:error, reason} ->
         Logger.debug("""
         Couldn't authenticate keepalive success response, reason: #{reason}. \
-        Not refreshing last_seen time.\
+        Not refreshing last_seen and last_consent.\
         """)
 
         pair = %{pair | responses_received: pair.responses_received + 1}
@@ -2199,7 +2220,7 @@ defmodule ExICE.Priv.ICEAgent do
     Received keepalive error response from #{inspect({src_ip, src_port})}, \
     on: #{inspect({local_cand.base.base_address, local_cand.base.base_port})}. \
     pair: #{pair_info(ice_agent, pair)} \
-    Not refreshing last_seen time. \
+    Not refreshing last_seen and last_consent. \
     """)
 
     ice_agent
@@ -2572,7 +2593,9 @@ defmodule ExICE.Priv.ICEAgent do
       end)
 
     {failed_keepalives, keepalives} =
-      Map.split_with(ice_agent.keepalives, fn {_, pair_id} -> pair_id in failed_pair_ids end)
+      Map.split_with(ice_agent.keepalives, fn {_, {pair_id, _sent_at}} ->
+        pair_id in failed_pair_ids
+      end)
 
     if failed_pair_ids != [] do
       Logger.debug("""
@@ -3299,7 +3322,7 @@ defmodule ExICE.Priv.ICEAgent do
       {:ok, ice_agent} ->
         pair = %{pair | requests_sent: pair.requests_sent + 1}
         ice_agent = put_in(ice_agent.checklist[pair.id], pair)
-        keepalives = Map.put(ice_agent.keepalives, req.transaction_id, pair.id)
+        keepalives = Map.put(ice_agent.keepalives, req.transaction_id, {pair.id, now()})
         %{ice_agent | keepalives: keepalives}
 
       {:error, ice_agent} ->

@@ -103,8 +103,10 @@ defmodule ExICE.ICEAgent do
   there should be no srflx one.
   * `disconnected_timeout` - time in milliseconds without receiving anything on the pair in use
   after which the `:disconnected` state is reported. Defaults to `5_000`.
-  * `failed_timeout` - time in milliseconds without receiving anything on a pair after which
-  the pair is marked as failed. When there are no other pairs left, the agent moves to the `:failed` state.
+  * `failed_timeout` - time in milliseconds without receiving consent on a pair after which
+  the pair is marked as failed and no longer used (RFC 7675). Consent is only granted by
+  authenticated responses to our connectivity checks and keepalives, so incoming data alone doesn't
+  keep a pair alive. When there are no other pairs left, the agent moves to the `:failed` state.
   Defaults to `30_000`.
   * `keepalive_interval` - average interval in milliseconds between keepalives (STUN binding requests)
   sent on valid pairs. Each interval is randomized by +/-20%. Defaults to `2_000`.
