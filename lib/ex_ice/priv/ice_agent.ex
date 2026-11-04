@@ -312,9 +312,8 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   @spec set_remote_credentials(t(), binary(), binary()) :: t()
-  def set_remote_credentials(%__MODULE__{state: state} = ice_agent, _, _)
-      when state in [:failed, :closed] do
-    Logger.debug("Tried to set remote credentials in state #{state}. Ignoring.")
+  def set_remote_credentials(%__MODULE__{state: :closed} = ice_agent, _, _) do
+    Logger.debug("Tried to set remote credentials in state closed. Ignoring.")
     ice_agent
   end
 
@@ -2731,20 +2730,16 @@ defmodule ExICE.Priv.ICEAgent do
   end
 
   defp do_restart(%__MODULE__{} = ice_agent) do
-    Enum.each(ice_agent.sockets, fn socket ->
-      case ice_agent.transport_module.sockname(socket) do
-        {:ok, {ip, port}} ->
-          # we could use close_socket function here but because we are
-          # clearing the whole state anyway, we can close the socket manually
-          Logger.debug("Closing socket: #{inspect(ip)}:#{port}.")
-          :ok = ice_agent.transport_module.close(socket)
-          :ok = flush_socket_msg(socket)
+    # close_socket/2 also releases TURN allocations,
+    # and skips sockets that have already been closed (e.g. in the failed state)
+    ice_agent =
+      Enum.reduce(ice_agent.sockets, ice_agent, fn socket, ice_agent ->
+        close_socket(ice_agent, socket)
+      end)
 
-        {:error, _reason} ->
-          # socket already closed
-          :ok
-      end
-    end)
+    for {_id, %CandidatePair{keepalive_timer: timer}} <- ice_agent.checklist, timer != nil do
+      Process.cancel_timer(timer)
+    end
 
     {ufrag, pwd} = generate_credentials()
 
@@ -2773,10 +2768,13 @@ defmodule ExICE.Priv.ICEAgent do
         selected_candidate_pair_changes:
           ice_agent.selected_candidate_pair_changes + pair_changes_diff,
         conn_checks: %{},
+        keepalives: %{},
         checklist: %{},
         tr_rtx: [],
         local_cands: %{},
         remote_cands: %{},
+        resolved_turn_servers: [],
+        disconnected?: false,
         local_ufrag: ufrag,
         local_pwd: pwd,
         remote_ufrag: nil,

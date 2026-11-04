@@ -242,14 +242,74 @@ defmodule ExICE.Integration.P2PTest do
     :ok = ICEAgent.stop(agent2)
   end
 
-  defp start_and_connect(opts) do
+  @tag :p2p
+  test "restart from failed state" do
+    {agent1, agent2} = start_and_connect(@liveness_opts)
+    fail_and_restart(agent1, agent2)
+
+    :ok = ICEAgent.stop(agent1)
+    :ok = ICEAgent.stop(agent2)
+  end
+
+  @tag :relay
+  test "restart from failed state via turn server" do
+    # This test is by default excluded from runinng.
+    # Before running, start coturn with: turnserver -a -u testusername:testpassword
+    ice_servers = [
+      %{
+        urls: "turn:127.0.0.1:3478?transport=udp",
+        username: "testusername",
+        credential: "testpassword"
+      }
+    ]
+
+    agent1_opts = [ice_servers: ice_servers, ice_transport_policy: :relay] ++ @liveness_opts
+    {agent1, agent2} = start_and_connect(agent1_opts, @liveness_opts)
+    fail_and_restart(agent1, agent2)
+
+    :ok = ICEAgent.stop(agent1)
+    :ok = ICEAgent.stop(agent2)
+  end
+
+  defp fail_and_restart(agent1, agent2) do
+    # agent2 stops processing anything for longer than failed_timeout
+    :ok = :sys.suspend(agent2)
+    assert_receive {:ex_ice, ^agent1, {:connection_state_change, :failed}}, 3_000
+    :ok = :sys.resume(agent2)
+    # agent1 has closed its sockets, so agent2 fails too
+    assert_receive {:ex_ice, ^agent2, {:connection_state_change, :failed}}, 3_000
+    flush_ice_mailbox()
+
+    # failed agents can be restarted
+    :ok = ICEAgent.restart(agent1)
+    {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
+    :ok = ICEAgent.set_remote_credentials(agent2, a1_ufrag, a1_pwd)
+    {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)
+    :ok = ICEAgent.set_remote_credentials(agent1, a2_ufrag, a2_pwd)
+
+    assert_receive {:ex_ice, ^agent1, {:connection_state_change, :checking}}
+    assert_receive {:ex_ice, ^agent2, {:connection_state_change, :checking}}
+
+    :ok = ICEAgent.gather_candidates(agent1)
+    :ok = ICEAgent.gather_candidates(agent2)
+    assert connect(agent1, agent2, {false, false})
+
+    :ok = ICEAgent.send_data(agent1, "from agent1")
+    :ok = ICEAgent.send_data(agent2, "from agent2")
+    assert_receive {:ex_ice, ^agent2, {:data, "from agent1"}}, 1_000
+    assert_receive {:ex_ice, ^agent1, {:data, "from agent2"}}, 1_000
+  end
+
+  defp start_and_connect(agent1_opts, agent2_opts \\ nil) do
     ip_filter = fn
       {_, _, _, _} -> true
       _other -> false
     end
 
-    {:ok, agent1} = ICEAgent.start_link([role: :controlling, ip_filter: ip_filter] ++ opts)
-    {:ok, agent2} = ICEAgent.start_link([role: :controlled, ip_filter: ip_filter] ++ opts)
+    agent2_opts = agent2_opts || agent1_opts
+
+    {:ok, agent1} = ICEAgent.start_link([role: :controlling, ip_filter: ip_filter] ++ agent1_opts)
+    {:ok, agent2} = ICEAgent.start_link([role: :controlled, ip_filter: ip_filter] ++ agent2_opts)
 
     {:ok, a1_ufrag, a1_pwd} = ICEAgent.get_local_credentials(agent1)
     {:ok, a2_ufrag, a2_pwd} = ICEAgent.get_local_credentials(agent2)

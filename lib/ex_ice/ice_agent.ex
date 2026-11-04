@@ -316,8 +316,12 @@ defmodule ExICE.ICEAgent do
   @doc """
   Restarts ICE.
 
-  If there were any valid pairs in the previous ICE session,
-  data can still be sent.
+  This can be done in any state but `:closed`, including `:failed`.
+  Setting remote credentials different from the current ones with
+  `set_remote_credentials/3` also restarts ICE.
+  Then, `gather_candidates/1` has to be called again.
+
+  Sockets of the previous ICE session are closed and its TURN allocations are released.
   """
   @spec restart(pid()) :: :ok
   def restart(ice_agent) do
