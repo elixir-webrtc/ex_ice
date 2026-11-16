@@ -27,6 +27,20 @@ defmodule ExICE.Priv.Candidate.Relay do
   def to_candidate(cand), do: CandidateBase.to_candidate(cand.base)
 
   @impl true
+  def send_data(
+        %__MODULE__{client: %ExTURN.Client{state: state}} = cand,
+        _dst_ip,
+        _dst_port,
+        _data
+      )
+      when state != :allocated do
+    # ExTURN.Client.send/3 returns {:ok, client} outside the :allocated state,
+    # and create_permission/2 and create_channel/3 have no clause for it, so
+    # the matches below would crash the ICE agent. Fail the send instead, as
+    # receive_data/4 does when the client returns an error.
+    {:error, :invalid_turn_client_state, cand}
+  end
+
   def send_data(cand, dst_ip, dst_port, data) do
     permission = ExTURN.Client.has_permission?(cand.client, dst_ip)
     channel = ExTURN.Client.has_channel?(cand.client, dst_ip, dst_port)
